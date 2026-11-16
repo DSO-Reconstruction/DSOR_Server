@@ -1305,10 +1305,24 @@ class CommerceService:
                                     MAX_BANK_UPGRADES,
                                     int(getattr(inventory, "bank_storage_upgrade", 0)) + ext_upgrades * direct_entry.amount,
                                 )
+                            from dso_server.protocol.reward_protocol import (
+                                resolve_inventory_extension_offer,
+                                resolve_bank_extension_offer,
+                            )
+                            from dso_server.protocol.player_init_protocol import (
+                                SPECIAL_OFFER_COMMAND,
+                                SpecialOffer,
+                            )
+                            updated_special_offer = SpecialOffer(
+                                resolve_inventory_extension_offer(self.static_database_path, inventory.storage_upgrade),
+                                resolve_bank_extension_offer(self.static_database_path, inventory.bank_storage_upgrade),
+                                None, False, "0000-00-00 00:00:00", (), (), (), ()
+                            )
                             delta_inv = clone_inventory_info(inventory)
                             commands = [
                                 ServerCommand(INVENTORY_INFO_COMMAND, delta_inv, LOCAL_PLAYER_ACTOR_ID),
                                 ServerCommand(CURRENCY_CHANGED_COMMAND, currency, LOCAL_PLAYER_ACTOR_ID),
+                                ServerCommand(SPECIAL_OFFER_COMMAND, updated_special_offer, 0),
                             ]
                             packet, packet_bits = encode_server_command_batch(
                                 tuple(commands), include_terminator=True,

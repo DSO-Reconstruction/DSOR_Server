@@ -130,10 +130,35 @@ def handle_storage_extension_use(server, session, item_id: int) -> bool:
             target.bank_storage_size = new_bank_size
             target.bank_storage_upgrade = new_bank_upgrade
 
+        from dso_server.protocol.reward_protocol import (
+            resolve_inventory_extension_offer,
+            resolve_bank_extension_offer,
+        )
+        from dso_server.protocol.player_init_protocol import (
+            SPECIAL_OFFER_COMMAND,
+            SpecialOffer,
+        )
+        updated_special_offer = SpecialOffer(
+            resolve_inventory_extension_offer(
+                server.static_database_path, new_storage_upgrade
+            ),
+            resolve_bank_extension_offer(
+                server.static_database_path, new_bank_upgrade
+            ),
+            None,
+            False,
+            "0000-00-00 00:00:00",
+            (),
+            (),
+            (),
+            (),
+        )
+
         packet, bits = encode_server_command_batch(
             (
                 ServerCommand(INVENTORY_INFO_COMMAND, mutation.delta, LOCAL_PLAYER_ACTOR_ID),
                 ServerCommand(INVENTORY_INFO_COMMAND, mutation.final, LOCAL_PLAYER_ACTOR_ID),
+                ServerCommand(SPECIAL_OFFER_COMMAND, updated_special_offer, 0),
             ),
             include_terminator=True,
         )

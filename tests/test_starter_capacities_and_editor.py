@@ -34,22 +34,22 @@ from dso_server.services.storage_extensions import (
 
 
 def test_default_inventory_and_bank_capacities():
-    # Fresh InventoryInfo must default to Bag 1 (21 slots) and Bank Box 1 (20 slots)
+    # Fresh InventoryInfo must default to Bag 1 (21 slots, upgrade 1) and Bank Box 1 (20 slots, upgrade 3)
     inv = InventoryInfo()
     assert inv.storage_size == 21
-    assert inv.storage_upgrade == 0
+    assert inv.storage_upgrade == 1
     assert inv.bank_storage_size == 20
-    assert inv.bank_storage_upgrade == 0
-    assert LOCAL_INVENTORY_CAPACITIES == (0, 0, 21, 20, 0, 0)
+    assert inv.bank_storage_upgrade == 3
+    assert LOCAL_INVENTORY_CAPACITIES == (1, 3, 21, 20, 0, 0)
 
 
 def test_bootstrap_inventory_capacities():
     packet, bits = encode_bootstrap_inventory_info(actor_id=1, class_name="warrior")
     inv = decode_inventory_info(packet, bits)
     assert inv.storage_size == 21
-    assert inv.storage_upgrade == 0
+    assert inv.storage_upgrade == 1
     assert inv.bank_storage_size == 20
-    assert inv.bank_storage_upgrade == 0
+    assert inv.bank_storage_upgrade == 3
     # Items placed in storage_slots must all fit in Bag 1 (slots 0..20)
     for item_id, slot_idx in inv.storage_slots.items():
         assert 0 <= slot_idx < 21, f"Slot {slot_idx} is outside Bag 1 (0..20)"
@@ -130,3 +130,42 @@ def test_average_item_level_calculation_parity():
     assert len(gear_levels) == 13
     avg = sum(gear_levels) / len(gear_levels)
     assert math.floor(avg + 0.5) == 100
+
+
+def test_special_offer_slot_expansion_offers():
+    from dso_server.protocol.player_init_protocol import (
+        DEFAULT_INVENTORY_EXTENSION_OFFER,
+        DEFAULT_BANK_EXTENSION_OFFER,
+        SpecialOffer,
+        _write_special_offer_body,
+        _read_special_offer_body,
+    )
+    from dso_server.protocol.reward_protocol import (
+        resolve_inventory_extension_offer,
+        resolve_bank_extension_offer,
+    )
+    from dso_server.protocol.character_selection import BitReader, BitWriter
+    from dso_server.paths import DEFAULT_STATIC_DB_PATH
+
+    inv_offer = resolve_inventory_extension_offer(DEFAULT_STATIC_DB_PATH, 1)
+    assert inv_offer is not None
+    assert inv_offer.resource_id == "misc_bag_extension_01"
+    assert inv_offer.field_58 == 1600  # 1600 Andermant
+
+    bank_offer = resolve_bank_extension_offer(DEFAULT_STATIC_DB_PATH, 3)
+    assert bank_offer is not None
+    assert bank_offer.resource_id == "misc_bank_extension_01"
+    assert bank_offer.field_58 == 800  # 800 Andermant
+
+    sp = SpecialOffer(inv_offer, bank_offer, None, False, "0000-00-00 00:00:00", (), (), (), ())
+    w = BitWriter()
+    _write_special_offer_body(w, sp)
+    data, bits = w.finish()
+
+    r = BitReader(data)
+    sp_decoded = _read_special_offer_body(r)
+    assert sp_decoded.primary is not None
+    assert sp_decoded.primary.resource_id == "misc_bag_extension_01"
+    assert sp_decoded.secondary is not None
+    assert sp_decoded.secondary.resource_id == "misc_bank_extension_01"
+

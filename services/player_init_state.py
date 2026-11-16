@@ -863,8 +863,8 @@ class PlayerInitializationStateService:
             pvp_team_matches_played=pvp_team_matches_played,
             pvp_team_matches_won=pvp_team_matches_won,
             inventory_capacities=(
-                int(getattr(state.inventory, "storage_upgrade", 0)),
-                int(getattr(state.inventory, "bank_storage_upgrade", 0)),
+                int(getattr(state.inventory, "storage_upgrade", 1)),
+                int(getattr(state.inventory, "bank_storage_upgrade", 3)),
                 int(getattr(state.inventory, "storage_size", 21)),
                 int(getattr(state.inventory, "bank_storage_size", 20)),
                 int(getattr(state.inventory, "extra_bank_storage_size", 0)),

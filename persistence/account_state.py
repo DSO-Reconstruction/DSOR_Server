@@ -426,9 +426,9 @@ def _inventory_from_document(document: dict) -> InventoryInfo:
         item_id_replacements=_integer_map(document.get("item_id_replacements", {})),
         ingredient_bag_item_ids=[int(value) for value in document.get("ingredient_bag_item_ids", ())],
         ingredient_bag_templates=[str(value) for value in document.get("ingredient_bag_templates", ())],
-        storage_upgrade=int(document.get("storage_upgrade", 0)),
-        bank_storage_upgrade=int(
-            document.get("bank_storage_upgrade", 0)
+        storage_upgrade=max(1, int(document.get("storage_upgrade", 1))),
+        bank_storage_upgrade=max(
+            3, int(document.get("bank_storage_upgrade", 3))
         ),
         storage_size=int(document.get("storage_size", 21)),
         bank_storage_size=int(document.get("bank_storage_size", 20)),

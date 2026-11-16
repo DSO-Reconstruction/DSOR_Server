@@ -59,7 +59,12 @@ def test_real_initialization_sends_previews_before_notification_and_read_skill_b
         with patch('dso_server.services.player_init_world.DAILY_LOGIN_REWARDS_ENABLED', True):
             commands = server._build_initialization_commands(session, state, world)
         offers = next(c for c in commands if c.command_id == SPECIAL_OFFER_COMMAND)
-        assert offers.value == daily_login_offers(DB, 'mage')
+        assert offers.value == daily_login_offers(
+            DB,
+            'mage',
+            storage_upgrade=getattr(state.inventory, 'storage_upgrade', 1),
+            bank_storage_upgrade=getattr(state.inventory, 'bank_storage_upgrade', 3),
+        )
         notifications = [c for c in commands if c.command_id == NOTIFICATION_COMMAND and c.value.entries]
         assert len(notifications) == 1
         assert commands.index(offers) < commands.index(notifications[0])

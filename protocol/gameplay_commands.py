@@ -43,8 +43,8 @@ LOCAL_PREMIUM_CURRENCY_BALANCE = 9_999_999
 # InventoryInfo must publish the same six values: the inventory UI allocates
 # its FixedArray<UI::Slot> from them and later indexes the expanded layout when
 # Default initial inventory capacities for new characters:
-# Bag 1 has 21 slots open (upgrade 0), Bank Box 1 has 20 slots open (upgrade 0).
-LOCAL_INVENTORY_CAPACITIES = (0, 0, 21, 20, 0, 0)
+# Bag 1 has 21 slots open (upgrade 1), Bank Box 1 has 20 slots open (upgrade 3).
+LOCAL_INVENTORY_CAPACITIES = (1, 3, 21, 20, 0, 0)
 
 CAPTURED_INVENTORY_HEALTH_POINTS = 3459715.25
 CAPTURED_INVENTORY_SECONDARY_RESOURCE = 100.0

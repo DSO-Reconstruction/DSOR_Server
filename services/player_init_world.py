@@ -17,7 +17,11 @@ from typing import Any
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.services.player_init_state import PlayerInitializationState
-from dso_server.protocol.reward_protocol import daily_login_offers
+from dso_server.protocol.reward_protocol import (
+    daily_login_offers,
+    resolve_inventory_extension_offer,
+    resolve_bank_extension_offer,
+)
 from dso_server.protocol.membership_protocol import membership_updates
 from dso_server.protocol.player_init_protocol import (
     ACTORS_ENTER_VICINITY_COMMAND,
@@ -25,6 +29,7 @@ from dso_server.protocol.player_init_protocol import (
     OBSTACLE_UPDATE_COMMAND,
     QuickSlotsInfo,
     SeasonPassRewardsInfoResult,
+    SpecialOffer,
     TIMED_CHALLENGES_INFO_COMMAND,
     VARIATION_INFO_COMMAND,
 )
@@ -961,8 +966,32 @@ class PlayerInitializationWorldService:
                 self.static_database_path,
                 class_name=class_name,
             ),
-            special_offer=(daily_login_offers(self.static_database_path, class_name)
-                           if DAILY_LOGIN_REWARDS_ENABLED else None),
+            special_offer=(
+                daily_login_offers(
+                    self.static_database_path,
+                    class_name,
+                    storage_upgrade=getattr(state.inventory, "storage_upgrade", 1),
+                    bank_storage_upgrade=getattr(state.inventory, "bank_storage_upgrade", 3),
+                )
+                if DAILY_LOGIN_REWARDS_ENABLED
+                else SpecialOffer(
+                    resolve_inventory_extension_offer(
+                        self.static_database_path,
+                        getattr(state.inventory, "storage_upgrade", 1),
+                    ),
+                    resolve_bank_extension_offer(
+                        self.static_database_path,
+                        getattr(state.inventory, "bank_storage_upgrade", 3),
+                    ),
+                    None,
+                    False,
+                    "0000-00-00 00:00:00",
+                    (),
+                    (),
+                    (),
+                    (),
+                )
+            ),
             skill_book_ids=world.skill_book_ids,
             skill_book=skill_book_snapshot(self.static_database_path,
                                           character.class_id, character.level),

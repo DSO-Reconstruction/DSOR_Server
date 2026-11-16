@@ -801,7 +801,80 @@ def premium_daily_login_reward_group(class_name: str, day: int) -> str:
     return f"premium_login_reward_{day:02d}_{class_name}_01"
 
 
-def daily_login_offers(database_path: str | Path, class_name: str):
+def load_extension_offer(
+    database_path: str | Path,
+    offer_id: str,
+) -> OfferDetails:
+    from dso_server.protocol.player_init_protocol import (
+        DEFAULT_BANK_EXTENSION_OFFER,
+        DEFAULT_INVENTORY_EXTENSION_OFFER,
+        OfferDetails,
+    )
+    from dso_server.protocol.shop_protocol import OFFER_CATEGORY_IDS, OFFER_RARITY_IDS
+
+    try:
+        resolved = resident_content.resolved(database_path)
+        uri = resolved.as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT * FROM _Template_Offer WHERE Id=?",
+                (offer_id,),
+            ).fetchone()
+            if row is not None:
+                return OfferDetails(
+                    resource_id=str(row["Id"]),
+                    field_58=int(row["PriceRC"]),
+                    field_5c=int(row["PriceVC"]),
+                    field_50=str(row["Item"]),
+                    field_74=int(row["Amount"]),
+                    field_78=int(row["Difficulty"]),
+                    field_94=OFFER_RARITY_IDS.get(str(row["Rarity"]), 0),
+                    field_98=OFFER_CATEGORY_IDS.get(str(row["OfferCategory"]), 46),
+                    values_168=(),
+                    values_190=(),
+                    field_c0=str(row["IconBrush"] or ""),
+                    field_c8=str(row["IconConfiguration"] or ""),
+                    field_80=int(row["MinPlayerLevel"]),
+                    field_84=int(row["MaxPlayerLevel"]),
+                    field_88=bool(row["IsRecommended"]),
+                    field_8b=bool(row["AutoIdentify"]),
+                )
+    except Exception:
+        pass
+    if "bank" in offer_id:
+        return DEFAULT_BANK_EXTENSION_OFFER
+    return DEFAULT_INVENTORY_EXTENSION_OFFER
+
+
+def resolve_inventory_extension_offer(
+    database_path: str | Path,
+    storage_upgrade: int,
+) -> OfferDetails | None:
+    if storage_upgrade >= 29:
+        return None
+    upg = max(1, min(29, int(storage_upgrade)))
+    offer_id = f"misc_bag_extension_{upg:02d}"
+    return load_extension_offer(database_path, offer_id)
+
+
+def resolve_bank_extension_offer(
+    database_path: str | Path,
+    bank_storage_upgrade: int,
+) -> OfferDetails | None:
+    if bank_storage_upgrade >= 55:
+        return None
+    upg = max(1, min(54, int(bank_storage_upgrade) - 2))
+    offer_id = f"misc_bank_extension_{upg:02d}"
+    return load_extension_offer(database_path, offer_id)
+
+
+def daily_login_offers(
+    database_path: str | Path,
+    class_name: str,
+    storage_upgrade: int | None = None,
+    bank_storage_upgrade: int | None = None,
+):
     """Supply the offer groups the native login widget resolves by name.
 
     Retail sends six display columns; the last repeats day five. The claim
@@ -849,7 +922,17 @@ def daily_login_offers(database_path: str | Path, class_name: str):
         days = (1, 2, 3, 4, 5, 5)
         regular = tuple(group(daily_login_reward_group(class_name, d)) for d in days)
         premium = tuple(group(premium_daily_login_reward_group(class_name, d)) for d in days)
-    return SpecialOffer(None, None, None, False, '0000-00-00 00:00:00',
+    inv_offer = (
+        resolve_inventory_extension_offer(database_path, storage_upgrade)
+        if storage_upgrade is not None
+        else None
+    )
+    bank_offer = (
+        resolve_bank_extension_offer(database_path, bank_storage_upgrade)
+        if bank_storage_upgrade is not None
+        else None
+    )
+    return SpecialOffer(inv_offer, bank_offer, None, False, '0000-00-00 00:00:00',
                         regular, premium, (), ())
 
 
