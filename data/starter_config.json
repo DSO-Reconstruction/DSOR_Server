@@ -1,7 +1,7 @@
 {
   "membership": {
-    "type": 2,
-    "duration_days": 1825,
+    "type": 0,
+    "duration_days": 0,
     "active": false
   },
   "currencies": {

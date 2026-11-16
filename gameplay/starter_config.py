@@ -46,9 +46,9 @@ from dso_server.protocol.inventory_codec import (
 from dso_server.runtime import file_revisions
 
 
-DEFAULT_MEMBERSHIP_TYPE = DELUXE_MEMBERSHIP
-DEFAULT_MEMBERSHIP_DAYS = 1825  # ~5 years
-DEFAULT_MEMBERSHIP_ACTIVE = True
+DEFAULT_MEMBERSHIP_TYPE = NO_MEMBERSHIP
+DEFAULT_MEMBERSHIP_DAYS = 0
+DEFAULT_MEMBERSHIP_ACTIVE = False
 
 DEFAULT_ANDERMANT = 100_000_000
 DEFAULT_GOLD = 100_000_000
@@ -230,7 +230,7 @@ def normalize_starter_config(document: Any) -> dict[str, Any]:
 
         duration_days = raw_m.get("duration_days", DEFAULT_MEMBERSHIP_DAYS)
         try:
-            duration_days = max(1, min(36500, int(duration_days)))
+            duration_days = max(0, min(36500, int(duration_days)))
         except (ValueError, TypeError):
             duration_days = DEFAULT_MEMBERSHIP_DAYS
 
