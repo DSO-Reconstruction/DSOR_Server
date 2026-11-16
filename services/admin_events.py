@@ -41,6 +41,15 @@ LINKED_SILENT_EVENTS: Mapping[str, tuple[str, ...]] = MappingProxyType({
         "e_chr_calendar_map_silent",
         "event_chr_event_2023_silent",
     ),
+    "event_kingshill_sewers_01": (
+        "e_ks_01_blitz_payment_offer_silent",
+        "e_ks_01_rat_king_silent_cave",
+        "e_ks_01_rat_king_silent_crypt",
+        "e_ks_01_rat_king_silent_sewers",
+        "event_kingshill_sewers_01_challenge_01_cave_silent",
+        "event_kingshill_sewers_01_challenge_01_crypt_silent",
+        "event_kingshill_sewers_01_key_rats_silent",
+    ),
 })
 
 

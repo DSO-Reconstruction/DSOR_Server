@@ -1074,6 +1074,38 @@ _MAP_MONSTER_TEMPLATE_ADDITIONS = {
     "k0002_greylingforest": _K_SERIES_QUEST_REGION_MONSTERS,
     "k0003_tidalwildwood": _K_SERIES_QUEST_REGION_MONSTERS,
     "k0004_hallofparadoxes": _K_SERIES_QUEST_REGION_MONSTERS,
+    # Kingshill Sewers are event maps, so the generic event-map prefix lookup
+    # treats each full map id as a monster prefix and misses these authored
+    # normal pools (e_ks_01_sewers_normal_*, e_ks_01_cave_normal_*, etc.). The
+    # SpawnList membership registry is not shipped in static.db4; supply the
+    # ordinary map families so density areas cannot fall back to fixed
+    # Guardian/Leader SpawnPoints as their population.
+    "e_ks_01_sewers_01": (
+        "e_ks_01_sewers_normal_leech_01",
+        "e_ks_01_sewers_normal_rat_01",
+        "e_ks_01_sewers_normal_thing_swamp_01",
+        "e_ks_01_sewers_normal_undead_ripper_01",
+    ),
+    "e_ks_01_cave_01": (
+        "e_ks_01_cave_normal_leech_01",
+        "e_ks_01_cave_normal_rat_01",
+        "e_ks_01_cave_normal_thing_swamp_01",
+    ),
+    "e_ks_01_crypt_01": (
+        "e_ks_01_crypt_normal_leech_01",
+        "e_ks_01_crypt_normal_skeleton_archer_01",
+        "e_ks_01_crypt_normal_skeleton_warrior_01",
+        "e_ks_01_crypt_normal_undead_mage_01",
+        "e_ks_01_crypt_normal_undead_ripper_01",
+    ),
+    "e_ks_01_cave_02": (
+        "e_ks_ch_01_cave_normal_thing_swamp_01",
+        "e_ks_ch_01_crypt_normal_skeleton_archer_01",
+        "e_ks_ch_01_crypt_normal_skeleton_warrior_01",
+        "e_ks_ch_01_crypt_normal_undead_mage_01",
+        "e_ks_ch_01_crypt_normal_undead_ripper_01",
+        "e_ks_challenge_normal_pus_sack_01",
+    ),
 }
 
 # Full Moon night champions are authored as champion-rank density areas. The

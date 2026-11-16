@@ -126,6 +126,12 @@ _CREEPY_CASTLE_QUEST_WISPS = frozenset({
     "e_hal_01_castle_quest_will_o_the_wisp_02",
     "e_hal_01_castle_quest_will_o_the_wisp_03",
 })
+_SEWERS_MHORBLIK_MAP = "e_ks_01_boss_02"
+_SEWERS_MHORBLIK_TEMPLATE = "e_ks_boss_eye"
+_SEWERS_MHORBLIK_GATE_WORMS = frozenset(
+    f"e_ks_boss_eye_worm_{index:02d}"
+    for index in range(5, 9)
+)
 _CREEPY_CASTLE_CAPTURE_PROPS = (
     "e_hal_01_castle_ghost_altar_01",
     "e_hal_01_castle_ghost_hidden_chest_01",
@@ -1863,6 +1869,8 @@ class LocalCombatState:
             else ()
         )
         self._cast_status_applications = {}
+        self._mhorblik_gate_worm_actor_ids: set[int] = set()
+        self._mhorblik_gate_dead_worm_actor_ids: set[int] = set()
         self.lock = InstrumentedRLock(
             MAP_COMBAT_DOMAIN,
             f"combat[{getattr(encounter, 'map_id', '<unknown>')}@{id(self):x}]",
@@ -2021,6 +2029,7 @@ class LocalCombatState:
         }
         for actor_id in tuple(self.monsters):
             self._refresh_creepy_castle_wisp_protection(actor_id)
+        self._refresh_mhorblik_worm_protection()
         self.monster_navigation_offsets = {}
         for actor_id, monster in self.monsters.items():
             navigation_ground = encounter.navigation.project_position(
@@ -4892,6 +4901,7 @@ class LocalCombatState:
                         monster, previous, damage
                     )
                     self.monster_health[actor_id] = current
+                    self._refresh_mhorblik_worm_protection()
                     resolutions.append(
                         DamageResolution(
                             target_actor_id=actor_id,
@@ -7099,6 +7109,7 @@ class LocalCombatState:
                 monster, previous, damage
             )
             self.monster_health[actor_id] = current
+            self._refresh_mhorblik_worm_protection()
             resolutions.append(
                 DamageResolution(
                     target_actor_id=actor_id,
@@ -10544,12 +10555,40 @@ class LocalCombatState:
             invulnerable=not near_capture_prop,
         )
 
+    def _refresh_mhorblik_worm_protection(self) -> None:
+        """Keep Mhorblik immune until all four second-wave worms are dead."""
+
+        if str(self.encounter.map_id).casefold() != _SEWERS_MHORBLIK_MAP:
+            return
+        for actor_id, monster in self.monsters.items():
+            if str(monster.template_id).casefold() not in _SEWERS_MHORBLIK_GATE_WORMS:
+                continue
+            actor_id = int(actor_id)
+            self._mhorblik_gate_worm_actor_ids.add(actor_id)
+            if self.monster_health.get(actor_id, 0) <= 0:
+                self._mhorblik_gate_dead_worm_actor_ids.add(actor_id)
+
+        gate_closed = (
+            len(self._mhorblik_gate_worm_actor_ids) < 4
+            or not self._mhorblik_gate_worm_actor_ids.issubset(
+                self._mhorblik_gate_dead_worm_actor_ids
+            )
+        )
+        for actor_id, monster in tuple(self.monsters.items()):
+            if str(monster.template_id).casefold() != _SEWERS_MHORBLIK_TEMPLATE:
+                continue
+            if monster.invulnerable != gate_closed:
+                self.monsters[int(actor_id)] = replace(
+                    monster, invulnerable=gate_closed,
+                )
+
     def _set_monster_position(
         self, actor_id: int, position: tuple[float, float, float],
     ) -> None:
         actor_id = int(actor_id)
         self.monster_positions[actor_id] = tuple(float(v) for v in position)
         self._refresh_creepy_castle_wisp_protection(actor_id)
+        self._refresh_mhorblik_worm_protection()
 
     def assign_monster_targets(self, actor_ids, candidates, *, now=None):
         """Choose a visible, living player per monster; keep nearby targets stable.
@@ -12355,6 +12394,7 @@ class LocalCombatState:
                     self.monsters[actor_id], previous, damage
                 )
                 self.monster_health[actor_id] = current
+                self._refresh_mhorblik_worm_protection()
                 resolutions.append(
                     DamageResolution(
                         target_actor_id=actor_id,
@@ -12457,6 +12497,7 @@ class LocalCombatState:
                 monster, previous, max(0, int(damage))
             )
             self.monster_health[actor_id] = current
+            self._refresh_mhorblik_worm_protection()
             if not killed and applied:
                 self._record_monster_status_effects(
                     actor_id, applied, now=current_time,
@@ -12538,6 +12579,7 @@ class LocalCombatState:
                     monster, previous, damage
                 )
                 self.monster_health[actor_id] = current
+                self._refresh_mhorblik_worm_protection()
                 hit_enemy = True
                 monster_results.append(
                     DamageResolution(
@@ -12815,6 +12857,7 @@ class LocalCombatState:
             monster, previous, damage
         )
         self.monster_health[monster.actor_id] = current
+        self._refresh_mhorblik_worm_protection()
         return DamageResolution(
             target_actor_id=monster.actor_id,
             attacker_actor_id=int(player_actor_id),
@@ -13918,6 +13961,7 @@ class LocalCombatState:
                         server_tick=attack.impact_tick,
                     ))
                 self.monster_health[target.actor_id] = current
+                self._refresh_mhorblik_worm_protection()
                 effects = tuple(
                     effect
                     for effect in pending.geometry.victim_status_effects
@@ -13970,6 +14014,7 @@ class LocalCombatState:
                         target, previous, bullet_damage
                     )
                     self.monster_health[target.actor_id] = current
+                    self._refresh_mhorblik_worm_protection()
                     damage_resolutions.append(DamageResolution(
                         target_actor_id=target.actor_id,
                         attacker_actor_id=actor_id,
@@ -14079,6 +14124,7 @@ class LocalCombatState:
                     target, previous, damage
                 )
                 self.monster_health[target_actor_id] = current
+                self._refresh_mhorblik_worm_protection()
                 resolutions.append(DamageResolution(
                     target_actor_id=target_actor_id,
                     attacker_actor_id=actor_id,
@@ -14218,6 +14264,7 @@ class LocalCombatState:
             monster, previous, damage
         )
         self.monster_health[monster.actor_id] = current
+        self._refresh_mhorblik_worm_protection()
         applied_effects = tuple(
             definition
             for definition in pending.victim_status_effects
@@ -14487,6 +14534,7 @@ class LocalCombatState:
             monster, previous, damage
         )
         self.monster_health[monster.actor_id] = current
+        self._refresh_mhorblik_worm_protection()
         traced_geometry = self._load_player_skill_geometry(pending.skill_index)
         if (
             traced_geometry is not None
@@ -16269,6 +16317,7 @@ class LocalCombatState:
                 if damage <= 0:
                     continue
                 self.monster_health[attack.target_actor_id] = current
+                self._refresh_mhorblik_worm_protection()
                 victim_effects = tuple(
                     definition
                     for definition in self._load_monster_attack_effects(

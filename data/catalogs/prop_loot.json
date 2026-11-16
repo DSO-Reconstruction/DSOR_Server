@@ -7324,6 +7324,89 @@
           ]
         }
       ]
+    },
+    "lootlist_emerald_fang_chest": {
+      "comment": "Kingshill Waste Box rewards: four Plagueborn ingredients roll independently at 5%; each opening guarantees two Miasma Gems, has a 35% additional five-gem roll, and has an independent 10% Selection Package roll. One 75/25 roll grants either 999 Essence of Vigor (equally split between Rare and Epic) or 15 Infernal Passage fragments; the three remaining rewards roll independently at 15% each.",
+      "entries": [
+        {
+          "item": "PRset_material_het",
+          "amount": [1, 1],
+          "chance": 0.05
+        },
+        {
+          "item": "PRset_material_ring01",
+          "amount": [1, 1],
+          "chance": 0.05
+        },
+        {
+          "item": "PRset_material_ring02",
+          "amount": [1, 1],
+          "chance": 0.05
+        },
+        {
+          "item": "PRset_material_adornment",
+          "amount": [1, 1],
+          "chance": 0.05
+        },
+        {
+          "item": "PRset_material_general",
+          "amount": [2, 2]
+        },
+        {
+          "item": "PRset_material_general",
+          "amount": [5, 5],
+          "chance": 0.35
+        },
+        {
+          "item": "PRset_material_selectbox",
+          "amount": [1, 1],
+          "chance": 0.1
+        },
+        {
+          "item": "ammunition_damage_rare",
+          "amount": [999, 999],
+          "roll_group": "waste_box_essence_or_fragment",
+          "weight": 37.5
+        },
+        {
+          "item": "ammunition_damage_epic",
+          "amount": [999, 999],
+          "roll_group": "waste_box_essence_or_fragment",
+          "weight": 37.5
+        },
+        {
+          "item": "difficulty_key_common",
+          "amount": [15, 15],
+          "roll_group": "waste_box_essence_or_fragment",
+          "weight": 25
+        },
+        {
+          "item": "dragon_blood_box",
+          "amount": [1, 1],
+          "chance": 0.15
+        },
+        {
+          "item": "e_ks_01_boss_entry_key_01",
+          "amount": [1, 1],
+          "chance": 0.15
+        },
+        {
+          "item": "e_ks_01_entry_key_01",
+          "amount": [20, 20],
+          "chance": 0.15
+        }
+      ]
+    },
+    "kingshill_sewers_boss_chest_progress": {
+      "comment": "Move the Sewers beneath the Castle world-boss progress from the boss to its reward chest, retaining the existing difficulty-scaled boss stack.",
+      "entries": [
+        {
+          "event_progress": true,
+          "event": "event_kingshill_sewers_01",
+          "event_progress_item": "e_ks_01_event_progress_T0",
+          "amount_by_difficulty": [36, 36, 72, 108, 143, 143, 287, 287, 537, 537]
+        }
+      ]
     }
   },
   "aliases": {

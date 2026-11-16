@@ -1,6 +1,16 @@
 {
   "note": "Contents of the loot lists named by _Template_Events.Loot and the map-owned drops used by special maps. The retail server owned these lists and the client data only names them, so they are authored here. While an event runs, every kill of a monster whose _Template_Monster.EventDropChance is above zero rolls its event's list on maps the event does not exclude. Per rank class (monster; elite = guardian, champion, leader; boss = boss, worldboss) an entry gives a chance and an amount range [min, max]; a missing class uses monster's values. Map loot is independent of scheduled events, scoped by map and monster templates/regions/ranks. Its difficulty chance scaling uses the map's privileged-loot factor; item GroupTags can scale stack amounts. An item containing {difficulty:02d} drops the map difficulty's variant. Map loot may also use amount_by_difficulty for fixed per-tier amounts (the last amount covers higher difficulties), item_options to choose one item uniformly after one chance roll, and item_options_by_class to choose one item uniformly for the killer's class after one chance roll.",
   "loot_lists": {
+    "GLOBAL_event_SEWERS_key": [
+      {
+        "item": "e_ks_01_entry_key_01",
+        "comment": "Sewer Keys from sewer rats in dungeons: 25% chance; stack sizes follow the authored difficulty table from Normal through PW Bloodshed.",
+        "regions": ["khsewersKeys"],
+        "chance": {"monster": 0.25},
+        "amount": {"monster": [1, 1]},
+        "amount_by_difficulty": [1, 2, 4, 6, 8, 10, 12, 14, 16, 18]
+      }
+    ],
     "GLOBAL_summer_festival_prefarming": [
       {
         "item": "e_sum_01_ferry_ticket",
@@ -1403,6 +1413,18 @@
         "chance": {"boss": 0.05},
         "amount": {"boss": [1, 1]},
         "require_active_events": ["easter_event_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_ks_01_boss_02": [
+      {
+        "comment": "Mhorblik has a 2% chance to drop one Common Jewel of Poisonous Thorns in Hidden Cave.",
+        "item": "jewel_aura_damage_poison_common",
+        "monsters": ["e_ks_boss_eye"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
         "scale_chance_with_difficulty": false,
         "scale_stack_amount_with_difficulty": false
       }

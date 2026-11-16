@@ -76,6 +76,10 @@ ANNIVERSARY_TRUNCHEON_PINATA_TEMPLATES = frozenset({
     "e_anniversary_soul_pinata_01",
     "e_anniversary_soul_pinata_02",
 })
+SEWERS_BLITZ_PILE_TEMPLATES = frozenset({
+    "e_ks_01_blitz_earth_pile_empty",
+    "e_ks_01_blitz_earth_pile_worm",
+})
 ANNIVERSARY_BURIED_TREASURE_MAPS = frozenset({
     "a0405_swampcave",          # Rootrock Caverns
     "a0504_dun",                # Stonekeep
@@ -266,6 +270,10 @@ def _dungeon_resource_category(definition: MapPropDefinition) -> str:
 PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS = frozenset({
     "pw_run_lootchest", "pw_run_lootchest_gold",
 })
+SEWERS_BOSS_REWARD_CHEST_INSTANCE_IDS = frozenset({
+    "e_ks_01_boss_lootchest_01",
+    "e_ks_01_boss_lootchest_02",
+})
 DTU_ARENA_REWARD_CHEST_IDS = frozenset({
     "e_bos_02_reward_chest_01",
     "e_bos_02_golden_chest_01",
@@ -299,6 +307,16 @@ def _is_dtu_difficulty_chest(map_id: str, definition: MapPropDefinition) -> bool
     return is_dtu_boss_arena_map(map_name) and (
         template in DTU_ARENA_REWARD_CHEST_IDS
         or instance in DTU_ARENA_REWARD_CHEST_IDS
+    )
+
+
+def _is_sewers_boss_reward_chest(
+    map_id: str, definition: MapPropDefinition,
+) -> bool:
+    return (
+        map_key(map_id) == "e_ks_01_boss_01"
+        and str(definition.instance_id).casefold()
+        in SEWERS_BOSS_REWARD_CHEST_INSTANCE_IDS
     )
 
 SERVER_SIGNAL_TYPES = frozenset({"serversignal", "mapsignal"})
@@ -948,6 +966,9 @@ class MapPropDefinition:
             self.template_id.casefold()
             in ANNIVERSARY_TRUNCHEON_PINATA_TEMPLATES
         )
+        sewers_blitz_pile = (
+            self.template_id.casefold() in SEWERS_BLITZ_PILE_TEMPLATES
+        )
         return bool(
             self.key_id and self.key_amount > 0
             and (
@@ -959,6 +980,7 @@ class MapPropDefinition:
                 or darkwood_wendigo_circle
                 or summer_fishing_vat
                 or anniversary_pinata
+                or sewers_blitz_pile
                 or self.template_id.casefold() == "e_chr_save_spot"
             )
         )
@@ -990,6 +1012,10 @@ class MapPropDefinition:
         # OperationId, so the generic prop filter otherwise leaves them
         # client-only even though PropInteraction has server-side handling.
         if self.template_id.casefold() == "e_chr_save_spot":
+            return True
+        if self.template_id.casefold() in SEWERS_BLITZ_PILE_TEMPLATES:
+            # Sewer blitz piles have a Drill Head cost and the worm pile
+            # invokes its bound champion spawn after the key is consumed.
             return True
         # Gatherable StateObjectSpawnPoints use the retail MAIN_ herb/ore loot
         # lists, which are not chest tables in prop_loot.json. They still need
@@ -1995,7 +2021,8 @@ def _load_map_event_content(
             spawn_point_rows = database.execute(
                 """
                 SELECT rowid, _ID, StateObjectId, Transform,
-                       COALESCE(EventSetRow, -1)
+                       COALESCE(EventSetRow, -1),
+                       COALESCE(ParentNodeIndex, 0)
                 FROM _Instance_StateObjectSpawnPoint
                 WHERE TRIM(COALESCE(StateObjectId, ''))<>''
                 ORDER BY rowid
@@ -2003,13 +2030,23 @@ def _load_map_event_content(
             ).fetchall()
         except sqlite3.OperationalError:
             spawn_point_rows = []
-        for row_id, instance_id, template_id, transform, event_set_row in spawn_point_rows:
+        spawn_difficulty_variations = map_difficulty_variations(path)
+        for (
+            row_id, instance_id, template_id, transform, event_set_row,
+            parent_node_index,
+        ) in spawn_point_rows:
             try:
                 _matrix, position, rotation = _read_transform(transform)
             except ValueError:
                 continue
             template_id = str(template_id).strip()
             instance_id = str(instance_id or template_id)
+            parent_node_index = int(parent_node_index or 0)
+            mound_variation = (
+                spawn_difficulty_variations.get(parent_node_index, (0, 0))
+                if template_id.casefold() in SEWERS_BLITZ_PILE_TEMPLATES
+                else (0, 0)
+            )
             operation, one_shot, loot_list_id, chest_id, individual_usage = templates.get(
                 template_id, ("", False, "", "", False)
             )
@@ -2067,6 +2104,9 @@ def _load_map_event_content(
                 quest_switch_id=quest_switch_id,
                 key_id=key_id,
                 key_amount=key_amount,
+                parent_node_index=parent_node_index,
+                variation_group=mound_variation[0],
+                variation_difficulty=mound_variation[1],
             ))
 
         volumes = []
@@ -2096,14 +2136,18 @@ def _load_map_event_content(
                 matrix=matrix,
                 triggered_event_id=str(triggered_event_id or ""),
             ))
-    # Authored reward chests in the parallel-world boss arenas are
-    # MapVariation nodes for the difficulty tiers.  They share one transform
-    # per arena, so publishing every variant makes all difficulties' chests
-    # stack.  Tag each with its variation tier; the PropInfo senders keep only
-    # the viewer's tier.
+    # Authored reward chests in parallel-world arenas and Kingshill Sewers
+    # are MapVariation nodes for difficulty tiers. They share transforms, so
+    # publishing every variant makes the chests stack. Tag each with its tier
+    # and use a factory-created prop because these quest-controlled GUIDs are
+    # absent from the loaded scene.
     chest_props = [
         prop for prop in props
-        if prop.instance_id.casefold() in PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS
+        if (
+            prop.instance_id.casefold()
+            in PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS
+            or _is_sewers_boss_reward_chest(map_id, prop)
+        )
     ]
     if chest_props:
         variations = _map_variations(path)
@@ -2129,15 +2173,10 @@ def _load_map_event_content(
             and int(variations[int(prop.parent_node_index)][0]) != 0
             for prop in chest_props
         )
-        # ClientPropManager::HandlePropInfoCommand only creates a prop
-        # entity when the entry carries a zero GUID; a non-zero GUID goes
-        # through LookupPropEntity and the whole entry is dropped when the
-        # scene has no entity with that GUID.  The authored chest GUIDs are
-        # quest-controlled, so they never exist for a player without the
-        # reward quest and both the initial snapshot and the map-entry
-        # replay were silently ignored.  Publish the chests under fresh
-        # prop ids with a zero GUID so the client creates them from the
-        # authored template even if its quest-controlled scene entity is absent.
+        # A non-zero GUID goes through LookupPropEntity; if the scene has no
+        # entity with that GUID, the client silently drops the PropInfo. These
+        # quest-controlled reward chest entities are absent for this event, so
+        # publish them with fresh ids and zero GUIDs to factory-create them.
         next_index = max(prop_index(prop.prop_id) for prop in props) + 1
         if (
             prop_index(prop_actor_base) + next_index + len(chest_props)
@@ -2344,6 +2383,8 @@ class MapEventRuntime:
     # Five-second timers for reusable Anniversary piñatas; Soul Frenzy's
     # Mortis piñatas use their map-run event lifecycle instead.
     anniversary_pinata_respawn_timers: dict[object, object] = field(default_factory=dict)
+    # Kingshill Waste Boxes are reusable after a three-second map prop cooldown.
+    emerald_fang_chest_respawn_timers: dict[object, object] = field(default_factory=dict)
     # Quest placements used in this map instance: (player, switch id, prop id).
     # Retail refreshes props with the map, so a new run offers them again; a
     # later task's own switch may also reuse the same placement.
@@ -2610,6 +2651,44 @@ class MapEventRuntime:
             selected, int(self.monster_level or 0),
         )
 
+        if map_key(self.map_id) == "e_ks_01_boss_01":
+            # Each Toxic Death Worm phase authors 15-16 guardian adds (plus
+            # seven maggots on one phase). Keep a small, evenly spaced subset
+            # from the already-selected difficulty tier so the fight retains
+            # its adds without flooding the arena.
+            add_caps = {
+                "e_ks_guardian_add_worm": 4,
+                "e_ks_boss_spawn_maggots": 3,
+            }
+            grouped_rows: dict[tuple[int, str], list[GatedSpawnRow]] = {}
+            for row in selected:
+                template = str(row.template_id).casefold()
+                if template not in add_caps:
+                    continue
+                grouped_rows.setdefault(
+                    (int(row.event_set_row), template), [],
+                ).append(row)
+            retained_row_ids = set()
+            for (_event_set, template), rows_for_template in grouped_rows.items():
+                limit = add_caps[template]
+                if len(rows_for_template) <= limit:
+                    retained_row_ids.update(row.row_id for row in rows_for_template)
+                    continue
+                indexes = tuple(
+                    round(index * (len(rows_for_template) - 1) / (limit - 1))
+                    for index in range(limit)
+                )
+                retained_row_ids.update(
+                    rows_for_template[index].row_id for index in indexes
+                )
+            selected = tuple(
+                row for row in selected
+                if (
+                    str(row.template_id).casefold() not in add_caps
+                    or int(row.row_id) in retained_row_ids
+                )
+            )
+
         if map_key(self.map_id) == "pw001_grimmagstone_01_dun":
             # Extracted assets may omit the MVR selecting Raazghul's three
             # overlapping tier placements. This is one encounter, not three
@@ -2686,10 +2765,154 @@ class MapEventRuntime:
         # for every difficulty tier at the same locations. Keep only the
         # selected MapVariation before registering/publishing them; the other
         # tiers point at scene GUIDs that are not instantiated by the client.
+        current_difficulty = max(0, int(
+            self.scaling_difficulty
+            if self.map_difficulty is None else self.map_difficulty
+        ))
+
+        # Every difficulty tier in the Sewers Blitz map exports alternative
+        # pile layouts at the same coordinates. Keep one layout, deduplicate
+        # its physical locations (maps may have four or five), and randomly
+        # assign the worm to exactly one location for this map instance.
+        sewer_piles = tuple(
+            definition for definition in self.content.props
+            if str(definition.template_id).casefold()
+            in SEWERS_BLITZ_PILE_TEMPLATES
+        )
+        if sewer_piles:
+            tiers_by_group: dict[int, set[int]] = {}
+            for definition in sewer_piles:
+                tiers_by_group.setdefault(
+                    int(definition.variation_group or 0), set(),
+                ).add(int(definition.variation_difficulty or 0))
+            chosen_tiers = {
+                group: selected_variation_tier(tiers, current_difficulty)
+                for group, tiers in tiers_by_group.items()
+            }
+            eligible = tuple(
+                definition for definition in sewer_piles
+                if chosen_tiers.get(int(definition.variation_group or 0))
+                == int(definition.variation_difficulty or 0)
+            )
+            layouts_by_group: dict[int, set[int]] = {}
+            for definition in eligible:
+                layouts_by_group.setdefault(
+                    int(definition.variation_group or 0), set(),
+                ).add(int(definition.parent_node_index or 0))
+            selected_layouts = {
+                group: random.Random(
+                    f"{self.instance_id}:sewers-blitz-piles:{group}:"
+                    f"{chosen_tiers.get(group)}"
+                ).choice(tuple(sorted(layouts)))
+                for group, layouts in layouts_by_group.items()
+                if layouts
+            }
+            chosen_layout_props = tuple(
+                definition for definition in eligible
+                if selected_layouts.get(
+                    int(definition.variation_group or 0)
+                ) == int(definition.parent_node_index or 0)
+            )
+            locations: list[list[MapPropDefinition]] = []
+            for definition in sorted(
+                chosen_layout_props, key=lambda item: item.prop_id,
+            ):
+                for members in locations:
+                    anchor = members[0].position
+                    if (
+                        math.hypot(
+                            float(definition.position[0]) - float(anchor[0]),
+                            float(definition.position[2]) - float(anchor[2]),
+                        ) <= 0.5
+                        and abs(
+                            float(definition.position[1]) - float(anchor[1])
+                        ) <= 1.0
+                    ):
+                        members.append(definition)
+                        break
+                else:
+                    locations.append([definition])
+            location_props = tuple(
+                min(members, key=lambda item: item.prop_id)
+                for members in locations
+            )
+            chosen_worm_prop_id = None
+            if location_props:
+                chosen_worm_prop_id = random.Random(
+                    f"{self.instance_id}:sewers-blitz-worm-location"
+                ).choice(location_props).prop_id
+            empty_template = next((
+                definition for definition in sewer_piles
+                if str(definition.template_id).casefold()
+                == "e_ks_01_blitz_earth_pile_empty"
+            ), None)
+            worm_template = next((
+                definition for definition in sewer_piles
+                if str(definition.template_id).casefold()
+                == "e_ks_01_blitz_earth_pile_worm"
+            ), None)
+            pile_templates = {
+                template.template_id.casefold(): template
+                for template in (empty_template, worm_template)
+                if template is not None
+            }
+            selected_location_ids = {
+                int(definition.prop_id) for definition in location_props
+            }
+            normalized_definitions = []
+            for definition in definitions:
+                if str(definition.template_id).casefold() \
+                        not in SEWERS_BLITZ_PILE_TEMPLATES:
+                    normalized_definitions.append(definition)
+                    continue
+                if int(definition.prop_id) not in selected_location_ids:
+                    continue
+                is_worm_location = (
+                    int(definition.prop_id) == chosen_worm_prop_id
+                )
+                template_id = (
+                    "e_ks_01_blitz_earth_pile_worm"
+                    if is_worm_location
+                    else "e_ks_01_blitz_earth_pile_empty"
+                )
+                source = pile_templates.get(template_id)
+                if source is None:
+                    continue
+                normalized_definitions.append(replace(
+                    definition,
+                    instance_id=source.instance_id,
+                    template_id=source.template_id,
+                    operation=source.operation,
+                    one_shot=source.one_shot,
+                    individual_usage=source.individual_usage,
+                    loot_list_id=source.loot_list_id,
+                    chest_id=source.chest_id,
+                    signal_referenced=source.signal_referenced,
+                    workbench=source.workbench,
+                    quest_switch_id=source.quest_switch_id,
+                    key_id=source.key_id,
+                    key_amount=source.key_amount,
+                ))
+            definitions = tuple(normalized_definitions)
+
+        def sewers_chest_matches_tier(definition):
+            if not _is_sewers_boss_reward_chest(self.map_id, definition):
+                return True
+            gold_chest = (
+                str(definition.instance_id).casefold().endswith("_02")
+            )
+            return gold_chest == (current_difficulty >= BLOODSHED_DIFFICULTY)
+
         varied_chests = tuple(
             definition for definition in self.content.props
             if definition.variation_group
-            and _is_dtu_difficulty_chest(self.map_id, definition)
+            and (
+                _is_dtu_difficulty_chest(self.map_id, definition)
+                or _is_sewers_boss_reward_chest(
+                    self.map_id, definition,
+                )
+            )
+            and sewers_chest_matches_tier(definition)
         )
         if varied_chests:
             tiers_by_group: dict[int, set[int]] = {}
@@ -2712,10 +2935,18 @@ class MapEventRuntime:
                 definition for definition in definitions
                 if not (
                     definition.variation_group
-                    and _is_dtu_difficulty_chest(self.map_id, definition)
+                    and (
+                        _is_dtu_difficulty_chest(self.map_id, definition)
+                        or _is_sewers_boss_reward_chest(
+                            self.map_id, definition,
+                        )
+                    )
                 )
-                or chosen.get(int(definition.variation_group))
-                == int(definition.variation_difficulty)
+                or (
+                    sewers_chest_matches_tier(definition)
+                    and chosen.get(int(definition.variation_group))
+                    == int(definition.variation_difficulty)
+                )
             )
 
         if self.content.is_dungeon:

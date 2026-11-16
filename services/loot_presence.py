@@ -48,6 +48,28 @@ _DRAGAN_CLASS_SET_ITEMS = {
     "dwarf": ("rifle", "dwarf"),
 }
 _EASTER_DARAN_TEMPLATE = "e_easter_01_dun_boss_troll_01"
+_SEWERS_CASTLE_MAP = "e_ks_01_boss_01"
+_SEWERS_MHORBLIK_MAP = "e_ks_01_boss_02"
+_SEWERS_MHORBLIK_TEMPLATE = "e_ks_boss_eye"
+_SEWERS_MHORBLIK_WORMS = frozenset(
+    f"e_ks_boss_eye_worm_{index:02d}"
+    for index in range(1, 9)
+)
+_SEWERS_CASTLE_WORM_PHASE_TEMPLATES = frozenset({
+    "e_ks_boss_worm_start",
+    "e_ks_boss_worm_final_battle_01",
+    "e_ks_boss_worm",
+    "e_ks_boss_worm_final_battle_02",
+})
+_SEWERS_AMBUSH_MAPS = frozenset({
+    "e_ks_01_crypt_01",
+    "e_ks_01_sewers_01",
+    "e_ks_01_cave_01",
+})
+_SEWERS_AMBUSHING_WORMS = frozenset(
+    f"e_ks_01_challenge_leader_worm_entry_{index:02d}"
+    for index in range(1, 7)
+)
 _SARGON_SHADOW_PORTAL_MAP = "g0001_beach_01_night_dun"
 _SARGON_SHADOW_PORTAL_TEMPLATE = "g0001_guardian_shadow_portal_01"
 _SARGON_SHADOW_PORTAL_FRAGMENTS = (
@@ -439,6 +461,21 @@ class LootPresenceService:
                 map_id,
                 str(getattr(session, 'gameplay_map_access_id', None) or ""),
             )
+            mhorblik_map = any(
+                _map_key(value) == _SEWERS_MHORBLIK_MAP
+                for value in (
+                    map_id,
+                    event_map_id,
+                    map_access_id,
+                    getattr(encounter, "map_id", ""),
+                    *event_map_aliases,
+                )
+            )
+            mhorblik_worm_loot_suppressed = (
+                mhorblik_map
+                and str(monster.template_id).casefold()
+                in _SEWERS_MHORBLIK_WORMS
+            )
             is_easter_daran = (
                 _map_key(encounter.map_id) in {
                     "e_easter_dun_01", "i0010_physical_big_dun",
@@ -724,7 +761,49 @@ class LootPresenceService:
                     if heart_lava_chance_bonus else {}
                 ),
             )
-            if profile is not None and profile.rank_kind.casefold() == "worldboss":
+            sewer_map_keys = tuple(
+                _map_key(value)
+                for value in (
+                    map_id,
+                    event_map_id,
+                    map_access_id,
+                    *event_map_aliases,
+                )
+            )
+            is_sewers_ambushing_worm = (
+                any(key in _SEWERS_AMBUSH_MAPS for key in sewer_map_keys)
+                and (
+                    str(monster.template_id).casefold()
+                    in _SEWERS_AMBUSHING_WORMS
+                    or str(monster.template_id).casefold()
+                    == "e_ks_01_ambushing_worm_spawner"
+                    or str(monster.template_id).casefold().startswith(
+                        "e_ks_boss_worm"
+                    )
+                    # The ambush spawner can resolve to a different concrete
+                    # worm template at runtime. On these sewer maps it is the
+                    # only World Boss-rank actor, so include rank as fallback.
+                    or (
+                        profile is not None
+                        and profile.rank_kind.casefold() == "worldboss"
+                    )
+                )
+            )
+            if is_sewers_ambushing_worm:
+                # Ambushing worms on Kingshill sewer maps are not World Boss
+                # reward sources. Suppress every boss ingredient family here:
+                # their map/monster regions can resolve a family other than
+                # ``boss_ingredient_sewers_*`` (for example when a map alias
+                # points at a shared region).
+                map_loot = tuple(
+                    drop for drop in map_loot
+                    if not drop.item_id.casefold().startswith("boss_ingredient_")
+                )
+            if (
+                profile is not None
+                and profile.rank_kind.casefold() == "worldboss"
+                and not is_sewers_ambushing_worm
+            ):
                 ingredient = None
                 if (
                     str(map_access_id).casefold().startswith("e_hal_01_castle_dun_")
@@ -810,6 +889,12 @@ class LootPresenceService:
                 *((item_id, 1) for item_id in dragan_first_clear_items),
             )
 
+        sewer_worm_intermediate_phase = (
+            _map_key(map_id) == _SEWERS_CASTLE_MAP
+            and str(getattr(monster, "template_id", "")).casefold()
+            in _SEWERS_CASTLE_WORM_PHASE_TEMPLATES
+        )
+
         if (
             str(getattr(encounter, "map_id", "")).casefold() == MORTIS_MAP
             and str(getattr(monster, "template_id", "")).casefold()
@@ -837,10 +922,15 @@ class LootPresenceService:
                 )]
                 event_loot = (*event_loot, ("dragon_bones", amount))
 
-        if anniversary_arena_wave_loot_suppressed:
+        if (
+            anniversary_arena_wave_loot_suppressed
+            or sewer_worm_intermediate_phase
+            or mhorblik_worm_loot_suppressed
+        ):
             # ``suppress_all_drops`` covers the native monster table. Clear
-            # separately assembled event collectibles and bonus drops too,
-            # so the arena's scripted reward chests remain its only loot.
+            # separately assembled event collectibles and bonus drops too.
+            # These encounter-only monster forms, like the arena's scripted
+            # waves, should not make separate world-loot piles.
             event_drops = ()
             event_loot = ()
 
@@ -896,9 +986,14 @@ class LootPresenceService:
                     ("unique_gem_resistance_ice_fire_light",)
                     if is_easter_daran else ()
                 ),
+                suppress_worldboss_reward_drops=(
+                    is_sewers_ambushing_worm
+                ),
                 suppress_all_drops=(
                     sargon_first_phase_loot_suppressed
                     or anniversary_arena_wave_loot_suppressed
+                    or sewer_worm_intermediate_phase
+                    or mhorblik_worm_loot_suppressed
                 ),
             )
             generation = apply_socket_drop_amounts(
@@ -956,6 +1051,15 @@ class LootPresenceService:
                         )
                     ),
                 )
+            if sewer_worm_intermediate_phase:
+                # Socket and status-buff post-processing runs after the
+                # generator's early suppression return. Keep intermediate
+                # forms entirely loot-free; only the final battle form drops.
+                generation = replace(generation, drops=())
+            if mhorblik_worm_loot_suppressed:
+                # The four second-wave worms are progression gates, not loot
+                # sources. Clear anything added by post-generation bonuses.
+                generation = replace(generation, drops=())
         except Exception:
             if dragan_first_clear_items:
                 with session.flow_lock:

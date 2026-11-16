@@ -84,6 +84,16 @@ HAPPY_HOUR_LUCKY_CATS = (
     "pet_silver_cat_uncommon",
     "pet_golden_cat_uncommon",
 )
+# Sewers possible-reward tables list both of these pets for the whole map,
+# although the Rat King is the intended source for them.
+SEWERS_RAT_KING_PET_ITEMS = frozenset((
+    "pet_rat_uncommon",
+    "pet_rat_special_unique",
+))
+SEWERS_RAT_KING_MONSTER_TEMPLATES = frozenset((
+    "e_ks_01_loot_valve_leader_rat_king_01",
+    "monster_rat_monster_rat_king_01_1_template",
+))
 # Map difficulties 0..9 are Normal, Painful, Excruciating, Fatal,
 # Infernal/PW Infernal, Merciless/PW Merciless, and Bloodshed/PW Bloodshed.
 # The Bloodshed baselines are 7 Clover and 200 Draken; lower tiers scale by
@@ -181,7 +191,10 @@ EQUIPMENT_ITEM_CATEGORIES = frozenset((
 BASE_WISDOM_DROP_CHANCE = 0.12
 # Event progress dropped by an event map's final boss, in base drops.
 EVENT_FINAL_BOSS_PROGRESS_MULTIPLIER = 25
-DIFFICULTY_SIZED_DRAGAN_PROGRESS_ITEMS = frozenset({
+EXPLICIT_DIFFICULTY_SIZED_EVENT_PROGRESS_ITEMS = frozenset({
+    # These event tables size progress themselves; don't apply the generic
+    # boss-rank or VC stack multipliers to their explicit amounts.
+    "e_ks_01_event_progress_t0",
     "e_dra_02_riseofdragan_key_for_maps_01",
     "e_dra_progress_item",
     "e_dra_progress_item_boss",
@@ -325,6 +338,9 @@ class WorldLootDrop:
     # Server-only provenance: shared item templates must credit their own quest.
     quest_id: str = ""
     quest_collect_id: str = ""
+    # A few chest rewards must be picked up regardless of the item's native
+    # AutoPickUp category (for example, event ammunition or passage keys).
+    force_auto_pickup: bool = False
 
 
 def quest_item_template_id(item_id: str) -> str:
@@ -2472,6 +2488,7 @@ def generate_monster_loot(
     difficulty_unscaled_drop_templates: frozenset[str] = frozenset(),
     excluded_base_drop_templates: frozenset[str] = frozenset(),
     excluded_base_drop_template_prefixes: tuple[str, ...] = (),
+    suppress_worldboss_reward_drops: bool = False,
     suppress_all_drops: bool = False,
 ) -> WorldLootGeneration:
     """Generate editable NewItem state for one lethal monster transition.
@@ -2490,6 +2507,8 @@ def generate_monster_loot(
     status resources are localized as exactly one through five additional
     gems. ``extra_boss_clovers`` implements Jewel of the Easter Fever, adding
     one through five Gilded Clover to Happy Hour boss rewards by jewel tier.
+    ``suppress_worldboss_reward_drops`` skips Possible Rewards and shared
+    boss-only bonus drops while preserving base loot and supplied event loot.
     The ordinary gem pool is pre-indexed in ``StaticLootCache`` and is
     consulted only for boss/world-boss profiles, so this adds no kill-path DB
     transaction or full item-table scan.
@@ -2665,7 +2684,7 @@ def generate_monster_loot(
         possible_rates = (
             possible_reward_rates(map_access_id) if map_access_id else {}
         )
-        if map_access_id:
+        if map_access_id and not suppress_worldboss_reward_drops:
             listed_rewards = _map_reward_definitions(
                 database,
                 map_access_id,
@@ -2716,6 +2735,42 @@ def generate_monster_loot(
                 class_name,
                 equipment_item_level,
             )
+            is_sewers_access = str(map_access_id).casefold().startswith(
+                "e_ks_01_"
+            )
+            if is_sewers_access:
+                is_rat_king = (
+                    str(profile.template_id).casefold()
+                    in SEWERS_RAT_KING_MONSTER_TEMPLATES
+                )
+                if not is_rat_king:
+                    listed_rewards = tuple(
+                        reward for reward in listed_rewards
+                        if reward.template_id.casefold()
+                        not in SEWERS_RAT_KING_PET_ITEMS
+                    )
+                is_sewers_boss = str(profile.rank_kind).casefold() in {
+                    "boss", "worldboss",
+                }
+                if not is_sewers_boss:
+                    def is_poison_buster_piece(reward):
+                        row = database.items_by_id.get(
+                            reward.template_id, {}
+                        )
+                        return (
+                            str(row.get("DefaultRarity") or "").casefold()
+                            == "set"
+                            and "sewer" in reward.template_id.casefold()
+                        )
+
+                    listed_rewards = tuple(
+                        reward for reward in listed_rewards
+                        if not is_poison_buster_piece(reward)
+                    )
+                    region_uniques = tuple(
+                        reward for reward in region_uniques
+                        if not is_poison_buster_piece(reward)
+                    )
             if (
                 str(map_access_id).casefold().startswith("e_hal_01_castle_dun_")
                 and str(profile.template_id).casefold()
@@ -2798,7 +2853,7 @@ def generate_monster_loot(
         # into their real item pools. The client data provides category/tier,
         # but no server drop odds, so each enabled category uses the
         # configurable 3% base chance.
-        if map_access_id:
+        if map_access_id and not suppress_worldboss_reward_drops:
             descriptors = _possible_reward_descriptors(
                 database, map_access_id
             )
@@ -3084,6 +3139,7 @@ def generate_monster_loot(
         if (
             profile.rank_kind in {"worldboss", "boss"}
             and int(extra_boss_gems) > 0
+            and not suppress_worldboss_reward_drops
         ):
             # Jewel of Gem Fortune adds gems from the same difficulty band as
             # the boss's guaranteed gems. Roll the rank independently for each
@@ -3131,9 +3187,13 @@ def generate_monster_loot(
         # Premium Elixir of Equipment guarantees one class- and level-eligible
         # Unique or Set item from every boss/world-boss kill, independent of
         # the monster's ordinary equipment roll chance.
-        if premium_equipment_drop_buff_active and profile.rank_kind in {
-            "boss", "worldboss",
-        }:
+        if (
+            premium_equipment_drop_buff_active
+            and not suppress_worldboss_reward_drops
+            and profile.rank_kind in {
+                "boss", "worldboss",
+            }
+        ):
             from dso_server.gameplay.equipment_drop_buffs import (
                 roll_premium_equipment_reward,
             )
@@ -3188,10 +3248,9 @@ def generate_monster_loot(
             for template_id, _amount in additional_instant_consumables
         }
         # An event map's final boss (rank worldboss: Big Paws, Dragan...) pays
-        # out a large stack of progress; minibosses a small one. The map
-        # difficulty curve below scales both. Dragan's own collectibles are
-        # already explicitly sized per difficulty in EventCatalog, so do not
-        # multiply those stacks again by boss rank.
+        # out a large stack of progress; minibosses a small one. Event systems
+        # with explicit difficulty tables are exempted from these generic
+        # rank and map stack multipliers below.
         event_rank_multiplier = (
             EVENT_FINAL_BOSS_PROGRESS_MULTIPLIER
             if profile.rank_kind == "worldboss"
@@ -3212,7 +3271,7 @@ def generate_monster_loot(
             stack_multiplier = (
                 1
                 if str(template_id).casefold()
-                in DIFFICULTY_SIZED_DRAGAN_PROGRESS_ITEMS
+                in EXPLICIT_DIFFICULTY_SIZED_EVENT_PROGRESS_ITEMS
                 else event_rank_multiplier
             )
             specifications.append((
@@ -3272,8 +3331,10 @@ def generate_monster_loot(
 
         # Existing non-boss cube drops keep their configured flat chance.
         # Bosses receive the shared difficulty-tiered quantity below.
-        if member_mystic_cube_eligible and (
-            profile.rank_kind not in BOSS_COMMON_DROP_RANKS
+        if (
+            not suppress_worldboss_reward_drops
+            and member_mystic_cube_eligible
+            and profile.rank_kind not in BOSS_COMMON_DROP_RANKS
             and (
                 force_drops
                 or generator.random() < cube_drop_chance(map_difficulty)
@@ -3304,7 +3365,10 @@ def generate_monster_loot(
                 if cube_rarity in EQUIPMENT_RARITIES else 0,
             ))
 
-        if profile.rank_kind in BOSS_COMMON_DROP_RANKS:
+        if (
+            profile.rank_kind in BOSS_COMMON_DROP_RANKS
+            and not suppress_worldboss_reward_drops
+        ):
             if member_mystic_cube_eligible:
                 cube_template = mystic_cube_template_for_difficulty(
                     map_difficulty
@@ -3375,8 +3439,8 @@ def generate_monster_loot(
 
         # Apply the database's map-difficulty stack curve in one final pass so
         # Currency and any item with an authored VC/RC stack tag follow their
-        # difficulty curve. Generic event progress uses the VC fallback; the
-        # Dragan progress items are already explicitly sized by difficulty.
+        # difficulty curve. Generic event progress uses the VC fallback;
+        # explicit event progress tables are exempted from this second scale.
         specifications = [
             (
                 definition,
@@ -3393,7 +3457,7 @@ def generate_monster_loot(
                     definition.template_id
                     not in difficulty_unscaled_drop_templates
                     and definition.template_id.casefold()
-                    not in DIFFICULTY_SIZED_DRAGAN_PROGRESS_ITEMS
+                    not in EXPLICIT_DIFFICULTY_SIZED_EVENT_PROGRESS_ITEMS
                     and (
                         definition.item_category == "Currency"
                         or definition.template_id in event_collectible_ids
