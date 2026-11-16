@@ -5775,7 +5775,32 @@ class MapEventService:
         and use item templates that are present in the shipped static DB.
         """
 
-        loot_list_id = str(definition.loot_list_id or definition.chest_id).casefold()
+        loot_list_id = str(
+            definition.loot_list_id or definition.chest_id
+        ).casefold()
+        is_kingshill_waste_box = any(
+            str(value or "").casefold() == "emerald_fang_chest"
+            for value in (
+                getattr(definition, "instance_id", ""),
+                getattr(definition, "template_id", ""),
+                getattr(definition, "chest_id", ""),
+            )
+        )
+        sewers_boss_chest_ids = {
+            "e_ks_01_boss_lootchest_01",
+            "e_ks_01_boss_lootchest_02",
+            "chest_e_ks_01_boss_lootchest_01",
+            "chest_e_ks_01_boss_lootchest_02",
+        }
+        is_kingshill_sewers_boss_chest = any(
+            str(value or "").casefold() in sewers_boss_chest_ids
+            for value in (
+                loot_list_id,
+                getattr(definition, "instance_id", ""),
+                getattr(definition, "template_id", ""),
+                getattr(definition, "chest_id", ""),
+            )
+        ) and map_key(getattr(s, "gameplay_map", "")) == "e_ks_01_boss_01"
         if _is_easter_dungeon_festival_egg(definition):
             # Map-content refreshes can keep a previously registered prop
             # definition alive after the event publisher has assigned the
@@ -5816,6 +5841,9 @@ class MapEventService:
             class_name = CLASS_NAMES.get(
                 int(getattr(chest_character, "class_id", 0) or 0), ""
             ).casefold()
+            map_difficulty = max(0, min(9, int(
+                getattr(s, "gameplay_map_difficulty", 0) or 0
+            )))
         event_chest_names = (
             loot_list_id,
             str(getattr(definition, "instance_id", "") or "").casefold(),
@@ -6887,6 +6915,10 @@ class MapEventService:
                     if is_dragan_elemental_relic_chest else loot_list_id
                 )
             )
+            if is_kingshill_sewers_boss_chest:
+                catalog_loot_list_id = (
+                    "kingshill_sewers_boss_chest_progress"
+                )
             try:
                 entries = load_prop_loot_catalog().entries(
                     catalog_loot_list_id
@@ -6909,6 +6941,24 @@ class MapEventService:
             else:
                 if not anniversary_arena_chest:
                     specifications = list(self._roll_map_chest_loot(s, entries))
+                if is_kingshill_sewers_boss_chest:
+                    specifications.extend(
+                        self._roll_kingshill_sewers_boss_chest_rewards(
+                            s,
+                            difficulty=map_difficulty,
+                            player_level=player_level,
+                            class_name=class_name,
+                            equipment_rewards_by_template=(
+                                equipment_rewards_by_template
+                            ),
+                        )
+                    )
+                    _log(
+                        "rolled Sewers beneath the Castle "
+                        f"{'gold' if map_difficulty >= BLOODSHED_DIFFICULTY else 'normal'} "
+                        f"boss chest on {s.gameplay_map} difficulty "
+                        f"{map_difficulty}; rewards={tuple(specifications)}"
+                    )
                 if loot_list_id == "lootlist_e_nye_worldboss_pile":
                     rng = random.SystemRandom()
                     with s.flow_lock:
@@ -7303,6 +7353,11 @@ class MapEventService:
                 equipment_difficulty,
                 int(getattr(s, "gameplay_map_difficulty", 0) or 0),
             )
+        if is_kingshill_sewers_boss_chest:
+            equipment_difficulty = max(
+                equipment_difficulty,
+                int(getattr(s, "gameplay_map_difficulty", 0) or 0),
+            )
         origin = tuple(float(value) for value in definition.position)
         if encounter is not None and last_move is not None:
             origin = encounter.coordinate_frame.wire_to_world(
@@ -7322,16 +7377,17 @@ class MapEventService:
             drops = []
             for (template_id, amount), position in zip(specifications, positions):
                 if socket_evaluation is not None:
-                    absolute, relative = socket_evaluation.drop_amount_bonus(
-                        template_id
-                    )
-                    amount = max(
-                        1,
-                        int(round(
-                            (int(amount) + absolute)
-                            * max(0.0, 1.0 + relative)
-                        )),
-                    )
+                    if not is_kingshill_waste_box:
+                        absolute, relative = socket_evaluation.drop_amount_bonus(
+                            template_id
+                        )
+                        amount = max(
+                            1,
+                            int(round(
+                                (int(amount) + absolute)
+                                * max(0.0, 1.0 + relative)
+                            )),
+                        )
                 item_definition = load_purchase_item_definition(
                     self.static_database_path, template_id,
                 )
@@ -7402,6 +7458,14 @@ class MapEventService:
                 auto_pick_up = (
                     "All"
                     if template_id.casefold() == "scaling_dungeon_boss_key_01"
+                    or (
+                        is_kingshill_waste_box
+                        and template_id.casefold() in {
+                            "ammunition_damage_rare",
+                            "ammunition_damage_epic",
+                            "difficulty_key_common",
+                        }
+                    )
                     else str(
                         item_rows.get(template_id, {}).get("AutoPickUp")
                         or (
@@ -7413,6 +7477,14 @@ class MapEventService:
                 )
                 drops.append(WorldLootDrop(
                     item, item_definition.item_category, auto_pick_up,
+                    force_auto_pickup=(
+                        is_kingshill_waste_box
+                        and template_id.casefold() in {
+                            "ammunition_damage_rare",
+                            "ammunition_damage_epic",
+                            "difficulty_key_common",
+                        }
+                    ),
                 ))
         except (OSError, ValueError, sqlite3.Error) as exc:
             _log(
@@ -7642,6 +7714,141 @@ class MapEventService:
                 difficulty_drop_factors[0] * difficulty_drop_factors[1]
             ),
         )
+
+    def _roll_kingshill_sewers_boss_chest_rewards(
+            self, s: Session, *, difficulty: int, player_level: int,
+            class_name: str, equipment_rewards_by_template: dict,
+    ) -> list[tuple[str, int]]:
+        """Roll the difficulty-scaled contents for Castle Sewers boss chests."""
+
+        rng = random.SystemRandom()
+        bloodshed = int(difficulty) >= BLOODSHED_DIFFICULTY
+        gem_count = rng.randint(3, 5) if bloodshed else rng.randint(1, 2)
+        item_count = rng.randint(3, 5) if bloodshed else rng.randint(1, 2)
+        specifications: list[tuple[str, int]] = []
+
+        with s.flow_lock:
+            access_id = str(
+                getattr(s, "gameplay_map_access_id", "") or ""
+            ) or str(getattr(s, "gameplay_map", "") or "")
+
+        gems = ()
+        try:
+            if bloodshed:
+                # The Gold chest promises individual gem rolls from Polished
+                # (rank d) through Sacred (rank k), independent of the map's
+                # broader possible-reward gem band.
+                loot_cache = prime_world_loot_cache(
+                    self.static_database_path,
+                )
+                gold_gem_ranks = tuple(
+                    rank for rank in sorted(
+                        loot_cache.standard_gems_by_rank
+                    )
+                    if "d" <= rank <= "k"
+                    and loot_cache.standard_gems_by_rank.get(rank)
+                )
+                gems = tuple(
+                    rng.choice(
+                        loot_cache.gems_for_rank(rng.choice(gold_gem_ranks))
+                    ).template_id
+                    for _ in range(gem_count)
+                ) if gold_gem_ranks else ()
+            else:
+                gems = roll_possible_reward_gems(
+                    self.static_database_path, access_id, gem_count, rng,
+                )
+                if len(gems) < gem_count:
+                    from dso_server.protocol.world_loot_protocol import (
+                        BOSS_GEM_RANKS_BY_DIFFICULTY,
+                    )
+
+                    loot_cache = prime_world_loot_cache(
+                        self.static_database_path,
+                    )
+                    gem_candidates = tuple(
+                        gem.template_id
+                        for rank in BOSS_GEM_RANKS_BY_DIFFICULTY[
+                            max(0, min(9, int(difficulty)))
+                        ]
+                        for gem in loot_cache.standard_gems_by_rank.get(rank, ())
+                    )
+                    if gem_candidates:
+                        gems = (
+                            *gems,
+                            *(rng.choice(gem_candidates)
+                              for _ in range(gem_count - len(gems))),
+                        )
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            _log(
+                "cannot roll Sewers beneath the Castle boss-chest gems: "
+                f"{type(exc).__name__}: {exc}"
+            )
+        specifications.extend((template_id, 1) for template_id in gems)
+
+        rarity_names = ("Magic", "Rare", "Epic") if bloodshed else (
+            "Magic", "Rare",
+        )
+        try:
+            from dso_server.protocol.chest_loot_protocol import (
+                roll_chest_contents,
+            )
+            from dso_server.protocol.world_loot_protocol import (
+                EQUIPMENT_RARITIES,
+            )
+
+            rarity_weights_by_difficulty = (
+                prime_world_loot_cache(self.static_database_path)
+                .rarity_weights_by_difficulty.get(
+                    max(0, min(9, int(difficulty))),
+                    (0, 0, 1, 1, 1, 0, 0, 0),
+                )
+            )
+            rarity_indices = tuple(
+                EQUIPMENT_RARITIES.index(name) for name in rarity_names
+            )
+            rarity_weights = tuple(
+                float(rarity_weights_by_difficulty[index])
+                for index in rarity_indices
+            )
+            if not any(rarity_weights):
+                rarity_weights = tuple(1.0 for _ in rarity_indices)
+            for _ in range(item_count):
+                rarity = (
+                    rng.choice(rarity_names)
+                    if bloodshed else rng.choices(
+                        rarity_names, weights=rarity_weights, k=1,
+                    )[0]
+                ).casefold()
+                rolled = roll_chest_contents(
+                    self.static_database_path,
+                    f"all_class_all_equip_{rarity}_01",
+                    player_level=max(1, int(player_level)),
+                    class_name=class_name,
+                    rng=rng,
+                )
+                for reward in rolled.rewards:
+                    template_id = reward.definition.template_id
+                    specifications.append((template_id, int(reward.amount)))
+                    equipment_rewards_by_template.setdefault(
+                        template_id, [],
+                    ).append(reward)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            _log(
+                "cannot roll Sewers beneath the Castle boss-chest equipment: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        if bloodshed:
+            specifications.append(("money_vc_gold", rng.randint(3, 10)))
+            specifications.append(("e_chr_2012_event_currency", 20))
+            specifications.append((
+                "emerald_fang_chest_key_fragment", rng.choice((1, 3)),
+            ))
+        else:
+            specifications.append(("money_vc_gold", rng.randint(10, 20)))
+            specifications.append(("emerald_fang_chest_key_fragment", 1))
+        return specifications
 
     @staticmethod
     def _prop_keys_missing(s: Session, definition) -> int:
@@ -8165,6 +8372,123 @@ class MapEventService:
             )
             timers[timer_key] = timer
         timer.start()
+
+    def _schedule_emerald_fang_chest_respawn(
+            self, runtime, definition, *, player_id: int) -> None:
+        """Reactivate the Kingshill Waste Box three seconds after opening."""
+
+        template_id = str(
+            getattr(definition, "template_id", "") or ""
+        ).casefold()
+        instance_id = str(
+            getattr(definition, "instance_id", "") or ""
+        ).casefold()
+        if (
+            template_id != "emerald_fang_chest"
+            and instance_id != "emerald_fang_chest"
+        ):
+            return
+        scheduler = getattr(runtime, "scheduler", None)
+        if scheduler is None:
+            _log("Kingshill Waste Box respawn has no map deadline scheduler")
+            return
+        prop_id = int(definition.prop_id)
+        individual_usage = bool(definition.individual_usage)
+        timer_key = (
+            (int(player_id), prop_id) if individual_usage else prop_id
+        )
+        with runtime.lock:
+            state = runtime.props.get(prop_id)
+            if individual_usage:
+                if timer_key not in runtime.individual_prop_usage:
+                    return
+            elif state is None or state.state != PROP_STATE_USED:
+                return
+            timers = runtime.emerald_fang_chest_respawn_timers
+            if timer_key in timers:
+                return
+            timer = scheduler.timer(
+                3.0,
+                self._respawn_emerald_fang_chest,
+                args=(
+                    runtime, prop_id,
+                    int(player_id) if individual_usage else None,
+                ),
+            )
+            timers[timer_key] = timer
+        timer.start()
+
+    def _respawn_emerald_fang_chest(
+            self, runtime, prop_id: int, player_id: int | None = None) -> None:
+        """Restore one Waste Box prop and notify its eligible viewers."""
+
+        if not self._map_event_runtime_is_live(runtime):
+            return
+        prop_id = int(prop_id)
+        individual_usage = player_id is not None
+        timer_key = (
+            (int(player_id), prop_id) if individual_usage else prop_id
+        )
+        with runtime.lock:
+            runtime.emerald_fang_chest_respawn_timers.pop(timer_key, None)
+            state = runtime.props.get(prop_id)
+            if state is None:
+                return
+            template_id = str(
+                getattr(state.definition, "template_id", "") or ""
+            ).casefold()
+            instance_id = str(
+                getattr(state.definition, "instance_id", "") or ""
+            ).casefold()
+            if (
+                template_id != "emerald_fang_chest"
+                and instance_id != "emerald_fang_chest"
+            ):
+                return
+            if individual_usage:
+                usage_key = (int(player_id), prop_id)
+                if usage_key not in runtime.individual_prop_usage:
+                    return
+                runtime.individual_prop_usage.discard(usage_key)
+            else:
+                if state.state != PROP_STATE_USED:
+                    return
+                state.state = PROP_STATE_ACTIVE
+            definition = state.definition
+        viewers = self._map_event_sessions(runtime)
+        if individual_usage:
+            viewers = tuple(
+                viewer for viewer in viewers
+                if _individual_prop_player_id(viewer) == int(player_id)
+            )
+        for viewer in viewers:
+            update = PropUpdate(
+                prop_id=definition.prop_id,
+                state=PROP_STATE_ACTIVE,
+                actor_id=LOCAL_PLAYER_ACTOR_ID,
+                counter=_session_game_tick(viewer),
+                state_changed=True,
+                operation=WIRE_PROP_OPERATION,
+                task_index=0,
+                keep_visual_state=False,
+            )
+            packet, packet_bits = encode_prop_update_batch(
+                (update,), actor_id=0,
+            )
+            viewer.send_reliable_ordered(
+                (packet, packet_bits), track=True,
+                label="kingshill-waste-box-respawn",
+            )
+            if definition.instance_guid == ZERO_GUID:
+                _send_prop_info(
+                    viewer,
+                    (PropRuntimeState(definition, PROP_STATE_ACTIVE),),
+                    label="kingshill-waste-box-respawn-info",
+                )
+        _log(
+            f"Kingshill Waste Box prop {prop_id} respawned after 3.0s"
+            + (f" for character {player_id}" if individual_usage else "")
+        )
 
     def _respawn_winter_event_chest(
             self, runtime, prop_id: int, player_id: int | None = None) -> None:
@@ -9653,6 +9977,26 @@ class MapEventService:
                     s, keyed.definition, label="new-moon-recall-unavailable",
                 )
                 return
+        sewers_blitz_worm_row = None
+        if (
+            keyed_first_use
+            and keyed is not None
+            and str(keyed.definition.template_id).casefold()
+            == "e_ks_01_blitz_earth_pile_worm"
+        ):
+            sewers_blitz_worm_row = self._sewers_blitz_worm_spawn_row(
+                runtime, keyed.definition,
+            )
+            if sewers_blitz_worm_row is None:
+                with runtime.lock:
+                    live = runtime.props.get(int(request.prop_id))
+                    if live is not None:
+                        live.state = PROP_STATE_ACTIVE
+                self._restore_prop_for_viewer(
+                    s, keyed.definition,
+                    label="sewers-blitz-worm-unavailable",
+                )
+                return
         gatherable_template = ""
         if gatherable_first_use:
             category = _multitool_resource_category(keyed.definition)
@@ -9945,12 +10289,20 @@ class MapEventService:
                 runtime, definition,
                 player_id=_individual_prop_player_id(s),
             )
+            self._schedule_emerald_fang_chest_respawn(
+                runtime, definition,
+                player_id=_individual_prop_player_id(s),
+            )
             self._spawn_pw022_gorgon_from_bust(s, runtime, definition)
         if flipped and definition.template_id.casefold() == "e_chr_save_spot":
             self._cleanse_challenge_freeze_debuff(s)
         if flipped and new_moon_recall_row is not None:
             self._spawn_new_moon_boss_from_recall_altar(
                 s, runtime, definition, new_moon_recall_row,
+            )
+        if flipped and sewers_blitz_worm_row is not None:
+            self._spawn_sewers_blitz_worm(
+                s, runtime, definition, sewers_blitz_worm_row,
             )
         # Retail's PropUpdate state flip: the clicking player's actor in the
         # body, the new state, current game tick, flags false, trailing actor
@@ -10712,6 +11064,92 @@ class MapEventService:
         )
         _log(
             f"New Moon recall altar {definition.instance_id!r} requested "
+            f"{spawn_row.template_id!r} at {spawn_row.position!r}"
+        )
+
+    def _sewers_blitz_worm_spawn_row(self, runtime, definition):
+        """Resolve the champion bound to the selected sewer worm pile."""
+
+        if str(definition.template_id).casefold() != (
+            "e_ks_01_blitz_earth_pile_worm"
+        ):
+            return None
+        try:
+            with closing(sqlite3.connect(
+                f"{Path(self.static_database_path).resolve().as_uri()}?mode=ro",
+                uri=True,
+            )) as database:
+                binding = database.execute(
+                    "SELECT COALESCE(MonsterId, ''), COALESCE(SpawnPoint, '') "
+                    "FROM _Template_StateObject WHERE Id=? LIMIT 1",
+                    (definition.template_id,),
+                ).fetchone()
+            if binding is None:
+                raise ValueError("worm pile state-object template is missing")
+            monster_id, spawn_point = (
+                str(value or "").strip() for value in binding
+            )
+            if (
+                monster_id.casefold() != "e_ks_blitz_champion_worm_01"
+                or not spawn_point
+            ):
+                raise ValueError(
+                    f"unexpected worm pile binding {monster_id!r}/"
+                    f"{spawn_point!r}"
+                )
+            map_path = map_database_path(
+                self.static_database_path, runtime.map_id,
+            )
+            with closing(sqlite3.connect(
+                f"file:{map_path.as_posix()}?mode=ro", uri=True,
+            )) as database:
+                anchor = database.execute(
+                    "SELECT rowid FROM _Instance_SpawnPoint "
+                    "WHERE lower(COALESCE(_ID, ''))=? "
+                    "AND COALESCE(ParentNodeIndex, 0)=? "
+                    "ORDER BY rowid LIMIT 1",
+                    (spawn_point.casefold(), int(definition.parent_node_index)),
+                ).fetchone()
+            if anchor is None:
+                raise ValueError(
+                    f"matching worm spawn point {spawn_point!r} was not found"
+                )
+            position = tuple(float(value) for value in definition.position)
+            if _load_runtime_definition(
+                self.static_database_path, monster_id,
+                int(runtime.monster_level or 0),
+            ) is None:
+                raise ValueError(f"worm monster template {monster_id!r} is unavailable")
+            return GatedSpawnRow(
+                -2_300_000 - int(anchor[0]), -1, monster_id, position,
+                float(definition.rotation),
+            )
+        except (
+            OSError, sqlite3.Error, TypeError, ValueError,
+        ) as exc:
+            _log(
+                f"Sewers Blitz worm pile {definition.instance_id!r} cannot "
+                f"spawn: {type(exc).__name__}: {exc}"
+            )
+            return None
+
+    def _spawn_sewers_blitz_worm(
+            self, s, runtime, definition, spawn_row) -> None:
+        """Spawn the pile's champion once after charging its Drill Head."""
+
+        marker = "sewers_blitz_champion_worm_spawned"
+        with runtime.lock:
+            if marker in runtime.fired_once:
+                return
+            runtime.fired_once.add(marker)
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        self._spawn_event_monsters(
+            runtime, sessions, (), extra_rows=(spawn_row,),
+        )
+        _log(
+            f"Sewers Blitz worm pile {definition.instance_id!r} spawned "
             f"{spawn_row.template_id!r} at {spawn_row.position!r}"
         )
 
@@ -11549,6 +11987,14 @@ class MapEventService:
                 )
         if transition.active and transition.event.key == "boss_death":
             self._silence_arena_hazards(runtime, sessions)
+            if map_key(runtime.map_id) == "e_ks_01_boss_01":
+                # EventSet 157 owns the normal/gold Toxic Death Worm chest.
+                # Replay its selected difficulty variant after the event
+                # update; the client can miss the first PropInfo while the
+                # boss death transition is still being applied.
+                self._publish_event_props(
+                    runtime, sessions, (157,), refresh_existing=True,
+                )
         if (
             transition.active
             and map_key(runtime.map_id) == "e_stego_arena_01"

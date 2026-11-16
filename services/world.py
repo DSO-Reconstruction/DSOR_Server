@@ -2283,6 +2283,7 @@ class WorldService:
                                 )
                             )
                         )
+                        or bool(getattr(drop, 'force_auto_pickup', False))
                         or drop.item_category in pet_categories
                         or (
                             drop.auto_pick_up == 'All'

@@ -81,6 +81,13 @@ from dso_server.gameplay.ocp_store import (
     WINTER_SOLSTICE_CHEST_PRODUCT_KEY,
     WINTER_SOLSTICE_MATERIALS_CHEST_PRODUCT_KEY,
     TRIANGLE_OF_FORCES_PACKAGE_PRODUCT_KEY,
+    KINGSHILL_SEWERS_MUTATION_PACKAGE_PRODUCT_KEY,
+    KINGSHILL_SEWERS_ATTIRE_PRODUCT_KEY,
+    KINGSHILL_SEWERS_MATERIAL_CHEST_PRODUCT_KEY,
+    KINGSHILL_SEWERS_SURPRISE_PACK_PRODUCT_KEY,
+    KINGSHILL_SEWERS_DAILY_PACK_PRODUCT_KEY,
+    KINGSHILL_SEWERS_RAMPAGING_STORM_PRODUCT_KEY,
+    KINGSHILL_SEWERS_RAMPAGING_HURRICANE_PRODUCT_KEY,
     EASTER_SURPRISE_SPRING_PACK_PRODUCT_KEY,
     SARGON_ATTIRE_PRODUCT_KEY,
     EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS,
@@ -438,6 +445,18 @@ def resolve_ocp_booking_reward(
                 attire_item_id,
                 1,
                 bundle_items=attire_rewards,
+            )
+        if offer_id == KINGSHILL_SEWERS_ATTIRE_PRODUCT_KEY:
+            skin_item_id = (
+                "skin_dwarf_unique_backitem_attire_sewers_01"
+                if class_name == "dwarf"
+                else "skin_all_unique_backitem_attire_sewers_01"
+            )
+            return OCPBookingReward(
+                offer_id,
+                attire_item_id,
+                1,
+                bundle_items=((attire_item_id, 1), (skin_item_id, 1)),
             )
         return OCPBookingReward(offer_id, attire_item_id, 1)
     bundle_reward = DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS.get(offer_id)
@@ -1035,6 +1054,18 @@ LOCAL_OCP_OFFERS = (
     OCPOffer(180_278, 9.90, False, "€", WINTER_SOLSTICE_CHEST_PRODUCT_KEY, "", ""),
     OCPOffer(180_279, 9.90, False, "€", WINTER_SOLSTICE_MATERIALS_CHEST_PRODUCT_KEY, "", ""),
     OCPOffer(180_280, 9.90, False, "€", TRIANGLE_OF_FORCES_PACKAGE_PRODUCT_KEY, "", ""),
+    # Kingshill Sewers offers reuse the authored package keys. Random packs
+    # stay as loot containers, while the material chest's fixed offer-group
+    # contents are granted directly after booking.
+    OCPOffer(180_281, 9.90, False, "€", KINGSHILL_SEWERS_MUTATION_PACKAGE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_282, 9.90, False, "€", KINGSHILL_SEWERS_ATTIRE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_283, 9.90, False, "€", KINGSHILL_SEWERS_MATERIAL_CHEST_PRODUCT_KEY, "", ""),
+    OCPOffer(180_284, 9.90, False, "€", KINGSHILL_SEWERS_SURPRISE_PACK_PRODUCT_KEY, "", ""),
+    OCPOffer(180_285, 9.90, False, "€", KINGSHILL_SEWERS_DAILY_PACK_PRODUCT_KEY, "", ""),
+    # Rampaging Worms blitz bundles reuse the native PaymentPackages names,
+    # icons and once-only descriptions; the server grants their fixed contents.
+    OCPOffer(180_286, 9.90, False, "€", KINGSHILL_SEWERS_RAMPAGING_STORM_PRODUCT_KEY, "", ""),
+    OCPOffer(180_287, 9.90, False, "€", KINGSHILL_SEWERS_RAMPAGING_HURRICANE_PRODUCT_KEY, "", ""),
 )
 
 CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"

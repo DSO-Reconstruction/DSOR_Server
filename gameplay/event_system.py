@@ -97,6 +97,25 @@ _CHRISTMAS_DIFFICULTY_INDEX_MAP = {
     8: 6,  # Bloodshed
     9: 6,  # PW Bloodshed
 }
+_KINGSHILL_SEWERS_DIFFICULTY_INDEX_MAP = {
+    0: 0,  # Normal
+    1: 1,  # Painful
+    2: 2,  # Excruciating
+    3: 3,  # Fatal
+    4: 4,  # Infernal
+    5: 4,  # PW Infernal
+    6: 5,  # Merciless
+    7: 5,  # PW Merciless
+    8: 6,  # Bloodshed
+    9: 6,  # PW Bloodshed
+}
+_KINGSHILL_SEWERS_MOB_PROGRESS_AMOUNTS = (6, 7, 8, 9, 10, 12, 14)
+_KINGSHILL_SEWERS_BOSS_PROGRESS_AMOUNTS = (36, 36, 72, 108, 143, 287, 537)
+# Sewers Blitz mini-events publish worm-boss stacks for the upper three
+# difficulties. Lower difficulties retain their authored bar-base value.
+_KINGSHILL_SEWERS_BLITZ_WORM_PROGRESS_AMOUNTS = (
+    None, None, None, None, 25, 75, 95,
+)
 _CHRISTMAS_BOSS_PROGRESS_AMOUNTS = (100, 125, 150, 175, 300, 400, 550)
 _CHRISTMAS_ELITE_PROGRESS_AMOUNTS = (5, 6, 8, 9, 15, 20, 28)
 _CHRISTMAS_PIGLET_PROGRESS_AMOUNTS = (5, 6, 8, 9, 15, 20, 28)
@@ -224,6 +243,22 @@ def _christmas_progress_amount(
         return _CHRISTMAS_ELITE_PROGRESS_AMOUNTS[diff_index]
 
     return None
+
+
+def _kingshill_sewers_progress_amount(
+    *, monster_rank: str, map_difficulty: int,
+) -> int:
+    """Return the main Kingshill Sewers progress stack by rank and tier."""
+
+    index = _KINGSHILL_SEWERS_DIFFICULTY_INDEX_MAP.get(
+        int(map_difficulty or 0), 0
+    )
+    amounts = (
+        _KINGSHILL_SEWERS_BOSS_PROGRESS_AMOUNTS
+        if str(monster_rank or "").casefold() in {"boss", "worldboss"}
+        else _KINGSHILL_SEWERS_MOB_PROGRESS_AMOUNTS
+    )
+    return amounts[index]
 
 
 _CHRISTMAS_BIG_PAWS_FROST_SHARDS = {
@@ -705,6 +740,15 @@ SCHEDULED_EVENT_FLAG_ALIASES: Mapping[str, tuple[str, ...]] = MappingProxyType({
         "e_chr_calendar_map_silent",
         "event_chr_event_2023_silent",
     ),
+    "event_kingshill_sewers_01": (
+        "e_ks_01_blitz_payment_offer_silent",
+        "e_ks_01_rat_king_silent_cave",
+        "e_ks_01_rat_king_silent_crypt",
+        "e_ks_01_rat_king_silent_sewers",
+        "event_kingshill_sewers_01_challenge_01_cave_silent",
+        "event_kingshill_sewers_01_challenge_01_crypt_silent",
+        "event_kingshill_sewers_01_key_rats_silent",
+    ),
 })
 
 def christmas_calendar_day_index(
@@ -804,6 +848,9 @@ class EventLootEntry:
     # Per map difficulty (``..._Diff_{difficulty:02d}``); the last one serves
     # higher difficulties. Empty: always item_id.
     difficulty_items: tuple[str, ...] = ()
+    # Fixed stack size for map difficulties 0..9; the last amount serves any
+    # higher difficulty. Used for event drops with an authored tier table.
+    difficulty_amounts: tuple[int, ...] = ()
 
     def item_for_difficulty(self, difficulty: int) -> str:
         if not self.difficulty_items:
@@ -1182,16 +1229,59 @@ class EventCatalog:
                     seen_mini_kill_collectibles.add(item_key)
             if event.collectible_ranks and rank not in event.collectible_ranks:
                 continue
+            if (
+                event.template.resource_id.casefold()
+                == "event_kingshill_sewers_01"
+                and _map_key(map_id) == "e_ks_01_boss_01"
+                and collectible.item_id.casefold()
+                == "e_ks_01_event_progress_t0"
+                and rank == "worldboss"
+            ):
+                # The Sewers beneath the Castle final-boss progress is paid
+                # by its opened reward chest instead of directly by the kill.
+                continue
+            sewers_blitz_worm_progress = (
+                event.template.resource_id.casefold().startswith(
+                    "e_ks_blitz_"
+                )
+                and collectible.item_id.casefold()
+                == "e_ks_blitz_01_event_progress_01"
+                and str(monster_template_id).casefold()
+                == "e_ks_blitz_champion_worm_01"
+            )
             # An event map's final boss (Big Paws, Dragan, Wendigo...) always
-            # pays out; generate_monster_loot sizes its stack.
-            if rank != "worldboss" and rng.random() > event.collectible_drop_chance:
+            # pays out; generate_monster_loot sizes its stack. The Sewers Blitz
+            # champion worm is also guaranteed its event progression; its
+            # authored rank is Champion, so the generic 35% collectible roll
+            # would otherwise silently skip most kills.
+            if (
+                rank != "worldboss"
+                and not sewers_blitz_worm_progress
+                and rng.random() > event.collectible_drop_chance
+            ):
                 continue
             base = max(
                 1,
                 int(event.collectible_amount),
                 int(collectible.base_value),
             )
-            if event.template.resource_id.casefold() == "dragan_event_03":
+            if event.template.resource_id.casefold() == "event_kingshill_sewers_01":
+                base = _kingshill_sewers_progress_amount(
+                    monster_rank=rank,
+                    map_difficulty=map_difficulty,
+                )
+            elif sewers_blitz_worm_progress:
+                difficulty_index = _KINGSHILL_SEWERS_DIFFICULTY_INDEX_MAP.get(
+                    int(map_difficulty or 0), 0
+                )
+                blitz_amount = (
+                    _KINGSHILL_SEWERS_BLITZ_WORM_PROGRESS_AMOUNTS[
+                        difficulty_index
+                    ]
+                )
+                if blitz_amount is not None:
+                    base = blitz_amount
+            elif event.template.resource_id.casefold() == "dragan_event_03":
                 base = _dragan_progress_amount(
                     item_id=collectible.item_id,
                     map_ids=map_ids,
@@ -1474,9 +1564,16 @@ class EventCatalog:
                 low, high = entry.amounts.get(
                     rank, entry.amounts.get("monster", (1, 1))
                 )
+                amount = (
+                    entry.difficulty_amounts[
+                        max(0, min(int(map_difficulty), len(entry.difficulty_amounts) - 1))
+                    ]
+                    if entry.difficulty_amounts
+                    else rng.randint(low, high)
+                )
                 result.append((
                     entry.item_for_difficulty(map_difficulty),
-                    rng.randint(low, high),
+                    amount,
                 ))
         return tuple(result)
 
@@ -2129,6 +2226,13 @@ def _event_loot_lists(
                 if not 1 <= low <= high:
                     raise ValueError(f"event loot amount for {item_id!r} must be 1 <= min <= max")
                 amounts[str(rank)] = (low, high)
+            difficulty_amounts = tuple(
+                int(value) for value in entry.get("amount_by_difficulty") or ()
+            )
+            if any(value < 1 for value in difficulty_amounts):
+                raise ValueError(
+                    f"event loot difficulty amounts for {item_id!r} must be positive"
+                )
             if not chances:
                 raise ValueError(f"event loot entry {item_id!r} needs a chance")
             parsed.append(EventLootEntry(
@@ -2141,6 +2245,7 @@ def _event_loot_lists(
                     str(value).casefold() for value in entry.get("regions") or ()
                 ),
                 difficulty_items=tuple(difficulty_items),
+                difficulty_amounts=difficulty_amounts,
             ))
         result[str(list_id).casefold()] = tuple(parsed)
     return result

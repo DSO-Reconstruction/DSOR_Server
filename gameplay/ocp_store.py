@@ -272,6 +272,34 @@ DEFEAT_UNDEFEATABLE_UNLOCK_VICTORY_PRODUCT_KEY = (
     "101_dtu216_med_1.0000_0_NONE"
 )
 
+# Kingshill Sewers cash shop packages. They reuse the client-authored payment
+# package IDs and are only exposed while the main Sewers event is active.
+KINGSHILL_SEWERS_MUTATION_PACKAGE_PRODUCT_KEY = (
+    "8_mutation_purification_package_1_1.0000_0_NONE"
+)
+KINGSHILL_SEWERS_ATTIRE_PRODUCT_KEY = "8_event_pass_sewers_1.0000_0_NONE"
+KINGSHILL_SEWERS_ATTIRE_ITEMS_BY_CLASS = {
+    "warrior": "costume_event_pass_sewers_warrior",
+    "mage": "costume_event_pass_sewers_mage",
+    "ranger": "costume_event_pass_sewers_ranger",
+    "dwarf": "costume_event_pass_sewers_dwarf",
+}
+KINGSHILL_SEWERS_MATERIAL_CHEST_PRODUCT_KEY = (
+    "8_sewers_material_chest_1_1.0000_0_NONE"
+)
+KINGSHILL_SEWERS_SURPRISE_PACK_PRODUCT_KEY = (
+    "8_sewers_surprise_pack_1_1.0000_0_NONE"
+)
+KINGSHILL_SEWERS_DAILY_PACK_PRODUCT_KEY = (
+    "101_daily_sewers_pack_1_1.0000_0_NONE"
+)
+KINGSHILL_SEWERS_RAMPAGING_STORM_PRODUCT_KEY = (
+    "101_sewers_event_third_blitz_1.0000_0_NONE"
+)
+KINGSHILL_SEWERS_RAMPAGING_HURRICANE_PRODUCT_KEY = (
+    "101_sewers_event_full_blitz_1.0000_0_NONE"
+)
+
 # Every Defeat the Undefeatable purchase is only offered during its global
 # event, including the event-pass attire and the two lava packages whose
 # native PaymentPackages rows already carry this event id.
@@ -378,6 +406,15 @@ EVENT_OCP_PRODUCT_EVENT_IDS = {
     WINTER_SOLSTICE_CHEST_PRODUCT_KEY: "christmas_2012",
     WINTER_SOLSTICE_MATERIALS_CHEST_PRODUCT_KEY: "christmas_2012",
     TRIANGLE_OF_FORCES_PACKAGE_PRODUCT_KEY: "christmas_2012",
+    KINGSHILL_SEWERS_MUTATION_PACKAGE_PRODUCT_KEY: "event_kingshill_sewers_01",
+    KINGSHILL_SEWERS_ATTIRE_PRODUCT_KEY: "event_kingshill_sewers_01",
+    KINGSHILL_SEWERS_MATERIAL_CHEST_PRODUCT_KEY: "event_kingshill_sewers_01",
+    KINGSHILL_SEWERS_SURPRISE_PACK_PRODUCT_KEY: "event_kingshill_sewers_01",
+    KINGSHILL_SEWERS_DAILY_PACK_PRODUCT_KEY: "event_kingshill_sewers_01",
+    KINGSHILL_SEWERS_RAMPAGING_STORM_PRODUCT_KEY:
+        "e_ks_01_blitz_payment_offer_silent",
+    KINGSHILL_SEWERS_RAMPAGING_HURRICANE_PRODUCT_KEY:
+        "e_ks_01_blitz_payment_offer_silent",
 }
 
 EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
@@ -397,6 +434,7 @@ EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
         SARGON_ATTIRE_PRODUCT_KEY,
         ANNIVERSARY_ATTIRE_PRODUCT_KEY,
         WINTER_SOLSTICE_ATTIRE_PRODUCT_KEY,
+        KINGSHILL_SEWERS_ATTIRE_PRODUCT_KEY,
     )
 }
 EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
@@ -415,6 +453,7 @@ EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
     SARGON_ATTIRE_PRODUCT_KEY: SARGON_ATTIRE_ITEMS_BY_CLASS,
     ANNIVERSARY_ATTIRE_PRODUCT_KEY: ANNIVERSARY_ATTIRE_ITEMS_BY_CLASS,
     WINTER_SOLSTICE_ATTIRE_PRODUCT_KEY: WINTER_SOLSTICE_ATTIRE_ITEMS_BY_CLASS,
+    KINGSHILL_SEWERS_ATTIRE_PRODUCT_KEY: KINGSHILL_SEWERS_ATTIRE_ITEMS_BY_CLASS,
 }
 EVENT_ATTIRE_PRODUCT_KEYS = frozenset(EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT)
 EVENT_OCP_PRODUCT_KEYS = frozenset(EVENT_OCP_PRODUCT_EVENT_IDS)
@@ -635,6 +674,29 @@ DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS = {
     ),
     EASTER_DAILY_SURPRISE_SPRING_PACKAGE_PRODUCT_KEY: (
         ("daily_surprise_spring_package", 1),
+    ),
+    # Keep the native random reward containers intact so opening them uses
+    # their authored loot lists. The materials offer group is fixed contents.
+    KINGSHILL_SEWERS_MUTATION_PACKAGE_PRODUCT_KEY: (
+        ("mutation_purification_package", 1),
+    ),
+    KINGSHILL_SEWERS_MATERIAL_CHEST_PRODUCT_KEY: (
+        ("PRset_material_selectbox", 15),
+        ("PRset_material_general", 150),
+    ),
+    KINGSHILL_SEWERS_SURPRISE_PACK_PRODUCT_KEY: (
+        ("sewers_surprise_pack_box", 1),
+    ),
+    KINGSHILL_SEWERS_DAILY_PACK_PRODUCT_KEY: (
+        ("daily_sewers_pack_box", 1),
+    ),
+    KINGSHILL_SEWERS_RAMPAGING_STORM_PRODUCT_KEY: (
+        ("e_ks_blitz_challenge_key_01", 60),
+        ("e_ks_blitz_01_event_progress_01", 500),
+    ),
+    KINGSHILL_SEWERS_RAMPAGING_HURRICANE_PRODUCT_KEY: (
+        ("e_ks_blitz_challenge_key_01", 180),
+        ("e_ks_blitz_01_event_progress_01", 1500),
     ),
     ANNIVERSARY_STARTER_BUNDLE_PRODUCT_KEY: (
         ("e_anniversary_progress_chest_duria_00", 25),
