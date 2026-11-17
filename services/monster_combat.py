@@ -1291,6 +1291,7 @@ class MonsterCombatService(
                 victim = target_sessions.get(int(resolution.target_actor_id))
                 if victim is not None:
                     CharacterService._cancel_pending_logout(victim, "attacked")
+                    CharacterService._cancel_home_teleport(victim, "attacked by monster")
         with _post_commit_step("health-regeneration"):
             CharacterService._apply_base_health_regeneration(
                 target_sessions, health_regeneration

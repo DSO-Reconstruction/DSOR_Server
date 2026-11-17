@@ -236,6 +236,7 @@ class PlayerCombatService(PlayerCastTimingService):
 
     @staticmethod
     def _handle_bullet_skill(s: Session, payload: bytes) -> None:
+        CharacterService._cancel_home_teleport(s, "skill cast")
         if CharacterService._player_victim_feature_locked(
             s, "skills", "regularskills"
         ):
@@ -751,6 +752,7 @@ class PlayerCombatService(PlayerCastTimingService):
 
     @staticmethod
     def _handle_spatial_skill(s: Session, payload: bytes) -> None:
+        CharacterService._cancel_home_teleport(s, "skill cast")
         # A RegularSkills lock (stun, freeze) depends on the skill: the
         # debuff-cleansing escapes still cast. Judge it once decoded.
         if CharacterService._player_victim_feature_locked(s, "skills"):

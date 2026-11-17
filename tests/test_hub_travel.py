@@ -41,6 +41,7 @@ class HubTravelTests(unittest.TestCase):
 
     def _session(self, *, current_map: str, last_town: str) -> Session:
         session = Session(("127.0.0.1", 41000), self.server.sock)
+        session.connected = True
         session.gameplay_mode = True
         session.gameplay_map = current_map
         session.gameplay_character = SimpleNamespace(
@@ -97,6 +98,11 @@ class HubTravelTests(unittest.TestCase):
             CharacterServer, "_begin_map_transfer", return_value=True
         ) as begin:
             self.server._perform_map_travel(session, HUB_REQUEST, command_id=0x0061)
+            state = getattr(session, "gameplay_home_teleport_state", None)
+            if state is not None:
+                self.server._complete_home_teleport(
+                    session, state["generation"], state["instance_id"]
+                )
         begin.assert_called_once()
         return begin.call_args
 
@@ -169,6 +175,58 @@ class HubTravelTests(unittest.TestCase):
             begin.call_args.kwargs["spawn_position"],
             load_local_travel_point_position(DEFAULT_STATIC_DB_PATH, "a0200_kingscity"),
         )
+
+
+    def test_hub_teleport_starts_channeling_with_castbar_status_effect(self):
+        session = self._session(current_map="a0303_wildcave", last_town="b1100_hub")
+        with patch.object(CharacterServer, "_begin_map_transfer", return_value=True) as begin:
+            self.server._perform_map_travel(session, HUB_REQUEST, command_id=0x0061)
+        # Should not transfer immediately
+        begin.assert_not_called()
+        state = getattr(session, "gameplay_home_teleport_state", None)
+        self.assertIsNotNone(state)
+        self.assertEqual(state["target_map_id"], "b1100_hub")
+        entry = state["entry"]
+        self.assertEqual(entry.effect_id, 656)  # hometeleport
+        self.assertGreater(entry.total_duration, 0)
+        self.assertEqual(state["difficulty"], 0)
+
+    def test_hub_teleport_channeling_cancelled_by_movement(self):
+        session = self._session(current_map="a0303_wildcave", last_town="b1100_hub")
+        self.server._perform_map_travel(session, HUB_REQUEST, command_id=0x0061)
+        self.assertIsNotNone(getattr(session, "gameplay_home_teleport_state", None))
+        self.server._cancel_home_teleport(session, reason="player movement")
+        self.assertIsNone(getattr(session, "gameplay_home_teleport_state", None))
+
+    def test_hub_teleport_stationary_move_does_not_cancel(self):
+        from dso_server.protocol.gameplay_protocol import Move
+        session = self._session(current_map="a0303_wildcave", last_town="b1100_hub")
+        session.gameplay_last_move = Move.from_values((1.0, 2.0, 3.0), 0.0, 0.0, 0.0, 100, 20)
+        self.server._perform_map_travel(session, HUB_REQUEST, command_id=0x0061)
+        self.assertIsNotNone(getattr(session, "gameplay_home_teleport_state", None))
+
+        # Stationary move packet (same position, scalar=0, duration_ticks=20)
+        move = Move.from_values((1.0, 2.0, 3.0), 0.0, 0.0, 0.0, 101, 20)
+        payload = b"\x8b\x5f\x00" + move.encode_body()
+        self.server._handle_gameplay_move(session, payload)
+
+        # Teleport must NOT be cancelled
+        self.assertIsNotNone(getattr(session, "gameplay_home_teleport_state", None))
+
+    def test_hub_teleport_displacement_cancels_channeling(self):
+        from dso_server.protocol.gameplay_protocol import Move
+        session = self._session(current_map="a0303_wildcave", last_town="b1100_hub")
+        session.gameplay_last_move = Move.from_values((1.0, 2.0, 3.0), 0.0, 0.0, 0.0, 100, 20)
+        self.server._perform_map_travel(session, HUB_REQUEST, command_id=0x0061)
+        self.assertIsNotNone(getattr(session, "gameplay_home_teleport_state", None))
+
+        # Displaced move packet (> 0.5m away)
+        move = Move.from_values((3.0, 2.0, 3.0), 1.0, 0.0, 0.0, 101, 20)
+        payload = b"\x8b\x5f\x00" + move.encode_body()
+        self.server._handle_gameplay_move(session, payload)
+
+        # Teleport MUST be cancelled
+        self.assertIsNone(getattr(session, "gameplay_home_teleport_state", None))
 
 
 if __name__ == "__main__":
