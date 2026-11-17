@@ -25,6 +25,7 @@ import time
 
 from dso_server.runtime import resident_content
 from dso_server.protocol.inventory_codec import active_equipment_slots
+from dso_server.gameplay import pvp_arena_rules
 from dso_server.gameplay.item_random import deterministic_base_enchantment_rolls
 
 
@@ -1270,6 +1271,8 @@ _SCALED_ITEM_ATTRIBUTES = frozenset({
 def _item_instructions(
     database: StaticPlayerCombatDatabase,
     item,
+    *,
+    pvp_arena: bool = False,
 ) -> tuple[_Instruction, ...]:
     definition = database.items.get(str(item.template_id))
     if definition is None:
@@ -1394,6 +1397,10 @@ def _item_instructions(
         socket = database.items.get(socket_id)
         if socket is None:
             continue
+        # Arenas keep only the gems socketed into ordinary equipment; runes,
+        # jewels, Dragon Crests and rift-force emblems are inert there.
+        if pvp_arena and not pvp_arena_rules.socket_allowed(socket):
+            continue
         result.extend(
             _scaled_item_instruction(
                 database,
@@ -1437,6 +1444,8 @@ _ITEM_INSTRUCTION_DATABASES_MAXIMUM = 4
 def _cached_item_instructions(
     database: StaticPlayerCombatDatabase,
     item,
+    *,
+    pvp_arena: bool = False,
 ) -> tuple[_Instruction, ...]:
     """``_item_instructions`` for an item, computed once per item state.
 
@@ -1448,7 +1457,7 @@ def _cached_item_instructions(
     """
 
     database_key = id(database)
-    item_key = _combat_item_signature(item, ())[2:]
+    item_key = _combat_item_signature(item, ())[2:] + (bool(pvp_arena),)
 
     def entries_locked():
         stored = _ITEM_INSTRUCTION_CACHE.get(database_key)
@@ -1465,7 +1474,7 @@ def _cached_item_instructions(
         if cached is not None:
             entries.move_to_end(item_key)
             return cached
-    instructions = _item_instructions(database, item)
+    instructions = _item_instructions(database, item, pvp_arena=pvp_arena)
     with _ITEM_INSTRUCTION_CACHE_LOCK:
         entries = entries_locked()
         entries[item_key] = instructions
@@ -2097,6 +2106,9 @@ def calculate_player_combat_stats(
     inventory,
     modifier_sources: tuple[object, ...] = (),
     cache_owner=None,
+    pvp_arena: bool | None = None,
+    battleground_id: str = "",
+    banned_categories: frozenset[str] | None = None,
 ) -> PlayerCombatStats:
     """Calculate and structurally cache a player's current combat snapshot.
 
@@ -2107,9 +2119,33 @@ def calculate_player_combat_stats(
     item/status field consumed below, so equipment, socket, stack, talent, or
     database-revision changes produce a miss without fragile manual
     invalidation hooks.
+
+    ``pvp_arena`` switches the arena rule set on: only base item values,
+    enchantments and gems socketed into ordinary gear contribute, and the
+    rift-force lines are ignored. When it is left at ``None`` the owner's map
+    and match decide, so every live combat path is covered without threading
+    a flag through each caller.
     """
 
     sources = tuple(modifier_sources)
+    if pvp_arena is None:
+        pvp_arena = pvp_arena_rules.arena_active(cache_owner)
+    arena = bool(pvp_arena)
+    if not battleground_id and cache_owner is not None:
+        match = getattr(cache_owner, "gameplay_match", None)
+        battleground_id = str(
+            getattr(match, "battleground_id", "") or ""
+        )
+    banned = (
+        frozenset(banned_categories)
+        if banned_categories is not None
+        else (
+            pvp_arena_rules.banned_item_categories(
+                database_path, battleground_id
+            )
+            if arena and battleground_id else frozenset()
+        )
+    )
     if cache_owner is not None:
         # A calculation captured before a concurrent inventory commit must
         # not move the owner's cache back to an obsolete object. It remains a
@@ -2126,6 +2162,8 @@ def calculate_player_combat_stats(
                 level=level,
                 inventory=inventory,
                 modifier_sources=sources,
+                pvp_arena=arena,
+                banned_categories=banned,
             )
 
     database = prime_player_combat_database(database_path)
@@ -2139,6 +2177,8 @@ def calculate_player_combat_stats(
             _combat_modifier_signature(source, database)
             for source in sources
         ),
+        arena,
+        tuple(sorted(banned)),
     )
     with _player_combat_stats_cache_lock:
         cached = _player_combat_stats_cache.get(cache_key)
@@ -2151,6 +2191,8 @@ def calculate_player_combat_stats(
         level=level,
         inventory=inventory,
         modifier_sources=sources,
+        pvp_arena=arena,
+        banned_categories=banned,
     )
     with _player_combat_stats_cache_lock:
         existing = _player_combat_stats_cache.get(cache_key)
@@ -2171,6 +2213,8 @@ def _calculate_owner_player_combat_stats(
     level: int,
     inventory,
     modifier_sources: tuple[object, ...],
+    pvp_arena: bool = False,
+    banned_categories: frozenset[str] = frozenset(),
 ) -> PlayerCombatStats:
     """Resolve one session snapshot without structural work on cache hits."""
 
@@ -2220,6 +2264,8 @@ def _calculate_owner_player_combat_stats(
             str(class_name).casefold(),
             max(1, int(level)),
             source_signature,
+            bool(pvp_arena),
+            tuple(sorted(banned_categories)),
         )
         cached = cache.entries.get(cache_key)
         if cached is not None:
@@ -2241,6 +2287,8 @@ def _calculate_owner_player_combat_stats(
         level=level,
         inventory=inventory,
         modifier_sources=modifier_sources,
+        pvp_arena=pvp_arena,
+        banned_categories=banned_categories,
     )
 
     with cache.lock:
@@ -2391,6 +2439,8 @@ def _calculate_player_combat_stats(
     level: int,
     inventory,
     modifier_sources: tuple[object, ...] = (),
+    pvp_arena: bool = False,
+    banned_categories: frozenset[str] = frozenset(),
 ) -> PlayerCombatStats:
     """Uncached implementation for one immutable structural snapshot."""
 
@@ -2470,7 +2520,7 @@ def _calculate_player_combat_stats(
     # HealthPoints here inflated the player's pre-set max HP and made the
     # 20% MaxHealthPoints set tier appear to grant less than 20% when the new
     # set replaced those pieces.
-    mercenary_equipment_slots = {25, 26, 27}
+    mercenary_equipment_slots = pvp_arena_rules.MERCENARY_EQUIPMENT_SLOTS
     # The secondary essence stays equipped but does not act: only the active
     # slot's essence supplies its damage factor and ammunition type here, and
     # therefore to every cast that reads ``skill_modifier_sources``.
@@ -2493,13 +2543,24 @@ def _calculate_player_combat_stats(
         #   ignoring an already worn one is this server's choice.
         if int(getattr(item, "item_level", 0) or 0) > int(level) + equip_item_level_offset(str(database.database_path)):
             continue
+        # Rune trinkets, jewel trinkets, Dragon Crests and rift-force emblems
+        # do not act in an arena; their socketed items go with them.  The
+        # arena row's own ``BanItemCategory`` list is applied as well.
+        if pvp_arena and pvp_arena_rules.item_definition_disabled(definition):
+            continue
+        if banned_categories and pvp_arena_rules.category_banned(
+            definition, banned_categories
+        ):
+            continue
         allocations[item_id] = allocation
         equipped.append((item, definition))
 
     all_item_instructions = []
     item_instruction_groups = []
     for item, definition in equipped:
-        instructions = _cached_item_instructions(database, item)
+        instructions = _cached_item_instructions(
+            database, item, pvp_arena=pvp_arena,
+        )
         item_instruction_groups.append((item, definition, instructions))
         all_item_instructions.extend(instructions)
 
@@ -2508,6 +2569,20 @@ def _calculate_player_combat_stats(
         tuple(modifier_sources),
         level=max(1, int(level)),
     )
+    if pvp_arena:
+        # Rift-force bonuses (flat mitigation and echo damage) are off.
+        all_item_instructions = [
+            instruction for instruction in all_item_instructions
+            if not pvp_arena_rules.modifier_disabled(
+                instruction.modifier.kind
+            )
+        ]
+        active_instructions = tuple(
+            instruction for instruction in active_instructions
+            if not pvp_arena_rules.modifier_disabled(
+                instruction.modifier.kind
+            )
+        )
     combined = tuple(all_item_instructions) + active_instructions
     variables = _apply_variable_programs(
         combined, database.actor_variables

@@ -23,6 +23,11 @@ from dso_server.protocol.gameplay_protocol import StatusEffect, StatusEffectEntr
 from dso_server.protocol.inventory_codec import active_equipment_slots
 
 
+# The summoned Shadow Soul's amulet, cloak, and belt.  Their stats belong to
+# the companion, never to the player.
+MERCENARY_EQUIPMENT_SLOTS = frozenset({25, 26, 27})
+
+
 SERVER_TICKS_PER_SECOND = 25
 PERMANENT_SET_EFFECT_SECONDS = 36_000.0
 _TIER_PREFIX = re.compile(r"^\s*(\d+)\)(.*)$", re.DOTALL)
@@ -400,15 +405,24 @@ class ItemSetDatabase:
         )
 
     @staticmethod
-    def equipped_templates(inventory) -> tuple[str, ...]:
+    def equipped_templates(inventory, *, include_mercenary: bool = False) -> tuple[str, ...]:
         items = {
             int(item.item_id): str(item.template_id)
             for item in inventory.items
         }
-        # A parked secondary essence is equipped but inert.
+        # A parked secondary essence is equipped but inert.  The summoned
+        # Shadow Soul's amulet/cloak/belt belong to the companion: its own
+        # ``mercenary_*`` sets grant it bonuses, never the player, so they are
+        # excluded from the player's set counting by default.
+        allocations = active_equipment_slots(inventory)
+        if not include_mercenary:
+            allocations = {
+                item_id: slots for item_id, slots in allocations.items()
+                if not MERCENARY_EQUIPMENT_SLOTS.intersection(slots)
+            }
         return tuple(
             items[item_id]
-            for item_id in active_equipment_slots(inventory)
+            for item_id in allocations
             if int(item_id) in items
         )
 
@@ -418,9 +432,12 @@ class ItemSetDatabase:
         *,
         class_name: str = "",
         enabled_rulesets=(),
+        include_mercenary: bool = False,
     ) -> ItemSetEvaluation:
         return self.evaluate(
-            self.equipped_templates(inventory),
+            self.equipped_templates(
+                inventory, include_mercenary=include_mercenary,
+            ),
             class_name=class_name,
             enabled_rulesets=enabled_rulesets,
         )

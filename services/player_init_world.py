@@ -40,6 +40,7 @@ from dso_server.protocol.gameplay_protocol import (
 )
 from dso_server.protocol.skill_book_protocol import skill_book_snapshot
 from dso_server.gameplay.skin_unlocks import load_skin_unlock_customizations
+from dso_server.gameplay import pvp_arena_rules
 from dso_server.gameplay.stickerbook_state import stickerbook_info_entries
 from dso_server.gameplay.local_map_state import (
     CRAFTING_DUNGEON_LEADER_PRESENT_FLAG,
@@ -1036,7 +1037,12 @@ class PlayerInitializationWorldService:
                 )
             ),
             talent_categories=CharacterService._client_talent_selection_info(
-                s, TalentSelectionInfo(0, tuple(state.talent_categories)),
+                s, TalentSelectionInfo(
+                    0, pvp_arena_rules.filter_talent_categories(
+                        tuple(state.talent_categories),
+                        pvp_arena_rules.arena_active(state.gameplay_map),
+                    ),
+                ),
                 self.static_database_path,
             ).categories,
             talent_category_points=state.talent_category_points,
@@ -1361,6 +1367,9 @@ class PlayerInitializationWorldService:
                 CharacterService._activate_mercenary(
                     self, s, definition, source="map transition restore"
                 )
+        # A PvP arena entry switched the pet off.  Leaving it is a normal map
+        # load, so put it back; the mount crosses the transfer as a ride.
+        CharacterService._restore_active_pet(self, s)
 
     @staticmethod
     def _log_initialization_summary(

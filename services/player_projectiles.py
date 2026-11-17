@@ -178,6 +178,12 @@ class PlayerProjectileService:
                 critical_damage_multiplier=critical_damage_multiplier,
                 server_tick=server_tick,
             )
+        # The explosion aura walks monsters only; enemy players inside the
+        # radius have to be struck through the PvP pipeline.
+        CharacterService._schedule_pvp_ground_strike(
+            s, combat, explosion, tuple(receivers), position=position,
+            damage_range=player_damage_range, server_tick=server_tick,
+        )
         owners = {int(owner_actor_id): s}
         # A damaging hit carries its effects; only the others need sending.
         struck = {int(resolution.target_actor_id) for resolution in resolutions}

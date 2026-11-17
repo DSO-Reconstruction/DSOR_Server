@@ -8,6 +8,7 @@ import sqlite3
 from dso_server.persistence import readonly_db
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.gameplay import pvp_arena_rules
 from dso_server.protocol.membership_protocol import membership_is_active
 from dso_server.protocol.player_init_protocol import (
     UNLOCK_SKILL_TALENT_PRESELECTION_INFO_COMMAND,
@@ -141,10 +142,13 @@ class TalentService:
             inventory=inventory,
         )
         bonuses: dict[str, int] = {}
+        item_set_modifiers = tuple(getattr(
+            getattr(s, "gameplay_item_set_evaluation", None),
+            "modifiers", (),
+        ))
         for source in (
             *stats.skill_modifier_sources,
-            *getattr(getattr(s, "gameplay_item_set_evaluation", None),
-                     "modifiers", ()),
+            *item_set_modifiers,
         ):
             arguments = tuple(str(value) for value in getattr(source, "arguments", ()))
             if (
@@ -446,6 +450,21 @@ class TalentService:
                 s, entry, seconds
             )
 
+    @staticmethod
+    def _refuse_disabled_talent_in_arena(s: Session, category_id: int) -> bool:
+        """Whether this tree may not be allocated inside a PvP arena.
+
+        The arena runs without the Ancient Wisdom and Group trees; rebuilding
+        their rank effects from a live selection would put them back on the
+        client, so the allocation is refused while the player is inside.
+        """
+
+        if not pvp_arena_rules.arena_active(s):
+            return False
+        return int(category_id) in (
+            pvp_arena_rules.DISABLED_TALENT_CATEGORY_IDS
+        )
+
     def _handle_select_talent(
             self, s: Session, payload: bytes) -> None:
         """Apply the requested ranks in the active skill/wisdom/group/honor
@@ -462,6 +481,12 @@ class TalentService:
             if database is None:
                 raise ValueError("talent database is unavailable")
             definition = database.definition(request.talent_id)
+            if CharacterService._refuse_disabled_talent_in_arena(
+                s, definition.category_id
+            ):
+                raise ValueError(
+                    f"{request.talent_id!r} is not allocatable in a PvP arena"
+                )
             with s.flow_lock:
                 character = copy.deepcopy(s.gameplay_character)
                 categories = copy.deepcopy(s.gameplay_talent_categories)
@@ -1119,6 +1144,11 @@ class TalentService:
             category_points = tuple(s.gameplay_talent_category_points)
         if len(category_points) != 4:
             raise ValueError("player talent category points are incomplete")
+        # The client rebuilds every tree from this list, so an arena must not
+        # name the Ancient Wisdom or Group selections either.
+        categories = pvp_arena_rules.filter_talent_categories(
+            tuple(categories), pvp_arena_rules.arena_active(s)
+        )
         response, response_bits = encode_server_command_batch(
             (
                 # The client spends a point optimistically when it emits
@@ -1159,6 +1189,13 @@ class TalentService:
         try:
             request = decode_select_talent_preselection(payload)
             database = self.talent_database
+            if CharacterService._refuse_disabled_talent_in_arena(
+                s, int(request.category)
+            ):
+                raise ValueError(
+                    f"{TALENT_CATEGORY_NAMES[int(request.category)]} presets "
+                    "are not switchable in a PvP arena"
+                )
             with s.flow_lock:
                 membership = (
                     int(s.gameplay_membership_type),
@@ -1477,6 +1514,13 @@ class TalentService:
             if request.category not in (1, 2):
                 raise ValueError(
                     "ResetTalentCategory is valid only for Wisdom or Group"
+                )
+            if CharacterService._refuse_disabled_talent_in_arena(
+                s, int(request.category)
+            ):
+                raise ValueError(
+                    f"{TALENT_CATEGORY_NAMES[int(request.category)]} talents "
+                    "are not allocatable in a PvP arena"
                 )
             database = self.talent_database
             with s.flow_lock:

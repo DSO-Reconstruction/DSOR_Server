@@ -1570,7 +1570,8 @@ def test_a_ground_strike_ignores_players_out_of_reach():
         assert arena.target_health == 1000
 
 
-def test_second_chance_stuns_enemy_players_too():
+def test_second_chance_is_inert_in_a_pvp_arena():
+    # Arena rules: the Ancient Wisdom tree does not act in a battleground.
     with _Arena() as arena, patch.object(
         talent_events, "_owner_damage_range", return_value=(10.0, 10.0),
     ):
@@ -1579,7 +1580,7 @@ def test_second_chance_stuns_enemy_players_too():
         case.move(case.target, (26.5, 0.0, 53.57))
         talent_events.dispatch_talent_event(case.source, "nohealth", server_tick=300)
         stun = TALENTS.status_effect_wire_id("debuff_cc_stun")
-        assert (1, stun) in case.target.gameplay_victim_status_effect_instances
+        assert (1, stun) not in case.target.gameplay_victim_status_effect_instances
 
 
 def test_defeating_a_player_restores_a_share_of_health():

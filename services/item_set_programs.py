@@ -5,6 +5,7 @@ import sqlite3
 
 from dso_server.runtime import resident_content
 from dso_server.runtime.context import *
+from dso_server.protocol.item_set_protocol import ItemSetDatabase
 from dso_server.services.base import CharacterService
 from dso_server.gameplay.status_modifier_runtime import parse_modifier_program, resolve_modifier_value
 
@@ -119,6 +120,15 @@ def _children(path, _modified, _size, definition, column=1):
 
 
 def run_instant_item_set_programs(s, definitions, *, server_tick):
+    return _run_instant_item_set_programs(s, definitions, server_tick=server_tick)
+
+
+def accepted_item_set_programs(s, applied, *, server_tick):
+    """Run children and schedule terminal programs after releasing flow_lock."""
+    return _accepted_item_set_programs(s, applied, server_tick=server_tick)
+
+
+def _run_instant_item_set_programs(s, definitions, *, server_tick):
     """Execute set programs whose effect has no duration at all.
 
     Jewel of Glory's ``jewel_bgh2026_warrior_trigger`` (no
@@ -136,7 +146,7 @@ def run_instant_item_set_programs(s, definitions, *, server_tick):
         _terminal_programs(s, (definition,), server_tick=server_tick, reason="done")
 
 
-def accepted_item_set_programs(s, applied, *, server_tick):
+def _accepted_item_set_programs(s, applied, *, server_tick):
     """Run children and schedule terminal programs after releasing flow_lock."""
     path = database_path(s)
     accepted = []
@@ -467,6 +477,16 @@ def _effect_groups(path, effect_id):
                      if value.strip())
 
 
+def _base_equipped_templates(s, inventory):
+    """Equipped templates that can complete a set.
+
+    The Shadow Soul's amulet/cloak/belt belong to the companion, so they never
+    count for the player, in or out of an arena.
+    """
+
+    return ItemSetDatabase.equipped_templates(inventory)
+
+
 def cleanse_unequipped_items(s, previous_inventory, inventory):
     """Run ``ItemStatusEffectCleanse:unequip,<item>,<group>`` for removed items.
 
@@ -479,8 +499,8 @@ def cleanse_unequipped_items(s, previous_inventory, inventory):
     from dso_server.protocol.item_set_protocol import ItemSetDatabase
     if previous_inventory is None or inventory is None:
         return
-    removed = (set(ItemSetDatabase.equipped_templates(previous_inventory))
-               - set(ItemSetDatabase.equipped_templates(inventory)))
+    removed = (set(_base_equipped_templates(s, previous_inventory))
+               - set(_base_equipped_templates(s, inventory)))
     path = str(resident_content.resolved(database_path(s)))
     groups = set()
     for template_id in removed:

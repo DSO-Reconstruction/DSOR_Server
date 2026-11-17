@@ -15,6 +15,7 @@ from dso_server.protocol.item_customization_protocol import (
     APPLY_ITEM_CUSTOMIZATION_COMMAND, CUSTOMIZATION_SLOTS,
     decode_item_customization_changes, apply_item_customizations,
 )
+from dso_server.gameplay import pvp_arena_rules
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 from dso_server.gameplay.stickerbook_state import (
     STICKERBOOK_FAVORITE_SLOTS, collector_item_rewards,
@@ -309,6 +310,10 @@ class CustomizationService:
         """
 
         if definition is None or definition.kind != "mercenary":
+            return False
+        if pvp_arena_rules.arena_active(s):
+            # A PvP arena never hosts a Shadow Soul, and the arena entry
+            # already retired the one that was out.
             return False
         monster_id = ""
         for encoded in str(definition.start_modifiers or "").split(";"):
@@ -1604,6 +1609,14 @@ class CustomizationService:
             raise ValueError(
                 f"unsupported switchable sticker kind {definition.kind!r}"
             )
+        if definition.kind == "pet" and pvp_arena_rules.arena_active(s):
+            # Pets never act in a PvP arena; the arena entry retired the one
+            # that was out and kept the selection for the hub.
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] refused pet "
+                f"{definition.resource_id!r} in a PvP arena"
+            )
+            return
         resource_attribute = (
             "gameplay_active_costume"
             if definition.kind == "costume"
@@ -1887,6 +1900,68 @@ class CustomizationService:
             f"{definition.kind} {definition.resource_id!r}"
         )
 
+    @staticmethod
+    def _restore_active_pet(server, s: Session) -> None:
+        """Bring back the pet a PvP arena entry switched off.
+
+        The arena retires the pet's status entry so it neither shows nor
+        contributes; the saved selection stays in ``gameplay_active_pet``.
+        This runs on the following non-arena map load.
+        """
+
+        with s.flow_lock:
+            resource_id = str(getattr(s, "gameplay_active_pet", "") or "")
+            if (
+                not resource_id
+                or not bool(getattr(s, "gameplay_pet_restore_pending", False))
+                or getattr(s, "gameplay_active_pet_effect_instance_id", None)
+                is not None
+                or s.gameplay_combat_state is None
+                or pvp_arena_rules.arena_active(s)
+            ):
+                return
+            s.gameplay_pet_restore_pending = False
+        definition = load_cosmetic_definition(
+            server.static_database_path, resource_id
+        )
+        if definition is None or definition.kind != "pet":
+            return
+        with s.flow_lock:
+            last_move = s.gameplay_last_move
+            start_tick = (
+                (last_move.start_tick + 1) & 0xFFFFFFFF
+                if last_move is not None
+                else (server_time() // 40) & 0xFFFFFFFF
+            )
+            instance_id = s.gameplay_next_status_effect_instance_id
+            s.gameplay_next_status_effect_instance_id += 1
+            entry = sticker_status_entry(
+                definition,
+                instance_id=instance_id,
+                start_tick=start_tick,
+                actor_id=LOCAL_PLAYER_ACTOR_ID,
+                active=True,
+            )
+            s.gameplay_persistent_status_effects[instance_id] = entry
+            s.gameplay_active_pet_effect_instance_id = instance_id
+        value = StatusEffect(False, (entry,))
+        s.send_reliable_ordered(
+            encode_status_effect_batch(
+                value, actor_id=LOCAL_PLAYER_ACTOR_ID,
+            ),
+            track=True,
+            label="pet-restore",
+        )
+        if s.gameplay_presence_callback is not None:
+            s.gameplay_presence_callback(s, ("status_effects", (value,)))
+        CharacterService._refresh_player_combat_vitals(
+            s, inventory_changed=False,
+        )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] restored pet {resource_id!r} after "
+            f"leaving the arena"
+        )
+
     def _mount_duration_scale(self, s: Session) -> float:
         """The Mount group's duration factor from gear and talents."""
 
@@ -1905,6 +1980,17 @@ class CustomizationService:
     def _toggle_mount_definition(
             self, s: Session, definition, *, source: str) -> None:
         """Run the shared timed cast/ride flow for any authored mount source."""
+        if not pvp_arena_rules.mount_allowed(s):
+            # Mounts are only ridden outside arenas and on the 5v5 arenas.
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] refused mount "
+                f"{definition.stickerbook_resource_id!r} in a PvP arena "
+                f"({source})"
+            )
+            return
+        with s.flow_lock:
+            # A mount the player raises again supersedes the arena restore.
+            s.gameplay_mount_restore_pending = ""
         # Mounting must not interrupt an in-progress urban-area teleport.
         # Reusing the active mount is the normal unmount operation.
         with s.flow_lock:

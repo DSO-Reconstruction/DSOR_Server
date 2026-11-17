@@ -49,6 +49,7 @@ from dso_server.gameplay.status_runtime_catalog import (
     rebind_saved_status_effects,
 )
 from dso_server.gameplay.player_skill_timing import restore_player_skill_timing
+from dso_server.gameplay import pvp_arena_rules
 from dso_server.services.rune_progression import unlocked_rune_slots
 from dso_server.gameplay.endless_tower_effects import (
     endless_tower_player_buffs,
@@ -844,7 +845,13 @@ class PlayerInitializationStateService:
                 else default_glyph
             ),
             game_currencies=game_currency_balances,
-            knowledge_xp=state.talent_category_points[1],
+            # The Wisdom tree does not run in an arena. Its XP is what the
+            # client spends on that tree, so it is withheld there along with
+            # the selections; Honor (Fame) keeps its progression.
+            knowledge_xp=(
+                0 if pvp_arena_rules.arena_active(state.gameplay_map)
+                else state.talent_category_points[1]
+            ),
             fame_xp=state.talent_category_points[3],
             honor_points=honor_points,
             title_type=title_type,
@@ -1243,12 +1250,26 @@ class PlayerInitializationStateService:
                 persistent_status_effects[membership_effect.instance_id] = membership_effect
                 next_status_effect_instance_id += 1
         if persisted_state is not None:
+            # A PvP arena never hosts the pet; its selection is kept in the
+            # save and restored on the next ordinary map load.
+            arena_pet_resource = (
+                load_cosmetic_definition(
+                    self.static_database_path, persisted_state.active_pet
+                )
+                if pvp_arena_rules.arena_active(state.gameplay_map)
+                and persisted_state.active_pet else None
+            )
             for resource_id in (
                 persisted_state.active_costume,
                 persisted_state.active_pet,
                 *persisted_state.active_decorations,
             ):
                 if not resource_id:
+                    continue
+                if (
+                    arena_pet_resource is not None
+                    and resource_id == persisted_state.active_pet
+                ):
                     continue
                 # A costume worn straight from the bag is stored by its item
                 # template, which may not be a sticker-book collectible.
@@ -1392,6 +1413,16 @@ class PlayerInitializationStateService:
             collector_transition.next_instance_id
         )
         talent_effect_instance_ids = {}
+        # A PvP arena load starts without the Ancient Wisdom and Group trees:
+        # their rank effects never reach the client, and the saved selections
+        # rebuild them on the next ordinary map load.
+        arena_load = pvp_arena_rules.arena_active(state.gameplay_map)
+        disabled_talents = (
+            pvp_arena_rules.disabled_talent_effect_ids(
+                self.static_database_path
+            )
+            if arena_load else frozenset()
+        )
         for category_id, selection in active_talent_selections:
             definition = self.talent_database.definition(
                 selection.resource_id
@@ -1403,6 +1434,10 @@ class PlayerInitializationStateService:
                 first_instance_id=next_status_effect_instance_id,
                 server_tick=0,
             )
+            if any(
+                int(effect.effect_id) in disabled_talents for effect in effects
+            ):
+                continue
             effect_key = CharacterService._talent_effect_key(
                 category_id, selection.resource_id
             )
@@ -1436,7 +1471,7 @@ class PlayerInitializationStateService:
             )
         socket_effect_evaluation = None
         socket_effects = {}
-        if self.socket_effect_database is not None:
+        if self.socket_effect_database is not None and not arena_load:
             socket_effect_evaluation = (
                 self.socket_effect_database.evaluate_inventory(
                     state.inventory
@@ -1476,7 +1511,9 @@ class PlayerInitializationStateService:
         state.item_set_effects = item_set_effects
         state.socket_effect_evaluation = socket_effect_evaluation
         state.socket_effects = socket_effects
-        from dso_server.services.item_set_persistence import prepare_persistent_item_set_effects
+        from dso_server.services.item_set_persistence import (
+            prepare_persistent_item_set_effects,
+        )
         prepare_persistent_item_set_effects(state, self.static_database_path)
 
     def _resolve_initialization_vitals(
@@ -1484,18 +1521,32 @@ class PlayerInitializationStateService:
         """Separate persisted current vitality from calculated maxima."""
 
         character = state.character
+        # The arena's loadout rules already apply to the very first snapshot:
+        # the client's initialization packet carries these maxima.
+        arena = pvp_arena_rules.arena_active(state.gameplay_map)
         modifier_sources = (
             tuple(state.persistent_status_effects.values())
             + tuple(state.item_set_effects.values())
-            + tuple(state.socket_effects.values())
+            + (() if arena else tuple(state.socket_effects.values()))
             + tuple(getattr(state.item_set_evaluation, "modifiers", ()))
         )
+        if arena:
+            disabled_talents = pvp_arena_rules.disabled_talent_effect_ids(
+                self.static_database_path
+            )
+            modifier_sources = tuple(
+                entry for entry in modifier_sources
+                if not pvp_arena_rules.talent_effect_disabled(
+                    entry, disabled_talents
+                )
+            )
         stats = calculate_player_combat_stats(
             self.static_database_path,
             class_name=CLASS_NAMES[int(character.class_id)],
             level=max(1, int(character.level)),
             inventory=state.inventory,
             modifier_sources=modifier_sources,
+            pvp_arena=arena,
         )
         for entry in limited_admin_speed_entries(
             state.persistent_status_effects.values(),
@@ -1762,6 +1813,9 @@ class PlayerInitializationStateService:
             s.gameplay_mercenary_restore_pending = bool(
                 s.gameplay_active_mercenary
             )
+            # A PvP arena entry clears the active pet; every following map
+            # load re-arms the selection so the hub brings it back.
+            s.gameplay_pet_restore_pending = bool(s.gameplay_active_pet)
             decoration_resources = list(
                 persisted_state.active_decorations if persisted_state is not None else ()
             )
@@ -1868,4 +1922,5 @@ class PlayerInitializationStateService:
                 state.next_status_effect_instance_id
             )
         from dso_server.services.item_set_persistence import restore_persistent_item_set_effects
-        restore_persistent_item_set_effects(s, state, self.static_database_path)
+        if not pvp_arena_rules.arena_active(s.gameplay_map):
+            restore_persistent_item_set_effects(s, state, self.static_database_path)

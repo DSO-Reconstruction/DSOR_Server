@@ -1355,6 +1355,20 @@ class PlayerCombatService(PlayerCastTimingService):
                     source_skill_index=int(client_skill.skill_index),
                     player_damage_range=player_damage_range,
                 )
+                # A cast-time ground aura (Blade Dance's burning ground and
+                # friends) walks monsters only, so the enemy players inside it
+                # have to be struck here.
+                for visual in cast_visual_definitions:
+                    CharacterService._schedule_pvp_ground_strike(
+                        s,
+                        combat,
+                        visual,
+                        tuple(location_receivers),
+                        position=location_position_world,
+                        damage_range=player_damage_range,
+                        server_tick=int(client_skill.server_tick),
+                        delay=location_visual_delay,
+                    )
         for timer in timers:
             timer.start()
         for timer in pvp_timers:

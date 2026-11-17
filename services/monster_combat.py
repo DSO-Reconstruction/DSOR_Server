@@ -10,6 +10,7 @@ import traceback
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.runtime.monster_runtime_diagnostics import mark_phase
+from dso_server.gameplay import pvp_arena_rules
 from dso_server.gameplay.local_monster_state import (
     _grounded_spawn_position,
     is_new_year_dungeon_summon_controller,
@@ -1316,6 +1317,10 @@ class MonsterCombatService(
             CharacterService._dispatch_location_aura_applications(
                 target_sessions, location_aura_applications
             )
+        with _post_commit_step("pvp-ground-auras"):
+            CharacterService._strike_pvp_location_aura_ticks(
+                combat, target_sessions, server_tick=server_tick,
+            )
         with _post_commit_step("player-owned-resolutions"):
             CharacterService._dispatch_player_owned_resolutions(
                 combat, target_sessions, player_owned_resolutions
@@ -1607,6 +1612,32 @@ class MonsterCombatService(
         )
         # Entries are immutable; copy each container before iterating. Pure
         # modifier reads must not hold gameplay locks during evaluation.
+        if pvp_arena_rules.arena_active(s):
+            # Arena rules: the Ancient Wisdom/Group talent trees and the
+            # Shadow Soul's gear do not contribute; item sets keep working
+            # (the client computes them itself) while rune/jewel sockets and
+            # their cast rules stay inert.
+            disabled_effects = pvp_arena_rules.arena_disabled_effect_ids(
+                pvp_arena_rules.session_database_path(s)
+            )
+            persistent = tuple(
+                entry for entry in s.gameplay_persistent_status_effects.values()
+                if int(getattr(entry, "effect_id", -1)) not in disabled_effects
+            )
+            runtime = tuple(
+                entry for entry, _expires_at
+                in tuple(s.gameplay_runtime_status_effects.values())
+                if int(getattr(entry, "effect_id", -1)) not in disabled_effects
+            )
+            return (
+                victim_sources
+                + persistent
+                + runtime
+                + tuple(s.gameplay_item_set_effects.values())
+                + tuple(getattr(
+                    s.gameplay_item_set_evaluation, "modifiers", ()
+                ))
+            )
         sources = (
             tuple(s.gameplay_persistent_status_effects.values())
             + tuple(s.gameplay_item_set_effects.values())
