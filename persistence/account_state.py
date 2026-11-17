@@ -1628,6 +1628,14 @@ class AccountStateStore:
             state = self.states.get(int(character_id))
             return str(state.saved_at or "") if state is not None else ""
 
+    def map_access_id_for_character(self, character_id: int) -> str:
+        """Read only a character's saved map access row (region + difficulty)."""
+        with self.lock:
+            state = self.states.get(int(character_id))
+            if state is None:
+                return ""
+            return str(state.map_access_id or state.map_id or "")
+
     def get_profile(self, character_id: int) -> CharacterProfile | None:
         """Read current roster metadata without copying a player's inventory."""
 
