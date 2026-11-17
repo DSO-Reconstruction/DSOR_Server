@@ -3109,7 +3109,38 @@ class RakNetServer:
             f"[{self.service_name}] {s.addr[0]} identified as "
             f"{record.username!r} (account {record.account_id})"
         )
+        self._evict_stale_account_sessions(s)
         return record
+
+    def _evict_stale_account_sessions(self, keep: Session) -> None:
+        """Disconnect other connections that logged in as the same account.
+
+        Credential login rotates the session GUID and revokes the previous
+        one, but a client already in the world never repeats its hello, so it
+        would keep playing beside the new login. Every connection that still
+        carries the superseded GUID is therefore closed. Map transfers reuse
+        the same GUID, so they are never mistaken for a second login.
+        """
+
+        if keep.account_id is None or keep.login_session_id is None:
+            return
+        stale = [
+            other
+            for other in self.sessions.snapshot()
+            if other is not keep
+            and other.addr != keep.addr
+            and other.account_id == keep.account_id
+            and other.login_session_id != keep.login_session_id
+            and not other.retired
+            and not other.retiring
+        ]
+        for other in stale:
+            self.drop_session(
+                other,
+                reason=(
+                    f"account {keep.account_id} logged in from another client"
+                ),
+            )
 
     # Hooks for subclasses
     def _on_hello(self, s: Session, payload: bytes): pass
