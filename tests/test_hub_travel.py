@@ -228,6 +228,24 @@ class HubTravelTests(unittest.TestCase):
         # Teleport MUST be cancelled
         self.assertIsNone(getattr(session, "gameplay_home_teleport_state", None))
 
+    def test_hub_teleport_dismounts_active_mount(self):
+        from gameplay.local_mount_state import (
+            find_mount, begin_mount_cast, begin_mount_ride
+        )
+        session = self._session(current_map="a0303_wildcave", last_town="b1100_hub")
+        defn = find_mount("epicmount_steambike_01", DEFAULT_STATIC_DB_PATH)
+        cast = begin_mount_cast(defn, instance_id=10, start_tick=1)
+        ride = begin_mount_ride(cast, instance_id=11)
+        session.gameplay_mount_ride = ride
+        session.gameplay_persistent_status_effects[11] = ride
+
+        self.assertIsNotNone(session.gameplay_mount_ride)
+        self.server._perform_map_travel(session, HUB_REQUEST, command_id=0x0061)
+
+        # Mount must be removed and teleport channeling must be started
+        self.assertIsNone(session.gameplay_mount_ride)
+        self.assertIsNotNone(getattr(session, "gameplay_home_teleport_state", None))
+
 
 if __name__ == "__main__":
     unittest.main()
