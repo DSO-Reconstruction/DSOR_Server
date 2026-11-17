@@ -1783,9 +1783,14 @@ class PlayerInitializationStateService:
                     if entry.effect_id == definition.status_effect_wire_id
                 )
                 group = definition.exclusive_group.casefold() or definition.resource_id
-                s.gameplay_active_decorations[group] = (
-                    resource_id, max(matching) if matching else None,
-                )
+                if state.mount_ride is not None and group == "vanitygroundmarker":
+                    for m_inst in matching:
+                        s.gameplay_persistent_status_effects.pop(m_inst, None)
+                    s.gameplay_active_decorations[group] = (resource_id, None)
+                else:
+                    s.gameplay_active_decorations[group] = (
+                        resource_id, max(matching) if matching else None,
+                    )
             for resource_id, attribute in (
                 (
                     s.gameplay_active_costume,

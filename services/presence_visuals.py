@@ -296,12 +296,15 @@ class PresenceVisualService:
             persistent = copy.deepcopy(
                 session.gameplay_persistent_status_effects
             )
-            visual_instance_ids = (
+            visual_instance_ids = [
                 session.gameplay_active_costume_effect_instance_id,
                 session.gameplay_active_pet_effect_instance_id,
-                *(instance for _resource, instance
-                  in session.gameplay_active_decorations.values()),
-            )
+            ]
+            for group, (_resource, instance) in session.gameplay_active_decorations.items():
+                if ride is not None and group == "vanitygroundmarker":
+                    continue
+                if instance is not None:
+                    visual_instance_ids.append(instance)
         entries = []
         for state in (ride, cast):
             if state is None:
