@@ -673,8 +673,19 @@ class PVPCombatService:
             return hit_plan
         accepted.sort(key=lambda row: (row[0], row[1]))
         budget = max(1, int(getattr(geometry, "impact_count", 1)))
+        # A player hit must land when the projectile does, not when the cast is
+        # accepted.  ``plan_entity_skill`` derives that from the travel
+        # distance over the authored velocity; mirror it here so a fallback
+        # impact is not an instant hit at the caster's feet.
+        velocity = float(getattr(geometry, "projectile_velocity", 0.0) or 0.0)
+        static_delay = float(getattr(geometry, "hit_frame", 0.0) or 0.0) / 25.0
+        emit_delay = float(getattr(hit_plan, "emit_delay", 0.0) or 0.0)
         impacts = tuple(
-            EntityImpact(entity, 0, reach, reach, 0.0)
+            EntityImpact(
+                entity, 0, reach, reach,
+                emit_delay + (reach / velocity if velocity > 1e-6
+                              else static_delay),
+            )
             for reach, _actor_id, entity in accepted[:budget]
         )
         return replace(hit_plan, impacts=impacts)
@@ -1132,6 +1143,7 @@ class PVPCombatService:
                         player_critical_damage_multiplier
                     ),
                     server_tick=int(skill.server_tick),
+                    extra_delay=delay,
                 )
         if not timers and (explicit_target_actor_ids or targets):
             print(

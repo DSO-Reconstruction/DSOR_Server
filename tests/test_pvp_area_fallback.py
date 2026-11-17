@@ -70,3 +70,16 @@ def test_an_existing_plan_is_untouched():
         source_position=(0.0, 0.0, 0.0),
     )
     assert result is original
+
+
+def test_a_fallback_impact_lands_when_the_projectile_arrives():
+    geometry = SimpleNamespace(
+        attack_range=0.0, hit_range=0.0, projectile_range=20.0,
+        impact_count=1, projectile_velocity=20.0, hit_frame=0.0,
+    )
+    entities = (CombatEntity(11, (0.0, 0.0, -10.0), 0.75),)
+    result = CharacterService._pvp_area_fallback_plan(
+        combat(), plan(geometry), entities, skill=SimpleNamespace(aim_angle=0.0),
+        source_position=(0.0, 0.0, 0.0),
+    )
+    assert [impact.delay for impact in result.impacts] == pytest.approx([0.5])

@@ -114,15 +114,20 @@ class PlayerProjectileService:
             position, owner_actor_id: int, cast_id: int, skill_index: int,
             player_damage_range, server_tick: int,
             critical_hit_chance: float = 0.0,
-            critical_damage_multiplier: float = 2.0) -> None:
+            critical_damage_multiplier: float = 2.0,
+            extra_delay: float = 0.0) -> None:
         """Set off a bullet's explosion its authored delay after the hit.
 
         Explosive Arrow hits, then explodes 0.1 s later: the monsters inside
         take the arrow and, afterwards, the explosion as a hit of its own
-        (``LocalCombatState.delayed_bullet_explosions``).
+        (``LocalCombatState.delayed_bullet_explosions``).  ``extra_delay``
+        postpones the whole sequence by the projectile's travel time so a PvP
+        explosion is anchored to the arrow's landing, not to the cast.
         """
 
-        delay_seconds = explosion.delay_ticks / SERVER_TICKS_PER_SECOND
+        travel = max(0.0, float(extra_delay))
+        delay_seconds = explosion.delay_ticks / SERVER_TICKS_PER_SECOND + travel
+        travel_ticks = round(travel * SERVER_TICKS_PER_SECOND)
         timer_key = (
             "bullet-explosion", int(owner_actor_id), int(cast_id),
             int(explosion.effect_id),
@@ -144,6 +149,7 @@ class PlayerProjectileService:
                     "critical_damage_multiplier": float(critical_damage_multiplier),
                     "server_tick": (
                         int(server_tick) + int(explosion.delay_ticks)
+                        + travel_ticks
                     ) & 0xFFFFFFFF,
                 },
             )
