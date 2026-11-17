@@ -10,12 +10,17 @@ from dso_server.gameplay.ocp_store import (
     EVENT_OCP_PRODUCT_EVENT_IDS,
     EVENT_OCP_PRODUCT_KEYS,
     EVENT_ATTIRE_PRODUCT_KEYS,
+    membership_package_days,
     ocp_product_event_is_active,
 )
 from dso_server.runtime.context import *
 from dso_server.runtime.admin_commands import track_inventory_reward
 from dso_server.runtime.transport import Session
 from dso_server.services.events import EVENT_NOTIFICATION_KIND
+from dso_server.protocol.membership_protocol import (
+    MEMBERSHIP_UPDATE_COMMAND, membership_updates,
+)
+from dso_server.services.membership_items import extend_membership_session
 from dso_server.protocol.shop_protocol import OFFER_COMMAND
 from dso_server.protocol.commerce_protocol import PurchasePrice
 
@@ -639,6 +644,8 @@ class CommerceService:
     def _settle_ocp_booking(
             self, s: Session, pending_key: str, reward) -> None:
         purchased_dragon_bones = []
+        membership_status = None
+        membership_plan = None
         with s.flow_lock:
             claims = dict(s.gameplay_timed_offer_purchases)
             if not claims.get(pending_key, 0):
@@ -652,7 +659,26 @@ class CommerceService:
             character = copy.deepcopy(s.gameplay_character)
             commands = []
             purchased_andermant = reward.amount if reward.item_id == 'money_rc' else 0
-            if reward.item_id == 'money_rc':
+            membership = membership_package_days(reward.offer_id)
+            if membership is not None:
+                tier, days = membership
+                membership_plan, effect_entries = extend_membership_session(
+                    s, self.static_database_path, tier, days,
+                )
+                commands.extend(
+                    ServerCommand(
+                        MEMBERSHIP_UPDATE_COMMAND, update,
+                        LOCAL_PLAYER_ACTOR_ID,
+                    )
+                    for update in membership_updates(*membership_plan)
+                )
+                if effect_entries:
+                    membership_status = StatusEffect(False, effect_entries)
+                    commands.append(ServerCommand(
+                        STATUS_EFFECT_COMMAND, membership_status,
+                        LOCAL_PLAYER_ACTOR_ID,
+                    ))
+            elif reward.item_id == 'money_rc':
                 if currency is None:
                     raise ValueError('player currency state is not initialized')
                 balance = int(currency.currency_type) + reward.amount
@@ -782,6 +808,10 @@ class CommerceService:
                     'ocp-booking-settlement'
                 ),
             )
+        if membership_status is not None and s.gameplay_presence_callback is not None:
+            s.gameplay_presence_callback(s, ("status_effects", (membership_status,)))
+        if membership_plan is not None:
+            CharacterService._refresh_premium_bags(s)
         for item_id, amount in purchased_dragon_bones:
             _achievement_on_purchased_dragon_bones(
                 self, s, item_id, amount,
@@ -797,10 +827,17 @@ class CommerceService:
                 # wallet credit, so pending or duplicate confirmations cannot
                 # award event progress.
                 event_progress_callback(s, 'money_rc', purchased_andermant)
-        print(
-            f'[{GAMEPLAY_SERVICE_NAME}] settled OCP booking: '
-            f'{reward.amount}x {reward.item_id}'
-        )
+        if membership_plan is not None:
+            print(
+                f'[{GAMEPLAY_SERVICE_NAME}] settled OCP membership package '
+                f'{reward.offer_id}: tier {membership_plan[0]} until '
+                f'{membership_plan[1]}'
+            )
+        else:
+            print(
+                f'[{GAMEPLAY_SERVICE_NAME}] settled OCP booking: '
+                f'{reward.amount}x {reward.item_id}'
+            )
 
     def _handle_notification_action(
             self, s: Session, payload: bytes) -> None:

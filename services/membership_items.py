@@ -108,6 +108,24 @@ def sync_membership_effect(session, database_path) -> tuple:
     return tuple(entries)
 
 
+def extend_membership_session(
+    session, database_path, tier: int, days: int,
+) -> tuple[tuple, tuple]:
+    """Add time to one plan in place; returns (plan, status-effect entries).
+
+    Call under the session's flow lock. The caller publishes the commands and
+    persists the account.
+    """
+    plan = extend_membership(
+        session.gameplay_membership_type, session.gameplay_membership_expires_at,
+        session.gameplay_membership_active, session.gameplay_membership_premium_expires_at,
+        tier, days,
+    )
+    (session.gameplay_membership_type, session.gameplay_membership_expires_at,
+     session.gameplay_membership_active, session.gameplay_membership_premium_expires_at) = plan
+    return plan, sync_membership_effect(session, database_path)
+
+
 def handle_membership_item_use(server, session, item_id: int) -> bool:
     """Use one Premium or Deluxe teaser; False when the item is not one."""
     with session.flow_lock:
@@ -120,16 +138,11 @@ def handle_membership_item_use(server, session, item_id: int) -> bool:
         builder = InventoryMutationBuilder(inventory, session.gameplay_next_item_id)
         builder.consume(item_id)
         mutation = builder.finish()
-        plan = extend_membership(
-            session.gameplay_membership_type, session.gameplay_membership_expires_at,
-            session.gameplay_membership_active, session.gameplay_membership_premium_expires_at,
-            tier, days,
-        )
         session.gameplay_inventory = mutation.inventory
         session.gameplay_next_item_id = mutation.next_item_id
-        (session.gameplay_membership_type, session.gameplay_membership_expires_at,
-         session.gameplay_membership_active, session.gameplay_membership_premium_expires_at) = plan
-        effect_entries = sync_membership_effect(session, server.static_database_path)
+        plan, effect_entries = extend_membership_session(
+            session, server.static_database_path, tier, days
+        )
         commands = [
             ServerCommand(INVENTORY_INFO_COMMAND, mutation.delta, LOCAL_PLAYER_ACTOR_ID),
             ServerCommand(INVENTORY_INFO_COMMAND, mutation.final, LOCAL_PLAYER_ACTOR_ID),
