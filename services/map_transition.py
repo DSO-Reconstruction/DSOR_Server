@@ -2132,8 +2132,8 @@ class MapTransitionService:
     ) -> None:
         """Start channeling the Urban Area Teleportation ability (P key)."""
         CharacterService._cancel_home_teleport(s, "re-triggered")
-        CharacterService._cancel_mount_cast(s, "home teleport started")
-        CharacterService._remove_mount_ride(s, reason="home teleport started")
+        # Mounting and summoning stay available during the channel; a ride
+        # already active is kept across the urban-area teleport.
         with s.flow_lock:
             if getattr(s, "gameplay_exit_transition_started", False):
                 return

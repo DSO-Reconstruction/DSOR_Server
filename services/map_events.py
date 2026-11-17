@@ -20,6 +20,8 @@ from contextlib import closing
 from functools import lru_cache
 from pathlib import Path
 
+from dso_server.protocol.pvp_match_protocol import battleground_ruleset
+
 from dso_server.runtime import progression_queue, resident_content
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -50,6 +52,7 @@ from dso_server.gameplay.local_map_state import (
 from dso_server.gameplay.boss_encounter_policy import (
     APPROACH_BOSS_MAPS,
     is_boss_spawn_template,
+    load_map_close_signals,
     load_map_encounter_policy,
     resolve_boss_template_id,
     select_boss_spawn_rows,
@@ -423,6 +426,30 @@ def _monster_kill_score(static_database_path: str, template_id: str) -> int:
         _log(f"kill-score template {template_id!r} is missing from static data")
         return 0
     return max(0, int(row[0] or 0))
+
+
+MAP_ACCESS_UNLOCK_KILLS = 5
+
+
+@lru_cache(maxsize=512)
+def _is_dungeon_instance_map(static_database_path: str, map_id: str) -> bool:
+    """Return whether ``map_id`` is a closed dungeon or boss instance."""
+
+    if battleground_ruleset(map_id) is not None:
+        return False
+    try:
+        with sqlite3.connect(
+            f"file:{Path(static_database_path).as_posix()}?mode=ro",
+            uri=True,
+        ) as database:
+            row = database.execute(
+                "SELECT AreaType FROM _Template_MapTemplate "
+                "WHERE MapTemplate=? LIMIT 1",
+                (str(map_id),),
+            ).fetchone()
+    except (OSError, sqlite3.Error):
+        return False
+    return row is not None and str(row[0] or "") in {"ClosedPVE", "Boss"}
 
 
 @lru_cache(maxsize=128)
@@ -4422,6 +4449,32 @@ class MapEventService:
         if mortis is not None:
             mortis.killed(monsters)
         if runtime is not None:
+            with runtime.lock:
+                runtime.map_access_kill_count += len(monsters)
+                seal_now = (
+                    runtime.map_access_kill_count >= MAP_ACCESS_UNLOCK_KILLS
+                    and not runtime.reentry_sealed
+                )
+                if seal_now:
+                    runtime.reentry_sealed = True
+                unlock_now = (
+                    seal_now and not runtime.map_access_unlock_sent
+                )
+                if unlock_now:
+                    runtime.map_access_unlock_sent = True
+                kill_count = runtime.map_access_kill_count
+            if (
+                seal_now
+                and _is_dungeon_instance_map(
+                    self.static_database_path, runtime.map_id
+                )
+            ):
+                if unlock_now:
+                    self._announce_map_access_locked(runtime)
+                _log(
+                    f"map-access unlocked after {kill_count} monster kills "
+                    f"on {runtime.map_id}"
+                )
             if CharacterService._is_fractured_planes_run(self, s):
                 with runtime.lock:
                     runtime.fractured_planes_kill_seen = True
@@ -5270,6 +5323,18 @@ class MapEventService:
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
+        if (
+            _is_dungeon_instance_map(self.static_database_path, runtime.map_id)
+            and (
+                runtime.map_access_unlock_sent
+                or runtime.reentry_sealed
+                or runtime.run_completed
+            )
+        ):
+            # Per-session send so a group member who enters after BOSS_spawn
+            # or after the five-kill unlock still receives the dungeon-instance
+            # flag that unlocks Enter. A fresh run waits for its own trigger.
+            self._send_map_access_locked_to(s)
         self._reconcile_newmoon_city_portals(s, runtime)
         if CharacterService._is_fractured_planes_run(self, s):
             s.gameplay_fractured_planes_run = True
@@ -8803,7 +8868,6 @@ class MapEventService:
         if applied <= 0:
             return
 
-        CharacterService._cancel_respawn_protection(s)
         with s.flow_lock:
             if s.gameplay_inventory is inventory:
                 inventory.health_points = float(current)
@@ -8924,7 +8988,6 @@ class MapEventService:
             current = int(health[0])
         if applied <= 0:
             return
-        CharacterService._cancel_respawn_protection(s)
         with s.flow_lock:
             if s.gameplay_inventory is inventory:
                 inventory.health_points = float(current)
@@ -9152,7 +9215,6 @@ class MapEventService:
             if applied <= 0:
                 continue
             applied_any = True
-            CharacterService._cancel_respawn_protection(s)
             with s.flow_lock:
                 if s.gameplay_inventory is inventory:
                     inventory.health_points = float(current)
@@ -9284,7 +9346,6 @@ class MapEventService:
             current = int(health[0])
         if applied <= 0:
             return
-        CharacterService._cancel_respawn_protection(s)
         with s.flow_lock:
             if s.gameplay_inventory is inventory:
                 inventory.health_points = float(current)
@@ -9656,7 +9717,6 @@ class MapEventService:
             server_tick = _session_game_tick(s)
         if current == previous and not death_saved:
             return
-        CharacterService._cancel_respawn_protection(s)
         resolution = DamageResolution(
             target_actor_id=CharacterService._viewer_actor_id(
                 s, player_actor_id,
@@ -9738,7 +9798,6 @@ class MapEventService:
             current = int(health[0])
         if applied <= 0:
             return
-        CharacterService._cancel_respawn_protection(s)
         with s.flow_lock:
             if s.gameplay_inventory is inventory:
                 inventory.health_points = float(current)
@@ -11905,6 +11964,8 @@ class MapEventService:
             f"enabled sets {transition.enabled_sets}, "
             f"disabled sets {transition.disabled_sets}"
         )
+        if str(definition.key).casefold() == "boss_spawn":
+            self._announce_map_access_locked(runtime)
         self._apply_map_event_transition(runtime, transition)
         # if definition.wave_label is not None:
         #     self._broadcast_wave_message(
@@ -11942,6 +12003,17 @@ class MapEventService:
 
     def _apply_map_event_transition(self, runtime: MapEventRuntime,
                                     transition) -> None:
+        if transition.active and transition.event.key.startswith("boss_death"):
+            # The instance's completion condition is done. The players who are
+            # still inside keep that run, but it takes no new members: the
+            # next entry starts a fresh instance.
+            with runtime.lock:
+                completed_now = not runtime.run_completed
+                runtime.run_completed = True
+            if completed_now:
+                # BOSS_death and BOSS_death_dtu both start on these maps.
+                # Announce the clear only once per run.
+                self._announce_cleared_dungeon(runtime)
         sessions = self._map_event_sessions(runtime)
         if transition.enabled_sets:
             # Cache newly gated exits without activating them. The event-set
@@ -12099,6 +12171,82 @@ class MapEventService:
         mortis = mortis_arena(self, runtime)
         if mortis is not None:
             mortis.transition(transition)
+
+    def _announce_map_access_locked(self, runtime) -> None:
+        """Send the empty ``MapAccessLocked`` command retail sends at BOSS_spawn.
+
+        The recorded Heredur's Mausoleum capture carries
+        ``85 3b 01 00 00 00 00 ff`` (command 0x013b, actor 0) immediately
+        before the BOSS_spawn EventUpdate. The client handler only flips its
+        map-access flag, and the map-access widget reads that flag while
+        deciding whether the selected dungeon is still the live location.
+        """
+
+        with runtime.lock:
+            runtime.map_access_unlock_sent = True
+        for session in self._map_event_sessions(runtime):
+            self._send_map_access_locked_to(session)
+
+    def _send_map_access_locked_to(self, session) -> None:
+        packet = bytes((0x85, 0x3B, 0x01)) + (0).to_bytes(4, "little") + b"\xff"
+        try:
+            session.send_reliable_ordered(
+                (packet, len(packet) * 8),
+                track=True,
+                label="map-access-locked",
+            )
+        except Exception as exc:
+            _log(f"map-access-locked delivery failed: {exc}")
+
+    def _announce_cleared_dungeon(self, runtime) -> None:
+        """Tell the client the dungeon is cleared, as retail does.
+
+        ``Achievements::ClearDungeonInfoCommand`` carries the clear time and
+        the physical map id. The map-access window and the achievement tooltip
+        read this clear state; our server previously never sent it.
+        """
+        seconds = max(1, int(time.perf_counter() - runtime.created_at))
+        try:
+            packet, packet_bits = encode_server_command_batch((
+                ServerCommand(
+                    CLEAR_DUNGEON_INFO_COMMAND,
+                    ClearDungeonInfo(seconds, runtime.map_id),
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+            ), include_terminator=True)
+        except (KeyError, ValueError) as exc:
+            _log(f"could not encode dungeon clear info: {exc}")
+            return
+        sessions = self._map_event_sessions(runtime)
+        for session in sessions:
+            try:
+                session.send_reliable_ordered(
+                    (packet, packet_bits),
+                    track=True,
+                    label="dungeon-clear-info",
+                )
+            except Exception as exc:
+                _log(f"dungeon clear info delivery failed: {exc}")
+        _log(
+            f"announced cleared dungeon {runtime.map_id} "
+            f"({seconds}s) to {len(sessions)} player(s)"
+        )
+        if sessions:
+            # CloseSignal marks the run finished on the client. Without it the
+            # map-access window still treats the map as the live location and
+            # disables Enter; retail fires these signals when the map closes.
+            for signal_id in load_map_close_signals(
+                self.static_database_path, runtime.map_id
+            ):
+                if not signal_id.casefold().startswith("close_map"):
+                    continue
+                try:
+                    self._emit_map_signal(sessions[0], runtime, signal_id)
+                except Exception as exc:
+                    _log(
+                        f"close signal {signal_id!r} failed on "
+                        f"{runtime.map_id}: {exc}"
+                    )
 
     def _silence_arena_hazards(self, runtime, sessions) -> None:
         """Stop the statue turrets guarding a boss once it is defeated.

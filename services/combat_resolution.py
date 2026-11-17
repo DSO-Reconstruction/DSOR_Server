@@ -189,8 +189,27 @@ class CombatResolutionService:
     """Combat result serialization and status-effect delivery."""
 
     @staticmethod
+    def _respawn_protection_active(s: Session) -> bool:
+        """Whether the ten-second revive protection is still on this player."""
+
+        instance_id = getattr(s, "gameplay_respawn_protection_instance_id", None)
+        if instance_id is None:
+            return False
+        with s.flow_lock:
+            runtime = s.gameplay_runtime_status_effects.get(int(instance_id))
+            if runtime is None:
+                s.gameplay_respawn_protection_instance_id = None
+                return False
+            expiry = runtime[1]
+            if expiry is not None and float(expiry) <= time.perf_counter():
+                s.gameplay_runtime_status_effects.pop(int(instance_id), None)
+                s.gameplay_respawn_protection_instance_id = None
+                return False
+        return True
+
+    @staticmethod
     def _cancel_respawn_protection(s: Session) -> None:
-        """Remove the temporary revive protection after this player hits."""
+        """Remove the temporary revive protection on the first skill cast."""
 
         timers = []
         with s.flow_lock:
@@ -288,11 +307,6 @@ class CombatResolutionService:
         inventory = s.gameplay_inventory
         if combat is None or character is None or inventory is None:
             return 0
-        if any(
-            int(getattr(resolution, "damage", 0)) > 0
-            for resolution in resolutions
-        ):
-            CharacterService._cancel_respawn_protection(s)
         stats = calculate_player_combat_stats(
             combat.encounter.static_database_path,
             cache_owner=s,

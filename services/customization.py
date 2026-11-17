@@ -1840,8 +1840,7 @@ class CustomizationService:
     def _toggle_mount_definition(
             self, s: Session, definition, *, source: str) -> None:
         """Run the shared timed cast/ride flow for any authored mount source."""
-        CharacterService._cancel_home_teleport(s, "mount action")
-
+        # Mounting must not interrupt an in-progress urban-area teleport.
         # Reusing the active mount is the normal unmount operation.
         with s.flow_lock:
             active_ride = s.gameplay_mount_ride

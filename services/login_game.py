@@ -129,10 +129,16 @@ class LoginGameServer(DispatchService, LoginServer):
                 ruleset = 1
             else:
                 access_id = map_access.request_map_id
+                template_ruleset = self.static_database.gameplay_map_ruleset(
+                    map_name
+                )
+                # ClosedPVE/Boss maps keep their dungeon ruleset for every
+                # difficulty tier. Other selected access variants use the
+                # Gauntlet ruleset 0.
                 ruleset = (
-                    0
-                    if access_id != map_name
-                    else self.static_database.gameplay_map_ruleset(map_name)
+                    template_ruleset
+                    if template_ruleset == 10
+                    else (0 if access_id != map_name else template_ruleset)
                 )
         else:
             ruleset = 5 if map_name in {"a0200_kingscity", "b1200_hub"} else 1
@@ -140,6 +146,8 @@ class LoginGameServer(DispatchService, LoginServer):
         # A battleground is announced with its own ruleset; the map template
         # calls the arena ClosedPVE, so the override cannot come from there.
         ruleset = battleground_ruleset(map_name) or ruleset
+        # A recorded retail Heredur map load used is_instance=False for a
+        # boss-dungeon entry; the instance behaviour comes from ruleset 10.
         return MapLoadPacket(
             map_name,
             ruleset=ruleset,

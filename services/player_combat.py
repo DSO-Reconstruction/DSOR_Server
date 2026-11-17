@@ -78,6 +78,9 @@ class PlayerCombatService(PlayerCastTimingService):
                 if not committed:
                     rollback_player_skill_timing(s, reservation)
                 return False
+        # The revive protection must drop on the first accepted skill, before
+        # its projectile or damage lands.
+        CharacterService._cancel_respawn_protection(s)
         return True
 
     @staticmethod
