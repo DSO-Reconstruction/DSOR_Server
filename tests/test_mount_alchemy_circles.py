@@ -159,6 +159,65 @@ class MountAlchemyCirclesTests(unittest.TestCase):
         self.assertIsNotNone(new_inst)
         self.assertIn(new_inst, self.session.gameplay_persistent_status_effects)
 
+    def test_toggling_off_circle_while_mounted_sends_removal(self):
+        definition, circle_effect = self._equip_circle()
+        defn = find_mount("epicmount_steambike_01", DEFAULT_STATIC_DB_PATH)
+        cast = begin_mount_cast(defn, instance_id=10, start_tick=1)
+        ride = begin_mount_ride(cast, instance_id=11)
+        self.session.gameplay_mount_ride = ride
+        self.session.gameplay_persistent_status_effects[11] = ride
+
+        self.service._toggle_switchable_sticker(self.session, definition)
+
+        self.assertNotIn(
+            "vanitygroundmarker", self.session.gameplay_active_decorations
+        )
+        self.assertNotIn(
+            circle_effect.instance_id,
+            self.session.gameplay_persistent_status_effects,
+        )
+        self.assertTrue(any(
+            label == "decoration-mounted-toggle"
+            for _, label in self.sent_messages
+        ))
+
+    def test_changing_circle_while_mounted_restores_only_the_new_one(self):
+        _, old_effect = self._equip_circle("vanity_groundmarker_01")
+        defn = find_mount("epicmount_steambike_01", DEFAULT_STATIC_DB_PATH)
+        cast = begin_mount_cast(defn, instance_id=10, start_tick=1)
+        ride = begin_mount_ride(cast, instance_id=11)
+        self.session.gameplay_mount_ride = ride
+        self.session.gameplay_persistent_status_effects[11] = ride
+
+        new_definition = load_sticker_definition(
+            DEFAULT_STATIC_DB_PATH, "vanity_groundmarker_02"
+        )
+        self.service._toggle_switchable_sticker(
+            self.session, new_definition
+        )
+
+        self.assertEqual(
+            self.session.gameplay_active_decorations["vanitygroundmarker"],
+            ("vanity_groundmarker_02", None),
+        )
+        self.assertNotIn(
+            old_effect.instance_id,
+            self.session.gameplay_persistent_status_effects,
+        )
+        self.assertTrue(any(
+            label == "decoration-mounted-toggle"
+            for _, label in self.sent_messages
+        ))
+
+        CharacterService._remove_mount_ride(self.session, reason="dismount")
+        resource_id, instance_id = (
+            self.session.gameplay_active_decorations["vanitygroundmarker"]
+        )
+        self.assertEqual(resource_id, "vanity_groundmarker_02")
+        self.assertIn(
+            instance_id, self.session.gameplay_persistent_status_effects
+        )
+
     def test_presence_visuals_hides_circle_while_mounted(self):
         _, circle_effect = self._equip_circle()
 
