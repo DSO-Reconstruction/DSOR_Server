@@ -1,5 +1,9 @@
 """Server-side routing for event attire Euro offers."""
 
+from dso_server.protocol.membership_protocol import (
+    DELUXE_MEMBERSHIP, PREMIUM_MEMBERSHIP,
+)
+
 # The native payment packages already exist in static.db4 with their event
 # attire names and icons. Reuse each as one offer and choose the
 # character-specific item on the server; do not synthesize static database
@@ -815,3 +819,42 @@ LEGACY_FULL_MOON_ATTIRE_PRODUCT_ITEMS = {
     "8_costume_event_pass_fullmoon_dwarf_1.0000_0_NONE":
         "costume_event_pass_fullmoon_dwarf",
 }
+
+# Native Premium/Deluxe membership payment packages for 1, 3, 6 and 12 months.
+# The client already renders each _Template_PaymentPackages row with its title,
+# icon and duration, so these offers reuse those keys. Each entry maps the
+# product key to (tier, days, teaser template, teaser amount): settlement grants
+# the membership time directly, and the teaser item names give the purchase
+# confirmation popup a real item template to show.
+MEMBERSHIP_PACKAGE_REWARDS = {
+    "6_premiumgold_1.0000_1_MONTHS": (
+        PREMIUM_MEMBERSHIP, 30, "premium_teaser_one_month", 1,
+    ),
+    "6_premiumgold_1.0000_3_MONTHS": (
+        PREMIUM_MEMBERSHIP, 90, "premium_teaser_one_month", 3,
+    ),
+    "6_premiumgold_1.0000_6_MONTHS": (
+        PREMIUM_MEMBERSHIP, 180, "premium_teaser_one_month", 6,
+    ),
+    "6_premiumgold_1.0000_12_MONTHS": (
+        PREMIUM_MEMBERSHIP, 365, "premium_teaser_one_year", 1,
+    ),
+    "6_deluxe_1.0000_1_MONTHS": (
+        DELUXE_MEMBERSHIP, 30, "deluxe_teaser_one_month", 1,
+    ),
+    "6_deluxe_1.0000_3_MONTHS": (
+        DELUXE_MEMBERSHIP, 90, "deluxe_teaser_one_month", 3,
+    ),
+    "6_deluxe_1.0000_6_MONTHS": (
+        DELUXE_MEMBERSHIP, 180, "deluxe_teaser_one_month", 6,
+    ),
+    "6_deluxe_1.0000_12_MONTHS": (
+        DELUXE_MEMBERSHIP, 365, "deluxe_teaser_one_year", 1,
+    ),
+}
+
+
+def membership_package_days(product_key: str) -> tuple[int, int] | None:
+    """(membership tier, days) for a membership package product key."""
+    entry = MEMBERSHIP_PACKAGE_REWARDS.get(str(product_key))
+    return (entry[0], entry[1]) if entry is not None else None

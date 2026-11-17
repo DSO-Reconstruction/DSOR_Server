@@ -1,8 +1,12 @@
 """Logout and authoritative map-transition service.
 
-``LogoutCommand`` (0x0063) is the client's switch-character / logout
-request.  In a hub (ruleset 5) it is granted at once.  Anywhere else the
-switch happens after a countdown of :data:`LOGOUT_COUNTDOWN_SECONDS` that
+``LogoutCommand`` (0x0063) is the client's switch-character / logout request:
+- field_20: Cancel flag (dialog cancelled or player moved)
+- field_21: Logout vs SwitchCharacter flag
+  * False: Switch Character (returns to character selection)
+  * True:  Logout (exits game completely)
+In a hub (ruleset 5) it is granted at once.  Anywhere else the
+action happens after a countdown of :data:`LOGOUT_COUNTDOWN_SECONDS` that
 any hit on the player cancels (monster attacks and PvP hits both route
 through ``_cancel_pending_logout``).  The client is told about the
 countdown with ``PlayerLogoutInfoCommand`` (seconds, 0 on cancel); no
@@ -19,7 +23,13 @@ import sqlite3
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
-from dso_server.protocol.gameplay_protocol import encode_player_logout_info
+from dso_server.protocol.gameplay_protocol import (
+    STATUS_EFFECT_COMMAND,
+    StatusEffect,
+    StatusEffectEntry,
+    encode_player_logout_info,
+    encode_status_effect_batch,
+)
 from dso_server.gameplay.map_event_state import (
     SARGON_SHADOWFORT_MAP_ID,
     SARGON_THRONE_ROOM_MAP_ID,
@@ -39,6 +49,25 @@ from dso_server.services.map_events import _PARALLEL_WORLD_TIERED_EXIT_MAPS
 
 
 LOGOUT_COUNTDOWN_SECONDS = 10.0
+HOME_TELEPORT_DEFAULT_DURATION = 6.0
+HOME_TELEPORT_STATUS_EFFECT_ID = 656
+
+
+def _load_home_teleport_config(database_path: str) -> tuple[int, float]:
+    try:
+        with sqlite3.connect(
+            f"file:{Path(database_path).resolve().as_posix()}?mode=ro", uri=True
+        ) as database:
+            row = database.execute(
+                "SELECT rowid - 1, COALESCE(StatusEffectDuration, 6.0) "
+                "FROM _Template_StatusEffect WHERE Id='hometeleport' LIMIT 1"
+            ).fetchone()
+            if row is not None:
+                return int(row[0]), float(row[1] or 6.0)
+    except Exception:
+        pass
+    return HOME_TELEPORT_STATUS_EFFECT_ID, HOME_TELEPORT_DEFAULT_DURATION
+
 
 # This regional route can report the client's current f4102 map as ExitURL
 # while the selected MapId or server route points at the hub.
@@ -377,8 +406,11 @@ class MapTransitionService:
             return
 
         # The dialog's cancel (or the player walking away) during the countdown.
-        # UNVERIFIED: the first flag as "cancel" is the DSOR client's reading of
-        # the two booleans; no capture of the retail client's cancel exists.
+        # Verified from dro_client64.exe:
+        # - field_20: Cancel flag (1 when player moves/cancels the countdown)
+        # - field_21: Logout vs SwitchCharacter flag
+        #   * False: Switch Character (edx == 2, returning to character selection)
+        #   * True:  Logout (edx == 0, exiting the game)
         if request.field_20:
             self._cancel_pending_logout(s, "cancelled by the player")
             return
@@ -393,8 +425,9 @@ class MapTransitionService:
                 else 1
             )
         except (OSError, ValueError) as exc:
+            action_desc = "logout" if request.field_21 else "switch-character"
             print(
-                f"[{GAMEPLAY_SERVICE_NAME}] rejected switch-character "
+                f"[{GAMEPLAY_SERVICE_NAME}] rejected {action_desc} "
                 f"request: cannot classify map {gameplay_map!r}: {exc}"
             )
             return
@@ -402,17 +435,21 @@ class MapTransitionService:
             if s.gameplay_exit_transition_started:
                 return
             pending = getattr(s, "gameplay_logout_timer", None)
+        action_name = "logout" if request.field_21 else "switch-character"
         if pending is not None:
             print(
-                f"[{GAMEPLAY_SERVICE_NAME}] switch-character already counting "
+                f"[{GAMEPLAY_SERVICE_NAME}] {action_name} already counting "
                 f"down on {gameplay_map!r}; repeated request ignored"
             )
             return
         if ruleset == 5:
-            self._switch_character(s, request, reason="hub")
+            if request.field_21:
+                self._logout_player(s, request, reason="hub")
+            else:
+                self._switch_character(s, request, reason="hub")
             return
 
-        # Outside a hub the switch is granted after a countdown that any hit
+        # Outside a hub the action is granted after a countdown that any hit
         # on the player cancels.
         with s.flow_lock:
             generation = int(getattr(s, "gameplay_logout_generation", 0)) + 1
@@ -434,7 +471,7 @@ class MapTransitionService:
             (packet, packet_bits), track=True, label="logout-countdown",
         )
         print(
-            f"[{GAMEPLAY_SERVICE_NAME}] switch-character on {gameplay_map!r} "
+            f"[{GAMEPLAY_SERVICE_NAME}] {action_name} on {gameplay_map!r} "
             f"(ruleset {ruleset}) in {LOGOUT_COUNTDOWN_SECONDS:.0f} s unless "
             "the player is attacked"
         )
@@ -456,7 +493,10 @@ class MapTransitionService:
             current = True
         if not current:
             return
-        self._switch_character(s, request, reason="countdown elapsed")
+        if request.field_21:
+            self._logout_player(s, request, reason="countdown elapsed")
+        else:
+            self._switch_character(s, request, reason="countdown elapsed")
 
     @staticmethod
     def _cancel_pending_logout(s: Session, reason: str) -> bool:
@@ -480,6 +520,78 @@ class MapTransitionService:
             f"cancelled: {reason}"
         )
         return True
+
+    @staticmethod
+    def _cancel_home_teleport(s: Session, reason: str = "disturbed") -> bool:
+        """Cancel an in-progress home teleport channeling."""
+        flow_lock = getattr(s, "flow_lock", None)
+        already_locked = False
+        if flow_lock is not None:
+            is_owned = getattr(flow_lock, "_is_owned", None)
+            if callable(is_owned):
+                try:
+                    already_locked = bool(is_owned())
+                except Exception:
+                    already_locked = False
+
+        if already_locked:
+            state = getattr(s, "gameplay_home_teleport_state", None)
+            if state is None:
+                return False
+            s.gameplay_home_teleport_state = None
+            timer_key = state.get("timer_key")
+            timer = (
+                s.gameplay_projectile_timers.pop(timer_key, None)
+                if timer_key
+                else None
+            )
+            entry = state.get("entry")
+            server_tick = (
+                getattr(s, "gameplay_chase_server_tick", 0) & 0xFFFFFFFF
+            )
+        else:
+            with s.flow_lock:
+                state = getattr(s, "gameplay_home_teleport_state", None)
+                if state is None:
+                    return False
+                s.gameplay_home_teleport_state = None
+                timer_key = state.get("timer_key")
+                timer = (
+                    s.gameplay_projectile_timers.pop(timer_key, None)
+                    if timer_key
+                    else None
+                )
+                entry = state.get("entry")
+                server_tick = (
+                    getattr(s, "gameplay_chase_server_tick", 0) & 0xFFFFFFFF
+                )
+        if timer is not None:
+            timer.cancel()
+        if entry is not None and s.connected:
+            cleanup = CharacterService._consumable_cleanup_entry(
+                entry, server_tick=server_tick
+            )
+            packet, packet_bits = encode_status_effect_batch(
+                StatusEffect(clear_existing=False, entries=(cleanup,)),
+                actor_id=LOCAL_PLAYER_ACTOR_ID,
+            )
+            if already_locked:
+                threading.Thread(
+                    target=lambda: s.send_reliable_ordered(
+                        packet, track=True, label="home-teleport-cancel"
+                    ),
+                    daemon=True,
+                ).start()
+            else:
+                s.send_reliable_ordered(
+                    packet, track=True, label="home-teleport-cancel"
+                )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] home teleport channeling "
+            f"cancelled: {reason}"
+        )
+        return True
+
 
     def _switch_character(self, s: Session, request, *, reason: str) -> None:
         with s.flow_lock:
@@ -517,6 +629,37 @@ class MapTransitionService:
             f"[{GAMEPLAY_SERVICE_NAME}] accepted LogoutCommand "
             f"({request!r}; {reason}); returning through {login_address} to "
             "character selection"
+        )
+
+    def _logout_player(self, s: Session, request, *, reason: str) -> None:
+        with s.flow_lock:
+            if s.gameplay_exit_transition_started:
+                return
+            s.gameplay_exit_transition_started = True
+            s.gameplay_logout_timer = None
+            s.gameplay_client_command_state[0x0063] = request
+        CharacterService._discard_client_location_effects(s)
+        CharacterService._accept_gameplay_state_command(s, 0x0063)
+        CharacterService._quest_leave_map(self, s)
+        if s.gameplay_presence_callback is not None:
+            s.gameplay_presence_callback(s, "disconnect")
+        with s.gameplay_inventory_action_lock:
+            CharacterService._persist_gameplay_session(
+                self,
+                s,
+                reason="logout source",
+                flush=True,
+            )
+
+        # Notify the client to disconnect and exit
+        s.send_reliable_ordered(
+            b"\x15",
+            track=True,
+            label="logout-disconnect",
+        )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] accepted LogoutCommand "
+            f"({request!r}; {reason}); disconnecting client to exit game"
         )
 
     def _begin_map_transfer(
@@ -1837,6 +1980,17 @@ class MapTransitionService:
                 and not CharacterService._travel_map_unlocked(self, s, map_id)):
             print(f"[{GAMEPLAY_SERVICE_NAME}] rejected locked map travel to {map_id!r}")
             return
+
+        if str(request.map_id).casefold() == "hub":
+            self._start_home_teleport(
+                s,
+                target_map_id=map_id,
+                spawn_position=spawn_position,
+                difficulty=difficulty,
+                command_id=command_id,
+            )
+            return
+
         CharacterService._accept_gameplay_state_command(s, command_id)
         # A travel stone's journey costs the destination's TravelCosts (gold;
         # gui.window travelmap travelCostHeading). Checked before leaving,
@@ -1966,3 +2120,166 @@ class MapTransitionService:
             "armed the next local gameplay connection and sent "
             f"SwitchMapCommand to {self.advertised_host}:2190"
         )
+
+    def _start_home_teleport(
+        self,
+        s: Session,
+        *,
+        target_map_id: str,
+        spawn_position,
+        difficulty: int = 0,
+        command_id: int = 0x0061,
+    ) -> None:
+        """Start channeling the Urban Area Teleportation ability (P key)."""
+        CharacterService._cancel_home_teleport(s, "re-triggered")
+        # Mounting and summoning stay available during the channel; a ride
+        # already active is kept across the urban-area teleport.
+        with s.flow_lock:
+            if getattr(s, "gameplay_exit_transition_started", False):
+                return
+
+            configured_duration = os.getenv("DSO_HOME_TELEPORT_DURATION")
+            if configured_duration is not None:
+                duration_sec = float(configured_duration)
+            else:
+                _, duration_sec = _load_home_teleport_config(
+                    self.static_database_path
+                )
+
+            if duration_sec <= 0.0:
+                CharacterService._accept_gameplay_state_command(s, command_id)
+                CharacterService._begin_map_transfer(
+                    self,
+                    s,
+                    target_map_id,
+                    spawn_position=spawn_position,
+                    reason="fast-travel",
+                    scaling_difficulty=difficulty,
+                )
+                return
+
+            generation = s.gameplay_chase_generation
+            server_tick = (
+                getattr(s, "gameplay_chase_server_tick", 0) & 0xFFFFFFFF
+            )
+            duration_ticks = max(1, int(duration_sec * SERVER_TICKS_PER_SECOND))
+            end_tick = (server_tick + duration_ticks) & 0xFFFFFFFF
+
+            instance_id = int(
+                getattr(s, "gameplay_next_status_effect_instance_id", 1)
+            )
+            s.gameplay_next_status_effect_instance_id = instance_id + 1
+
+            effect_id, _ = _load_home_teleport_config(
+                self.static_database_path
+            )
+            entry = StatusEffectEntry(
+                effect_id=effect_id,
+                instance_id=instance_id,
+                end_tick=end_tick,
+                tick_interval=SERVER_TICKS_PER_SECOND,
+                start_tick=server_tick,
+                stack_index=0,
+                total_duration=duration_ticks,
+                source_level=100,
+                source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+                update_timing=False,
+                stacked=False,
+                permanent=False,
+                has_details=True,
+                values=(),
+            )
+
+            timer_key = ("home-teleport", instance_id)
+            timer = s.gameplay_deadline_timer(
+                duration_sec,
+                self._complete_home_teleport,
+                args=(s, generation, instance_id),
+            )
+            timer.daemon = True
+            s.gameplay_projectile_timers[timer_key] = timer
+
+            last_move = getattr(s, "gameplay_last_move", None)
+            initial_position = (
+                last_move.relative_position if last_move is not None else None
+            )
+            s.gameplay_home_teleport_state = {
+                "generation": generation,
+                "instance_id": instance_id,
+                "target_map_id": target_map_id,
+                "spawn_position": spawn_position,
+                "difficulty": difficulty,
+                "command_id": command_id,
+                "entry": entry,
+                "timer_key": timer_key,
+                "start_time": time.perf_counter(),
+                "initial_position": initial_position,
+            }
+
+        packet, packet_bits = encode_status_effect_batch(
+            StatusEffect(clear_existing=False, entries=(entry,)),
+            actor_id=LOCAL_PLAYER_ACTOR_ID,
+        )
+        s.send_reliable_ordered(
+            packet, track=True, label="home-teleport-start"
+        )
+        CharacterService._accept_gameplay_state_command(s, command_id)
+        timer.start()
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] started home teleport to "
+            f"{target_map_id!r} ({duration_sec}s channeling)"
+        )
+
+    def _complete_home_teleport(
+        self, s: Session, generation: int, instance_id: int
+    ) -> None:
+        """Finish channeling and perform the map transfer to the city hub."""
+        with s.flow_lock:
+            state = getattr(s, "gameplay_home_teleport_state", None)
+            if state is None:
+                return
+            if (
+                generation != s.gameplay_chase_generation
+                or state.get("instance_id") != instance_id
+                or not s.connected
+                or getattr(s, "gameplay_exit_transition_started", False)
+            ):
+                return
+
+            timer_key = state.get("timer_key")
+            if timer_key:
+                s.gameplay_projectile_timers.pop(timer_key, None)
+
+            s.gameplay_home_teleport_state = None
+            target_map_id = state["target_map_id"]
+            spawn_position = state["spawn_position"]
+            difficulty = state["difficulty"]
+            entry = state["entry"]
+            server_tick = (
+                getattr(s, "gameplay_chase_server_tick", 0) & 0xFFFFFFFF
+            )
+
+        cleanup = CharacterService._consumable_cleanup_entry(
+            entry, server_tick=server_tick
+        )
+        packet, packet_bits = encode_status_effect_batch(
+            StatusEffect(clear_existing=False, entries=(cleanup,)),
+            actor_id=LOCAL_PLAYER_ACTOR_ID,
+        )
+        s.send_reliable_ordered(
+            packet, track=True, label="home-teleport-cleanup"
+        )
+
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] home teleport channeling completed, "
+            f"transferring to {target_map_id!r}"
+        )
+        CharacterService._begin_map_transfer(
+            self,
+            s,
+            target_map_id,
+            spawn_position=spawn_position,
+            reason="fast-travel",
+            scaling_difficulty=difficulty,
+        )
+

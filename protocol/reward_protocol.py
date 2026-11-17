@@ -78,6 +78,7 @@ from dso_server.gameplay.ocp_store import (
     WINTER_EVENT_SMALL_BUNDLE_PRODUCT_KEY,
     WINTER_EVENT_BIG_BUNDLE_PRODUCT_KEY,
     MASCOT_PACKAGE_PRODUCT_KEY,
+    MEMBERSHIP_PACKAGE_REWARDS,
     WINTER_SOLSTICE_CHEST_PRODUCT_KEY,
     WINTER_SOLSTICE_MATERIALS_CHEST_PRODUCT_KEY,
     TRIANGLE_OF_FORCES_PACKAGE_PRODUCT_KEY,
@@ -330,6 +331,11 @@ def resolve_ocp_booking_reward(
         )
     ):
         raise ValueError(f'unknown OCP offer {offer_id!r}')
+    membership = MEMBERSHIP_PACKAGE_REWARDS.get(offer_id)
+    if membership is not None:
+        return OCPBookingReward(
+            offer_id, membership[2], membership[3]
+        )
     if offer_id == CHARACTER_ALTERATION_PRODUCT_KEY:
         return OCPBookingReward(offer_id, 'characterStyleEdit', 1)
     if offer_id in EVENT_ATTIRE_PRODUCT_KEYS:
@@ -1168,6 +1174,16 @@ LOCAL_OCP_OFFERS = (
         180_288, 9.90, False, "€",
         DESERT_OF_ESSENCES_ATTIRE_PRODUCT_KEY, "", "",
     ),
+    # Premium and Deluxe membership packages reuse the client's own 1, 3, 6 and
+    # 12 month payment packages; settlement grants the membership time.
+    OCPOffer(180_289, 9.90, False, "€", "6_premiumgold_1.0000_1_MONTHS", "", ""),
+    OCPOffer(180_290, 9.90, False, "€", "6_premiumgold_1.0000_3_MONTHS", "", ""),
+    OCPOffer(180_291, 9.90, False, "€", "6_premiumgold_1.0000_6_MONTHS", "", ""),
+    OCPOffer(180_292, 9.90, False, "€", "6_premiumgold_1.0000_12_MONTHS", "", ""),
+    OCPOffer(180_293, 9.90, False, "€", "6_deluxe_1.0000_1_MONTHS", "", ""),
+    OCPOffer(180_294, 9.90, False, "€", "6_deluxe_1.0000_3_MONTHS", "", ""),
+    OCPOffer(180_295, 9.90, False, "€", "6_deluxe_1.0000_6_MONTHS", "", ""),
+    OCPOffer(180_296, 9.90, False, "€", "6_deluxe_1.0000_12_MONTHS", "", ""),
 )
 
 CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"

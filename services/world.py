@@ -853,6 +853,7 @@ class WorldService:
             CharacterService._player_victim_movement_speed_multiplier(s)
         )
         correction = None
+        cancel_home_teleport = False
         with s.flow_lock:
             s.gameplay_revive_movement_correction_until = 0.0
             previous_move = s.gameplay_last_move
@@ -900,11 +901,33 @@ class WorldService:
                         ),
                         frame,
                     )
+            teleport_state = getattr(
+                s, "gameplay_home_teleport_state", None
+            )
+            if teleport_state is not None:
+                initial_pos = teleport_state.get("initial_position")
+                if initial_pos is None:
+                    teleport_state["initial_position"] = (
+                        move.relative_position
+                    )
+                else:
+                    dx = move.relative_position[0] - initial_pos[0]
+                    dz = move.relative_position[2] - initial_pos[2]
+                    dist = math.hypot(dx, dz)
+                    elapsed = time.perf_counter() - float(
+                        teleport_state.get("start_time", 0.0)
+                    )
+                    if dist > 0.5 or (
+                        move.scalar_byte > 0 and elapsed > 0.15
+                    ):
+                        cancel_home_teleport = True
             # The session tick follows the server clock every client was
             # given at map entry; a client's own move ticks no longer set it.
             s.gameplay_chase_server_tick = CharacterService._next_session_tick(
                 s.gameplay_chase_server_tick
             )
+        if cancel_home_teleport:
+            CharacterService._cancel_home_teleport(s, "player movement")
         if refusal is not None:
             CharacterService._accept_gameplay_state_command(s, 0x005F)
             latency_stats.count("move refused", latency_stats.session_label(s))

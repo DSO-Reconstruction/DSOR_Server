@@ -794,12 +794,62 @@ class CustomizationService:
             s.gameplay_persistent_status_effects.pop(
                 active_ride.instance_id, None
             )
+            restored_groundmarker_entry = None
+            if "vanitygroundmarker" in s.gameplay_active_decorations:
+                resource_id, instance_id = s.gameplay_active_decorations["vanitygroundmarker"]
+                if resource_id and instance_id is None:
+                    combat = getattr(s, "gameplay_combat_state", None)
+                    path = (
+                        combat.encounter.static_database_path
+                        if combat is not None
+                        else DEFAULT_STATIC_DB_PATH
+                    )
+                    definition = load_sticker_definition(path, resource_id)
+                    if definition is not None:
+                        new_instance_id = s.gameplay_next_status_effect_instance_id
+                        s.gameplay_next_status_effect_instance_id += 1
+                        last_move = getattr(s, "gameplay_last_move", None)
+                        start_tick = (
+                            (last_move.start_tick + 1) & 0xFFFFFFFF
+                            if last_move is not None
+                            else (server_time() // 40) & 0xFFFFFFFF
+                        )
+                        new_effect = sticker_status_entry(
+                            definition,
+                            instance_id=new_instance_id,
+                            start_tick=start_tick,
+                            actor_id=LOCAL_PLAYER_ACTOR_ID,
+                            active=True,
+                        )
+                        s.gameplay_persistent_status_effects[new_instance_id] = new_effect
+                        s.gameplay_active_decorations["vanitygroundmarker"] = (
+                            resource_id, new_instance_id,
+                        )
+                        restored_groundmarker_entry = new_effect
         CharacterService._send_mount_effect(
             s,
             active_ride,
             active=False,
             label=label,
         )
+        if restored_groundmarker_entry is not None:
+            restore_effect = StatusEffect(
+                clear_existing=False,
+                entries=(restored_groundmarker_entry,),
+            )
+            packet = encode_status_effect_batch(
+                restore_effect,
+                actor_id=LOCAL_PLAYER_ACTOR_ID,
+            )
+            s.send_reliable_ordered(
+                packet,
+                track=True,
+                label="groundmarker-restore",
+            )
+            if s.gameplay_presence_callback is not None:
+                s.gameplay_presence_callback(
+                    s, ("status_effect", restore_effect)
+                )
         CharacterService._refresh_admin_speed(s)
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] unmounted "
@@ -860,6 +910,34 @@ class CustomizationService:
                 ride_effect.instance_id
             ] = ride_effect
 
+            # Suppress active groundmarker (alchemy circle) while mounted
+            groundmarker_removal_entry = None
+            if "vanitygroundmarker" in s.gameplay_active_decorations:
+                resource_id, instance_id = s.gameplay_active_decorations["vanitygroundmarker"]
+                if instance_id is not None:
+                    old_effect = s.gameplay_persistent_status_effects.pop(
+                        int(instance_id), None
+                    )
+                    s.gameplay_active_decorations["vanitygroundmarker"] = (
+                        resource_id, None,
+                    )
+                    if old_effect is not None:
+                        groundmarker_removal_entry = replace(
+                            old_effect,
+                            end_tick=0,
+                            tick_interval=0,
+                            stack_index=0,
+                            total_duration=0,
+                            update_timing=False,
+                            stacked=False,
+                            permanent=False,
+                            has_details=False,
+                            values=(),
+                            field_38=False,
+                            field_3c=0xFF,
+                            shape_values=(),
+                        )
+
         CharacterService._achievement_feed(
             self, s, "use", (ride.definition.stickerbook_resource_id,),
         )
@@ -871,6 +949,10 @@ class CustomizationService:
             ride,
             actor_id=LOCAL_PLAYER_ACTOR_ID,
         )
+        if groundmarker_removal_entry is not None:
+            transitions = transitions + (
+                StatusEffect(False, (groundmarker_removal_entry,)),
+            )
         adjustment = CharacterService._refresh_admin_speed(
             s, static_database_path=self.static_database_path, publish=False,
         )
@@ -1527,6 +1609,25 @@ class CustomizationService:
             costume_status_effect_wire_ids(self.static_database_path)
             if definition.kind == "costume" else frozenset()
         )
+        if decoration_group == "vanitygroundmarker" and s.gameplay_mount_ride is not None:
+            with s.flow_lock:
+                current_resource, current_instance_id = (
+                    s.gameplay_active_decorations.get(decoration_group, ("", None))
+                )
+                if current_resource == definition.resource_id:
+                    s.gameplay_active_decorations.pop(decoration_group, None)
+                    if current_instance_id is not None:
+                        s.gameplay_persistent_status_effects.pop(int(current_instance_id), None)
+                else:
+                    if current_instance_id is not None:
+                        s.gameplay_persistent_status_effects.pop(int(current_instance_id), None)
+                    s.gameplay_active_decorations[decoration_group] = (
+                        definition.resource_id, None,
+                    )
+            CharacterService._persist_gameplay_session(
+                self, s, reason=f"{definition.kind} toggle"
+            )
+            return
         transitions = []
         with s.flow_lock:
             if decoration_group is not None:
@@ -1739,7 +1840,7 @@ class CustomizationService:
     def _toggle_mount_definition(
             self, s: Session, definition, *, source: str) -> None:
         """Run the shared timed cast/ride flow for any authored mount source."""
-
+        # Mounting must not interrupt an in-progress urban-area teleport.
         # Reusing the active mount is the normal unmount operation.
         with s.flow_lock:
             active_ride = s.gameplay_mount_ride
@@ -1840,6 +1941,7 @@ class CustomizationService:
             )
             if effect is None:
                 raise ValueError(f"emote {request.value!r} has no status effect")
+            CharacterService._cancel_home_teleport(s, "emote")
             CharacterService._cancel_mount_cast(s, "emote")
             CharacterService._remove_mount_ride(s, reason="emote")
             # Reusable emotes play their authored finite status animation.

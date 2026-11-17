@@ -101,12 +101,31 @@ class PresenceIdentityService:
         s.gameplay_instance_id = ''
         target = self._gameplay_instance_key(s)[:-1]
         if group:
+            newest = None
+            newest_created = 0.0
             for peer in self._active_gameplay_sessions(map_id=s.gameplay_map, excluding=s):
                 other = store.group_for(peer.gameplay_character.character_id)
-                if (other and other.group_id == group.group_id
+                if not (other and other.group_id == group.group_id
                         and self._gameplay_instance_key(peer)[:-1] == target):
-                    s.gameplay_instance_id = getattr(peer, 'gameplay_instance_id', '')
-                    return
+                    continue
+                runtime = getattr(peer, 'gameplay_map_event_runtime', None)
+                if (
+                    getattr(runtime, 'run_completed', False)
+                    or getattr(runtime, 'reentry_sealed', False)
+                ):
+                    # A cleared or re-entry-sealed run keeps the players still
+                    # inside it, but a later entry must start a new instance
+                    # instead of joining the finished/sealed one.
+                    continue
+                created = float(getattr(runtime, 'created_at', 0.0) or 0.0)
+                if newest is None or created > newest_created:
+                    newest = peer
+                    newest_created = created
+            if newest is not None:
+                s.gameplay_instance_id = getattr(
+                    newest, 'gameplay_instance_id', ''
+                )
+                return
         s.gameplay_instance_id = uuid4().hex
 
     def _active_gameplay_sessions(

@@ -118,6 +118,40 @@ def load_map_encounter_policy(
     return MapEncounterPolicy(str(row[0]), str(row[1]))
 
 
+@lru_cache(maxsize=512)
+def load_map_close_signals(
+    static_database_path: str | Path,
+    map_id: str,
+) -> tuple[str, ...]:
+    """Return the map's authored ``CloseSignal`` entries.
+
+    Retail fires these when a run ends so the client marks the instance as
+    closed (and lets the player enter a different instance of the map).
+    """
+
+    path = Path(static_database_path)
+    with sqlite3.connect(
+        f"file:{path.as_posix()}?mode=ro", uri=True
+    ) as database:
+        row = database.execute(
+            """
+            SELECT COALESCE(CloseSignal, '')
+            FROM _Template_MapTemplate
+            WHERE LOWER(MapTemplate)=LOWER(?)
+            ORDER BY rowid
+            LIMIT 1
+            """,
+            (str(map_id),),
+        ).fetchone()
+    if row is None:
+        return ()
+    return tuple(
+        token.strip()
+        for token in str(row[0] or "").replace(",", ";").split(";")
+        if token.strip()
+    )
+
+
 def _skill_ids(raw: str) -> tuple[str, ...]:
     return tuple(
         token.strip().partition(":")[0].strip()

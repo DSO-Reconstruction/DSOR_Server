@@ -109,11 +109,21 @@ class MonsterTickContextService:
         and took the player's ``flow_lock`` to read live victim debuffs. On a
         populated map the simulation thread paid that for every viewer, 25
         times a second, which is exactly the contention that delays hits.
+
+        Revive protection is the deliberate exception: it sets both gates, so
+        the player is not a valid monster target for its ten-second window and
+        queued hits resolve for zero damage.
         """
 
         damage_locked = set()
         untargetable = set()
         for session_id, target_session in candidate_target_sessions.items():
+            if CharacterService._respawn_protection_active(target_session):
+                # Revive protection: no monster may acquire the player as a
+                # target and any already-queued hit resolves for zero damage.
+                damage_locked.add(session_id)
+                untargetable.add(session_id)
+                continue
             disabled = CharacterService._player_disabled_actor_features(
                 target_session
             )

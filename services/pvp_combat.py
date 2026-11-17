@@ -1058,6 +1058,7 @@ class PVPCombatService:
         )
         if not target_is_summon and int(pending.damage) > 0:
             CharacterService._cancel_pending_logout(target, "attacked in PvP")
+            CharacterService._cancel_home_teleport(target, "attacked in PvP")
         from dso_server.services.talent_events import (
             dispatch_incoming_hit, dispatch_kill_talents, dispatch_talent_event,
             route_talent_user_effects, spare_player,
@@ -1108,8 +1109,6 @@ class PVPCombatService:
         with target.flow_lock:
             if not target_is_summon and target.gameplay_inventory is not None:
                 target.gameplay_inventory.health_points = float(current)
-        if not target_is_summon and damage > 0:
-            CharacterService._cancel_respawn_protection(s)
         # Publishing the Kill clears the victim's effects, its mark with them.
         status_group_test = getattr(
             pending.combat, "status_sources_have_group", None
@@ -1347,6 +1346,7 @@ class PVPCombatService:
         lethal_allowed = target_is_summon or CharacterService._pvp_lethal_damage_allowed(s, target)
         if not target_is_summon and requested_damage > 0:
             CharacterService._cancel_pending_logout(target, "attacked in PvP")
+            CharacterService._cancel_home_teleport(target, "attacked in PvP")
         from dso_server.services.talent_events import (
             dispatch_incoming_hit, dispatch_talent_event, spare_player,
         )
@@ -1372,8 +1372,6 @@ class PVPCombatService:
         with target.flow_lock:
             if not target_is_summon and target.gameplay_inventory is not None:
                 target.gameplay_inventory.health_points = float(current)
-        if not target_is_summon and damage > 0:
-            CharacterService._cancel_respawn_protection(s)
         resolution = DamageResolution(
             target_actor_id=state.target_actor_id,
             attacker_actor_id=state.source_actor_id,

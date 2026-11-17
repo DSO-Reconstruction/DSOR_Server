@@ -146,6 +146,31 @@ class LogoutTests(unittest.TestCase):
         s.timers[1].fire()
         self.assertEqual(len(self._sent(s, SWITCH_MAP_COMMAND)), 1)
 
+    def test_hub_logout_disconnects_client(self):
+        s = self._session(HUB)
+        logout_request = encode_logout(Logout(False, True))
+        self.server._handle_logout(s, logout_request[0])
+        self.assertEqual(len(self._sent(s, SWITCH_MAP_COMMAND)), 0)
+        self.assertTrue(s.gameplay_exit_transition_started)
+        self.assertEqual(s.timers, [])
+        self.assertTrue(any(data == b"\x15" for data, _bits, _label in s.recorder.messages))
+
+    def test_dungeon_logout_waits_for_countdown_then_disconnects(self):
+        s = self._session(TUTORIAL)
+        logout_request = encode_logout(Logout(False, True))
+        self.server._handle_logout(s, logout_request[0])
+        self.assertEqual(len(self._sent(s, SWITCH_MAP_COMMAND)), 0)
+        self.assertFalse(any(data == b"\x15" for data, _bits, _label in s.recorder.messages))
+        (timer,) = s.timers
+        self.assertEqual(timer.interval, LOGOUT_COUNTDOWN_SECONDS)
+        self.assertTrue(timer.started)
+        self.assertFalse(s.gameplay_exit_transition_started)
+
+        timer.fire()
+        self.assertEqual(len(self._sent(s, SWITCH_MAP_COMMAND)), 0)
+        self.assertTrue(s.gameplay_exit_transition_started)
+        self.assertTrue(any(data == b"\x15" for data, _bits, _label in s.recorder.messages))
+
 
 if __name__ == "__main__":
     unittest.main()

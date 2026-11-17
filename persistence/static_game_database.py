@@ -530,10 +530,13 @@ class StaticGameDatabase:
     def gameplay_map_ruleset(self, map_id: str) -> int:
         """Return the client ruleset used by the map-load packet.
 
-        The retail protocol does not use one ruleset for every gameplay map:
-        hubs are announced with ruleset 5, while combat PvE maps are announced
-        with ruleset 1. ``AreaType`` is the database-owned distinction, so do
-        not infer this from a map-name suffix.
+        Retail does not use one ruleset for every gameplay map. A recorded
+        Heredur's Mausoleum map load used ruleset 10 for a ``Boss`` map while
+        hubs use 5 and ordinary PvE maps use 1. ``AreaType`` is the
+        database-owned distinction, so do not infer this from a map-name
+        suffix. Ruleset 10 is the client's boss-arena ruleset; it also disables
+        the same-map death respawn, so it must not leak onto ClosedPVE
+        dungeons.
         """
 
         with closing(self._connect()) as connection:
@@ -552,7 +555,12 @@ class StaticGameDatabase:
         # ruleset. Whether that build drew the distinction at all is a question
         # about its map-load packet rather than about its database. See
         # dso_server_legacy/docs/LEGACY_FORK.md.
-        return 5 if str(row[0]) == "Hub" else 1
+        area_type = str(row[0])
+        if area_type == "Hub":
+            return 5
+        if area_type == "Boss":
+            return 10
+        return 1
 
     def gameplay_map_is_city_hub(self, map_id: str) -> bool:
         """Return whether a map is an actual city hub for return routing.

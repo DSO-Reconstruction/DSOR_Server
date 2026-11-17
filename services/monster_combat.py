@@ -1003,12 +1003,17 @@ class MonsterCombatService(
                         assignments[actor_id] = (
                             LOCAL_PLAYER_ACTOR_ID, scripted_target,
                         )
+                targetable_combat_targets = [
+                    target
+                    for target in combat_targets
+                    if id(target[2]) not in untargetable_session_ids
+                ]
                 for actor_id in event_summon_controller_ids:
                     monster_position = combat.monster_positions.get(actor_id)
-                    if monster_position is None or not combat_targets:
+                    if monster_position is None or not targetable_combat_targets:
                         continue
                     target_actor_id, target_position, _viewer = min(
-                        combat_targets,
+                        targetable_combat_targets,
                         key=lambda target: combat._distance(
                             combat.encounter.coordinate_frame.wire_to_world(
                                 target[1]
@@ -1024,7 +1029,10 @@ class MonsterCombatService(
                     )
                 # One movement pass preserves the map's A* budget and collision
                 # separation while each pack pursues its own nearby player.
-                fallback = combat_targets[0][1]
+                fallback = (
+                    targetable_combat_targets[0][1]
+                    if targetable_combat_targets else combat_targets[0][1]
+                )
                 movements.extend(combat.advance_monsters(
                     fallback, elapsed_seconds=elapsed, server_tick=server_tick,
                     eligible_actor_ids=ordinary_actor_ids, now=now,
@@ -1291,6 +1299,7 @@ class MonsterCombatService(
                 victim = target_sessions.get(int(resolution.target_actor_id))
                 if victim is not None:
                     CharacterService._cancel_pending_logout(victim, "attacked")
+                    CharacterService._cancel_home_teleport(victim, "attacked by monster")
         with _post_commit_step("health-regeneration"):
             CharacterService._apply_base_health_regeneration(
                 target_sessions, health_regeneration

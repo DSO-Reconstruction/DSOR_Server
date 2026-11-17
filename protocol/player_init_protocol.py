@@ -73,6 +73,9 @@ NOTIFICATION_COMMAND = command_id("Commands::NotificationCommand", 0x0088)
 PLAYER_QUERY_RESULT_COMMAND = command_id("Commands::PlayerQueryResultCommand", 0x00B5)
 EVENT_PROGRESS_CHANGED_COMMAND = command_id("Commands::EventProgressChangedCommand", 0x00E1)
 ACHIEVEMENT_INFO_COMMAND = command_id("Achievements::AchievementInfoCommand", 0x0114)
+CLEAR_DUNGEON_INFO_COMMAND = command_id(
+    "Achievements::ClearDungeonInfoCommand", 0x0116
+)
 TALENT_CATEGORY_POINTS_INFO_COMMAND = command_id("Talents::TalentCategoryPointsInfoCommand", 0x011A)
 TALENT_SELECTION_INFO_COMMAND = command_id("TalentSelectionInfoCommand", 0x011B)
 ITEM_CUSTOMIZATION_INFO_COMMAND = command_id("Commands::ItemCustomizationInfoCommand", 0x0140)
@@ -293,6 +296,14 @@ class Achievement:
 @dataclass(frozen=True)
 class AchievementInfo:
     achievements: tuple[Achievement, ...]
+
+
+@dataclass(frozen=True)
+class ClearDungeonInfo:
+    """A cleared dungeon's best time, told to the client after the boss dies."""
+
+    seconds: int
+    map_id: str
 
 
 @dataclass(frozen=True)
@@ -963,6 +974,19 @@ def _write_achievement_info_body(
         writer.write_string(achievement.resource_id)
         for number in achievement.values:
             writer.write_uint32_le(number)
+
+
+def _read_clear_dungeon_info_body(reader: BitReader) -> ClearDungeonInfo:
+    return ClearDungeonInfo(reader.read_uint32_le(), reader.read_string())
+
+
+def _write_clear_dungeon_info_body(
+    writer: BitWriter, value: ClearDungeonInfo
+) -> None:
+    if not value.map_id:
+        raise ValueError("ClearDungeonInfo requires a map id")
+    writer.write_uint32_le(max(0, int(value.seconds)))
+    writer.write_string(value.map_id)
 
 
 def _read_notification_body(reader: BitReader) -> Notification:
@@ -2070,6 +2094,7 @@ _BODY_READERS = {
     PLAYER_QUERY_RESULT_COMMAND: _read_player_query_result_body,
     EVENT_PROGRESS_CHANGED_COMMAND: _read_event_progress_changed_body,
     ACHIEVEMENT_INFO_COMMAND: _read_achievement_info_body,
+    CLEAR_DUNGEON_INFO_COMMAND: _read_clear_dungeon_info_body,
     TALENT_CATEGORY_POINTS_INFO_COMMAND: _read_talent_category_points_info_body,
     TALENT_SELECTION_INFO_COMMAND: _read_talent_selection_info_body,
     COMMAND_0173: _read_command_0173_body,
@@ -2128,6 +2153,7 @@ _BODY_WRITERS = {
     PLAYER_QUERY_RESULT_COMMAND: _write_player_query_result_body,
     EVENT_PROGRESS_CHANGED_COMMAND: _write_event_progress_changed_body,
     ACHIEVEMENT_INFO_COMMAND: _write_achievement_info_body,
+    CLEAR_DUNGEON_INFO_COMMAND: _write_clear_dungeon_info_body,
     TALENT_CATEGORY_POINTS_INFO_COMMAND: _write_talent_category_points_info_body,
     TALENT_SELECTION_INFO_COMMAND: _write_talent_selection_info_body,
     COMMAND_0173: _write_command_0173_body,
