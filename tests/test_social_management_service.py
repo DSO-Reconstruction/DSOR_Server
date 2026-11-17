@@ -13,7 +13,7 @@ from dso_server.persistence.social_state import (
     SocialStateStore,
     make_social_member,
 )
-from dso_server.protocol.character_selection import BitWriter
+from dso_server.protocol.character_selection import BitReader, BitWriter
 from dso_server.protocol.player_init_protocol import (
     NOTIFICATION_COMMAND as CLIENT_NOTIFICATION_COMMAND,
     CURRENCY_CHANGED_COMMAND,
@@ -26,6 +26,8 @@ from dso_server.protocol.social_protocol import (
     GROUP_CANDIDATES_RESULT_COMMAND,
     GROUP_EDIT_COMMAND,
     GROUP_EDIT_RESULT_COMMAND,
+    GROUP_FINDER_QUERY_COMMAND,
+    GROUP_FINDER_RESULT_COMMAND,
     GROUP_INVITATION_RESPONSE_COMMAND,
     GROUP_INVITE_COMMAND,
     GROUP_JOIN_REQUEST_COMMAND,
@@ -33,6 +35,7 @@ from dso_server.protocol.social_protocol import (
     GROUP_KICK_COMMAND,
     GROUP_MULTIPLE_INVITE_COMMAND,
     GROUP_STATUS_COMMAND,
+    GROUP_STATUS_REQUEST_COMMAND,
     GROUPING_FAILED_COMMAND,
     GUILD_INVITATION_RESPONSE_COMMAND,
     GUILD_INVITE_COMMAND,
@@ -252,6 +255,134 @@ def test_a_member_cannot_edit_the_group(world):
     ))
     assert not packets(two, GROUP_EDIT_RESULT_COMMAND)
     assert world.store.group_for(1).name == "Party"
+
+
+# -- group finder -----------------------------------------------------------------
+
+def finder_query(category: int = 0, context: int = 0) -> tuple[bytes, int]:
+    writer = BitWriter()
+    writer.write_uint8(0x8B)
+    writer.write_bytes(GROUP_FINDER_QUERY_COMMAND.to_bytes(2, "little"))
+    writer.write_uint8(category)
+    writer.write_uint32_le(context)
+    writer.write_bytes((16).to_bytes(2, "little"))
+    writer.write_bytes(bytes(16))
+    return writer.finish()
+
+
+def finder_entries(session):
+    """The GroupInfo rows of the last finder reply, in wire order."""
+
+    payload, bits = last(session, GROUP_FINDER_RESULT_COMMAND)
+    reader = BitReader(payload, bits)
+    assert reader.read_uint8() == 0x85
+    assert int.from_bytes(reader.read_bytes(2), "little") == GROUP_FINDER_RESULT_COMMAND
+    reader.read_uint32_le()
+    entries = [
+        (
+            reader.read_uint32_le(),
+            reader.read_string(),
+            reader.read_string(),
+            reader.read_string(),
+            reader.read_uint32_le(),
+            reader.read_uint32_le(),
+        )
+        for _ in range(reader.read_uint32_le())
+    ]
+    assert reader.read_uint8() == 0xFF
+    return entries
+
+
+def test_group_finder_hides_a_group_nobody_is_playing(world):
+    make_group(world, (1, "Leader"), (2, "Two"))
+    viewer = world.connect(99, "Viewer")
+
+    world.send(viewer, finder_query())
+    assert finder_entries(viewer) == []
+
+    world.connect(2, "Two")
+    world.send(viewer, finder_query())
+    (entry,) = finder_entries(viewer)
+    assert entry[2:5] == ("Party", "a0200_kingscity", 2)
+
+
+def test_group_finder_lists_the_leaders_name_and_level(world):
+    group_id = make_group(world, (1, "Leader"), (2, "Two"))
+    leader = world.connect(1, "Leader")
+    leader.gameplay_character.level = 63
+    viewer = world.connect(99, "Viewer")
+
+    world.send(viewer, finder_query())
+    (entry,) = finder_entries(viewer)
+    assert entry == (group_id, "Leader", "Party", "a0200_kingscity", 2, 63)
+
+
+def test_group_finder_falls_back_to_the_saved_leader(world):
+    group_id = make_group(world, (1, "Leader"), (2, "Two"))
+    world.connect(2, "Two")
+    viewer = world.connect(99, "Viewer")
+
+    world.send(viewer, finder_query())
+    (entry,) = finder_entries(viewer)
+    # The persisted roster carries the leader's name and level while offline.
+    assert entry == (group_id, "Leader", "Party", "a0200_kingscity", 2, 50)
+
+
+def test_group_finder_location_follows_the_leader(world):
+    make_group(world, (1, "Leader"), (2, "Two"))
+    leader = world.connect(1, "Leader")
+    world.connect(2, "Two")
+    viewer = world.connect(99, "Viewer")
+
+    world.send(viewer, finder_query())
+    (entry,) = finder_entries(viewer)
+    assert entry[3] == "a0200_kingscity"
+
+    # The group entered Stonekeep on Bloodshed: the finder's Location is the
+    # map access row, whose difficulty the client renders after the region.
+    leader.gameplay_map = "pw007_stonekeep_01_dun"
+    leader.gameplay_map_access_id = "pw007_03_stonekeep_01_dun"
+    CharacterServer._broadcast_presence_social_status(world.server, 1)
+
+    world.send(viewer, finder_query())
+    assert finder_entries(viewer) == []
+    raider = world.connect(98, "Raider", map_id="pw007_stonekeep_01_dun")
+    world.send(raider, finder_query())
+    (entry,) = finder_entries(raider)
+    assert entry[3] == "pw007_03_stonekeep_01_dun"
+
+
+def test_group_finder_keeps_the_stored_location_with_the_leader_offline(world):
+    make_group(world, (1, "Leader"), (2, "Two"))
+    leader = world.connect(1, "Leader")
+    world.connect(2, "Two")
+    leader.gameplay_map = "pw007_stonekeep_01_dun"
+    leader.gameplay_map_access_id = "pw007_03_stonekeep_01_dun"
+    CharacterServer._broadcast_presence_social_status(world.server, 1)
+    leader.gameplay_presence_ready = False
+
+    raider = world.connect(98, "Raider", map_id="pw007_stonekeep_01_dun")
+    world.send(raider, finder_query())
+    (entry,) = finder_entries(raider)
+    assert entry[3] == "pw007_03_stonekeep_01_dun"
+
+
+def test_group_status_member_locations_use_the_map_access_row(world):
+    make_group(world, (1, "Leader"), (2, "Two"))
+    leader = world.connect(1, "Leader")
+    two = world.connect(2, "Two")
+    for session in (leader, two):
+        session.gameplay_map = "a0203_kingscrypt02"
+        session.gameplay_map_access_id = "a0203_kingscrypt02_08"
+
+    world.send(leader, request(GROUP_STATUS_REQUEST_COMMAND, ("u32", 0)))
+    status = decode_group_status(*last(leader, GROUP_STATUS_COMMAND))
+    assert {
+        member.character_id: member.map_or_guild for member in status.members
+    } == {
+        1: "a0203_kingscrypt02_08",
+        2: "a0203_kingscrypt02_08",
+    }
 
 
 # -- guild rename ---------------------------------------------------------------------

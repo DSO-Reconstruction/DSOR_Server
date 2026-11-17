@@ -886,12 +886,27 @@ def decode_group_finder_query(
 
 @dataclass(frozen=True)
 class GroupFinderEntry:
+    """One ``GroupInfo`` row of ``GroupQueryResultCommand``.
+
+    The layout comes from the client's element reader: a row is 0x98 bytes,
+    holding ``uint32 group_id`` at +0x00, three 16-bit-length strings at
+    +0x08/+0x48/+0x88, ``uint32 member_count`` at +0x90 and ``uint32
+    leader_level`` at +0x94.  The finder row prints +0x94 into
+    ``LeaderLevelLabel``, +0x48 into ``GroupNameLabel``, +0x90 as the
+    "<members>/5" count and +0x88 into ``LocationLabel``.
+    """
+
     group_id: int
-    category: int
+    # Leader name: GroupInfo +0x08, the finder name's ranked-team prefix.
+    leader_name: str
+    # Group name: GroupInfo +0x48, the text the finder's name column shows.
     name: str
-    map_id: str
+    # Location: GroupInfo +0x88, the leader's map access row ("<region> -
+    # <difficulty>"), which the client resolves through its template table.
+    location: str
     member_count: int
-    field_68: int
+    # Leader level: GroupInfo +0x94, the finder's leading numeric column.
+    leader_level: int
 
 
 def encode_group_finder_result(
@@ -904,11 +919,11 @@ def encode_group_finder_result(
     writer.write_uint32_le(len(entries))
     for entry in entries:
         writer.write_uint32_le(entry.group_id)
-        writer.write_bytes(int(entry.category).to_bytes(2, "little"))
+        writer.write_string(entry.leader_name)
         writer.write_string(entry.name)
-        writer.write_string(entry.map_id)
+        writer.write_string(entry.location)
         writer.write_uint32_le(entry.member_count)
-        writer.write_uint32_le(entry.field_68)
+        writer.write_uint32_le(entry.leader_level)
     writer.write_uint8(0xFF)
     return writer.finish()
 

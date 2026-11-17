@@ -246,6 +246,31 @@ class SocialService:
         if callback is not None:
             callback(tuple(int(value) for value in character_ids))
 
+    def _move_group_with_leader(self, group_id: int) -> None:
+        """Keep the group's advertised map on the leader's current map.
+
+        The finder's Location column is the leader's map, with the leader's
+        level beside it; a group that founded in the hub and then entered a
+        dungeon must move with its leader rather than stay advertised at the
+        old map.
+        """
+
+        group = self.social_store.group_by_id(group_id)
+        if group is None:
+            return
+        session = SocialService._social_session_for_character(
+            self, group.owner_character_id
+        )
+        if session is None or not session.gameplay_map:
+            return
+        self.social_store.move_group(
+            group.group_id,
+            session.gameplay_map,
+            SocialService._player_map_access(
+                self, group.owner_character_id, session
+            ),
+        )
+
     def _broadcast_social_status(
             self, kind: str, collective_id: int) -> None:
         if kind == "group":
@@ -253,6 +278,7 @@ class SocialService:
             status_getter = self._group_status_for
             status_encoder = encode_group_status
             id_field = "group_id"
+            SocialService._move_group_with_leader(self, int(collective_id))
         elif kind == "guild":
             lookup = self.social_store.guild_for
             status_getter = self._guild_status_for
@@ -441,6 +467,26 @@ class SocialService:
             ignored_names,
         )
 
+    def _player_map_access(self, character_id: int, session=None) -> str:
+        """The map access row naming a player's region and difficulty.
+
+        The social lists print a player's location as "<region> - <difficulty>",
+        which the client takes from the row's ``Difficulty``.  A physical map
+        name (``a0203_kingscrypt02``) carries none and always reads as Normal,
+        so the access row (``a0203_kingscrypt02_08``) is what goes on the
+        wire -- live from the session, from the saved state otherwise.
+        """
+
+        character_id = int(character_id)
+        if session is not None:
+            access_id = str(
+                getattr(session, "gameplay_map_access_id", "") or ""
+            )
+            return access_id or str(session.gameplay_map or "")
+        store = getattr(self, "account_store", None)
+        reader = getattr(store, "map_access_id_for_character", None)
+        return str(reader(character_id) or "") if reader is not None else ""
+
     def _group_member_summaries(
             self, group: Group, viewer_character_id: int) -> tuple[PlayerSummary, ...]:
         sessions_by_character = {
@@ -459,12 +505,16 @@ class SocialService:
                 session.gameplay_character if session is not None
                 else profile if profile is not None else member
             )
+            location = SocialService._player_map_access(
+                self, member.character_id, session
+            )
+            if not location:
+                location = (
+                    profile.map_id if profile is not None else group.map_id
+                )
             members.append(self._player_summary(
                 character,
-                map_or_guild=(
-                    session.gameplay_map if session is not None
-                    else profile.map_id if profile is not None else group.map_id
-                ),
+                map_or_guild=location,
                 online=session is not None,
                 actor_id=self._social_actor_id_for(
                     viewer_character_id, member.character_id,
@@ -472,6 +522,50 @@ class SocialService:
                 role=0 if member.character_id == group.owner_character_id else 1,
             ))
         return tuple(members)
+
+    def _group_finder_entry(self, group) -> GroupFinderEntry:
+        """One finder row: the leader's name/level and the group's location.
+
+        The leader is the live character when there is one and the persisted
+        roster or saved profile otherwise, so the row still fills in for an
+        offline leader.  The location is the leader's *map access* row rather
+        than the bare map name: its difficulty is what the client appends to
+        the region, so a dungeon's chosen difficulty ("Stonekeep - Bloodshed")
+        shows up instead of falling back to Normal.
+        """
+
+        leader_id = int(group.owner_character_id)
+        session = SocialService._social_session_for_character(self, leader_id)
+        character = (
+            session.gameplay_character
+            if session is not None and session.gameplay_character is not None
+            else None
+        )
+        if character is None:
+            store = getattr(self, "account_store", None)
+            character = (
+                store.get_profile(leader_id) if store is not None else None
+            )
+        if character is None:
+            character = next(
+                (
+                    member for member in group.members
+                    if int(member.character_id) == leader_id
+                ),
+                group.members[0],
+            )
+        location = (
+            SocialService._player_map_access(self, leader_id, session)
+            or group.map_access_id or group.map_id
+        )
+        return GroupFinderEntry(
+            group.group_id,
+            str(character.name),
+            group.name,
+            location,
+            len(group.members),
+            max(1, int(character.level)),
+        )
 
     def _group_status_for(self, character_id: int) -> GroupStatus:
         group = self.social_store.group_for(character_id)
@@ -595,7 +689,9 @@ class SocialService:
                 continue
             summaries.append(self._player_summary(
                 character,
-                map_or_guild=(session.gameplay_map if session is not None else ""),
+                map_or_guild=SocialService._player_map_access(
+                    self, buddy_id, session
+                ),
                 online=session is not None,
                 actor_id=self._social_actor_id_for(
                     owner_character_id, buddy_id
@@ -790,6 +886,7 @@ class SocialService:
                     "",
                     s.gameplay_map or DEFAULT_GAMEPLAY_MAP,
                     self._social_member(s),
+                    str(getattr(s, "gameplay_map_access_id", "") or ""),
                 )
                 membership_changed = True
                 result = encode_create_group_result(
@@ -1354,22 +1451,26 @@ class SocialService:
 
     def _handle_group_finder(self, s: Session, payload: bytes) -> None:
         decode_group_finder_query(payload)
-        groups = self.social_store.groups_in_map(
+        online_ids = {
+            int(session.gameplay_character.character_id)
+            for session in self._active_gameplay_sessions()
+        }
+        entries = []
+        for group in self.social_store.groups_in_map(
             s.gameplay_map or DEFAULT_GAMEPLAY_MAP
-        )
-        entries = tuple(
-            GroupFinderEntry(
-                group.group_id,
-                0,
-                group.name,
-                group.map_id,
-                len(group.members),
-                0,
-            )
-            for group in groups
-        )
+        ):
+            # Groups outlive their sessions in this store, so a party saved
+            # from an earlier session would otherwise keep a stale row in
+            # every region's finder.  Only a group that somebody is actually
+            # playing is in the world to be found.
+            if not any(
+                int(member.character_id) in online_ids
+                for member in group.members
+            ):
+                continue
+            entries.append(SocialService._group_finder_entry(self, group))
         packet = encode_group_finder_result(
-            server_time() & 0xFFFFFFFF, entries
+            server_time() & 0xFFFFFFFF, tuple(entries)
         )
         s.send_reliable_ordered(
             packet,

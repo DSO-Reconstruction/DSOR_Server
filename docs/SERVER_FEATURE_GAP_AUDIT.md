@@ -475,10 +475,18 @@ and group/guild invitations, join requests, buddy adds and trade requests in
 either direction. Invitation answers now require a ledger entry issued by the
 server (one use, 300 s, token checked); this closed two forgery paths — the
 invitation response and the notification echo in `services/commerce.py`,
-which had added members straight from client JSON. Tests:
-`tests/test_social_management_*.py`. Not implemented: guild promote/demote,
-group leader `/promote`, the legacy 2190 route, and the group finder's empty
-leader name/level fields. The original findings follow.
+which had added members straight from client JSON. The group finder sends the
+leader's name and level in every `GroupInfo` row (the leader column reads
+`GroupInfo +0x94`), keeps the group's Location on the leader's
+`_Template_MapAccessGroup` row so the region and its difficulty are right
+(`pw007_03_stonekeep_01_dun` renders as Stonekeep on Bloodshed, not Normal),
+and only lists groups with a member online, so a party that survived in
+`social.json` after everyone logged off is not offered in a region. Group and
+buddy `PlayerSummary` rows carry each member's access row for the same
+reason: their Location column would otherwise always read Normal.
+Tests: `tests/test_social_management_*.py`. Not implemented: guild
+promote/demote, group leader `/promote`, and the legacy 2190 route. The
+original findings follow.
 
 **Partial implementation.** Creation, invitations/acceptance, leave, lists,
 basic group finder, buddies, chat membership, and persistence exist.

@@ -143,6 +143,10 @@ class Group:
     listed: bool = True
     private: bool = False
     members: list[SocialMember] = field(default_factory=list)
+    # The leader's ``_Template_MapAccessGroup`` row, which names the region
+    # and difficulty the finder shows ("Stonekeep - Bloodshed").  ``map_id``
+    # stays the physical map used to decide which finder the group appears in.
+    map_access_id: str = ""
 
 
 def _durable_mutation(method):
@@ -257,6 +261,7 @@ class SocialStateStore:
                 bool(raw.get("listed", True)),
                 bool(raw.get("private", False)),
                 [SocialMember(**member) for member in raw.get("members", ())],
+                str(raw.get("map_access_id", "")),
             )
             # Early builds mistook FoundationRequest's first string (the
             # creator's character name) for a group description.  The client
@@ -929,8 +934,37 @@ class SocialStateStore:
             )
 
     @_durable_mutation
+    def move_group(
+        self, group_id: int, map_id: str, map_access_id: str = ""
+    ) -> Group | None:
+        """Publish where a group is, which the finder shows as Location.
+
+        The location follows the leader, so it changes as the group travels;
+        a group founded in the hub must not stay advertised there.  ``map_id``
+        picks the finder the group appears in and ``map_access_id`` is the
+        region+difficulty the client renders.  Returns ``None`` when the
+        stored values already match (no write queued).
+        """
+
+        map_id = str(map_id)
+        map_access_id = str(map_access_id)
+        with self.lock:
+            stored = self.groups.get(int(group_id))
+            if stored is None or (
+                stored.map_id, stored.map_access_id
+            ) == (map_id, map_access_id):
+                return None
+            group = copy.deepcopy(stored)
+            group.map_id = map_id
+            group.map_access_id = map_access_id
+            self.groups[group.group_id] = group
+            self._queue_write_locked()
+            return copy.deepcopy(group)
+
+    @_durable_mutation
     def create_group(
-        self, name: str, description: str, map_id: str, member: SocialMember
+        self, name: str, description: str, map_id: str, member: SocialMember,
+        map_access_id: str = "",
     ) -> Group:
         cleaned = self._validate_group_name(name)
         with self.lock:
@@ -947,6 +981,7 @@ class SocialStateStore:
                 True,
                 False,
                 [member],
+                str(map_access_id),
             )
             self.next_group_id += 1
             self.groups[group.group_id] = group
