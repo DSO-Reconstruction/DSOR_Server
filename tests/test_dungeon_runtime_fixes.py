@@ -68,6 +68,121 @@ def test_private_dungeon_group_joins_match_difficulty_and_entry():
     assert friend.gameplay_instance_id != previous
 
 
+def test_cleared_dungeon_run_is_not_joined_and_newest_run_wins():
+    server = CharacterServer.__new__(CharacterServer)
+    server.static_database_path = DEFAULT_STATIC_DB_PATH
+    leader, member, late = [_session(52100+i, i+1, str(i)) for i in range(3)]
+    group = SimpleNamespace(group_id=21)
+    server.social_store = SimpleNamespace(
+        group_for=lambda cid: group if cid in (1, 2, 3) else None
+    )
+    server.sessions = {s.addr: s for s in (leader, member, late)}
+    for s in (leader, member, late):
+        s.gameplay_map = 'a0203_kingscrypt02'
+        s.gameplay_map_access_group_id = s.gameplay_map
+        s.gameplay_map_difficulty = 1
+        s.gameplay_initialization_sent = True
+        s.gameplay_presence_ready = True
+    access = resolve_map_access(
+        DEFAULT_STATIC_DB_PATH, 'a0203_kingscrypt02_01', player_level=100
+    )
+    server._select_dungeon_instance(leader, access)
+    leader.gameplay_map_event_runtime = SimpleNamespace(
+        run_completed=False, created_at=10.0
+    )
+    server._select_dungeon_instance(member, access)
+    assert member.gameplay_instance_id == leader.gameplay_instance_id
+    member.gameplay_map_event_runtime = leader.gameplay_map_event_runtime
+
+    # A cleared run keeps its players but must take no new ones.
+    leader.gameplay_map_event_runtime.run_completed = True
+    server._select_dungeon_instance(late, access)
+    assert late.gameplay_instance_id != leader.gameplay_instance_id
+
+    # With two live runs, a later group member joins the newest one.
+    late.gameplay_map_event_runtime = SimpleNamespace(
+        run_completed=False, created_at=20.0
+    )
+    late.gameplay_presence_ready = True
+    newest = _session(52199, 4, 'newest')
+    newest.gameplay_map = 'a0203_kingscrypt02'
+    newest.gameplay_map_access_group_id = newest.gameplay_map
+    newest.gameplay_map_difficulty = 1
+    newest.gameplay_initialization_sent = True
+    newest.gameplay_presence_ready = True
+    newest.gameplay_instance_id = 'newest-run'
+    newest.gameplay_map_event_runtime = SimpleNamespace(
+        run_completed=False, created_at=30.0
+    )
+    server.social_store = SimpleNamespace(
+        group_for=lambda cid: group if cid in (1, 2, 3, 4) else None
+    )
+    server.sessions[newest.addr] = newest
+    joining = _session(52198, 5, 'joining')
+    joining.gameplay_map = 'a0203_kingscrypt02'
+    joining.gameplay_map_access_group_id = joining.gameplay_map
+    joining.gameplay_map_difficulty = 1
+    joining.gameplay_character = SimpleNamespace(
+        character_id=5, name='joining', level=100, class_id=1
+    )
+    server.social_store = SimpleNamespace(
+        group_for=lambda cid: group if cid in (1, 2, 3, 4, 5) else None
+    )
+    server._select_dungeon_instance(joining, access)
+    assert joining.gameplay_instance_id == 'newest-run'
+
+
+def test_reentry_sealed_dungeon_run_is_not_joined():
+    server = CharacterServer.__new__(CharacterServer)
+    server.static_database_path = DEFAULT_STATIC_DB_PATH
+    leader, member = [_session(52200 + i, i + 1, str(i)) for i in range(2)]
+    group = SimpleNamespace(group_id=31)
+    server.social_store = SimpleNamespace(
+        group_for=lambda cid: group if cid in (1, 2) else None
+    )
+    server.sessions = {s.addr: s for s in (leader, member)}
+    for s in (leader, member):
+        s.gameplay_map = 'a0203_kingscrypt02'
+        s.gameplay_map_access_group_id = s.gameplay_map
+        s.gameplay_map_difficulty = 1
+        s.gameplay_initialization_sent = True
+        s.gameplay_presence_ready = True
+    access = resolve_map_access(
+        DEFAULT_STATIC_DB_PATH, 'a0203_kingscrypt02_01', player_level=100
+    )
+    server._select_dungeon_instance(leader, access)
+    leader.gameplay_map_event_runtime = SimpleNamespace(
+        run_completed=False, reentry_sealed=True, created_at=10.0
+    )
+    server._select_dungeon_instance(member, access)
+    assert member.gameplay_instance_id != leader.gameplay_instance_id
+
+
+def test_dungeon_close_signals_are_read_from_the_map_template():
+    from dso_server.gameplay.boss_encounter_policy import load_map_close_signals
+    signals = load_map_close_signals(DEFAULT_STATIC_DB_PATH, 'a0204_boss')
+    assert 'CLOSE_MAP_a0204_boss' in signals
+    assert 'CLOSE_MAP_BLOODSHED' in signals
+
+
+def test_clear_dungeon_info_batch_carries_time_and_map():
+    from dso_server.protocol.player_init_protocol import (
+        CLEAR_DUNGEON_INFO_COMMAND, ClearDungeonInfo, ServerCommand,
+        decode_server_command_batch, encode_server_command_batch,
+    )
+    packet, bits = encode_server_command_batch((
+        ServerCommand(
+            CLEAR_DUNGEON_INFO_COMMAND,
+            ClearDungeonInfo(42, 'a0203_kingscrypt02'),
+            1,
+        ),
+    ), include_terminator=True)
+    assert packet[0] == 0x85
+    assert packet[1:3] == CLEAR_DUNGEON_INFO_COMMAND.to_bytes(2, 'little')
+    commands = decode_server_command_batch(packet, bits)
+    assert commands[0].value == ClearDungeonInfo(42, 'a0203_kingscrypt02')
+
+
 def test_transfer_to_same_map_sets_explicit_entry(monkeypatch):
     server = CharacterServer.__new__(CharacterServer)
     server.static_database_path = DEFAULT_STATIC_DB_PATH

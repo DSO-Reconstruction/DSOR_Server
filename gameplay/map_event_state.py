@@ -2398,6 +2398,20 @@ class MapEventRuntime:
     pending_start_tokens: dict[str, object] = field(default_factory=dict)
     wave_countdown_digits: dict[str, int] = field(default_factory=dict)
     instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    # A run that reached its authored BOSS_death completion keeps its current
+    # players but takes no new ones: the next entry starts a fresh instance.
+    run_completed: bool = False
+    # Dungeons open their map-access window again after this many monster
+    # kills, instead of waiting for an authored boss/leader spawn event.
+    map_access_kill_count: int = 0
+    map_access_unlock_sent: bool = False
+    # A dungeon run that reached the re-entry threshold keeps its current
+    # players but stops accepting new members, so the next entry mints a new
+    # instance instead of dropping the player back into this run.
+    reentry_sealed: bool = False
+    # Creation order lets a later group entry join the newest live run when
+    # more than one instance of the same map/difficulty is open.
+    created_at: float = field(default_factory=time.monotonic)
     completed_quests: set[tuple[int, str]] = field(default_factory=set)
     enabled_event_sets: set[int] = field(default_factory=set)
     # Rows the server turned off itself because the content they gate is spent
@@ -3197,9 +3211,12 @@ class MapEventRuntime:
         Some maps author one Bloodshed chest per EventSet, with neighboring
         locations only three metres apart. Since those EventSets activate in
         separate transitions, ordinary per-EventSet chest selection cannot
-        see the adjacent chests. Spread only tightly clustered Bloodshed
-        chests while preserving their count and the cluster's center.
+        see the adjacent chests. Separate only genuinely overlapping chests;
+        the authored three-metre neighbourhood is deliberately preserved, so
+        the packed row does not open a wide gap between rewards.
         """
+
+        minimum_spacing = 2.0
 
         anchors: dict[int, list[tuple[float, float, float]]] = {}
         for prop in self.content.props:
@@ -3249,13 +3266,15 @@ class MapEventRuntime:
             ordered = sorted(cluster, key=lambda row: (centers[row][axis], row))
             coordinates = [centers[row][axis] for row in ordered]
             if all(
-                second - first >= 5.0
+                second - first >= minimum_spacing
                 for first, second in zip(coordinates, coordinates[1:])
             ):
                 continue
             packed = [coordinates[0]]
             for coordinate in coordinates[1:]:
-                packed.append(max(coordinate, packed[-1] + 5.0))
+                packed.append(
+                    max(coordinate, packed[-1] + minimum_spacing)
+                )
             shift = (
                 coordinates[0] + coordinates[-1]
                 - packed[0] - packed[-1]

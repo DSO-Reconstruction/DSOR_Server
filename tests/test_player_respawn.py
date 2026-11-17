@@ -193,13 +193,13 @@ class RespawnServiceTests(unittest.TestCase):
                     definitions = self.mocks["_send_player_skill_status_effects"].call_args.args[1]
                     self.assertEqual([(d.resource_id, d.duration_ticks) for d in definitions],
                                      [("resurrect_self", 108), ("InvulnerablePremiumRespawn", 250)]
-                                     if flag == 0x40 else [("map_respawn", 50), ("Invulnerable", 375)])
+                                     if flag == 0x40 else [("map_respawn", 50), ("Invulnerable", 250)])
 
     def test_paid_revives_get_destination_specific_protection_and_animation(self):
         import time
         for flag, expected in (
             (0x40, [("resurrect_self", 108), ("InvulnerablePremiumRespawn", 250)]),
-            (0x80, [("map_respawn", 50), ("Invulnerable", 375)]),
+            (0x80, [("map_respawn", 50), ("Invulnerable", 250)]),
         ):
             with self.subTest(flag=flag):
                 s = self.session

@@ -60,10 +60,13 @@ Both paid and membership-free revivals receive destination-specific effects:
 | Destination | Animation | Damage protection |
 | --- | --- | --- |
 | Same spot | `resurrect_self` (4.32 seconds in local content) | `InvulnerablePremiumRespawn` (10 seconds) |
-| Nearest portal | `map_respawn` (2 seconds) | `Invulnerable` (15 seconds) |
+| Nearest portal | `map_respawn` (2 seconds) | `Invulnerable` (10 seconds) |
 
 Movement and skills remain locked for the animation's authored duration.
 Protection is independent of membership despite the same-spot effect's name.
+The ten-second protection aura is removed by the first accepted skill cast.
+While it is active the player is untargetable by monsters and takes no
+monster damage; incoming damage and pet/summon attacks do not end it.
 Portal fallback preserves the spawn entry's heading as well as its position.
 Same-spot revival dispatches the existing `revive120` socket-effect event.
 

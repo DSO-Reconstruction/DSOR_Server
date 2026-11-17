@@ -105,6 +105,40 @@ so can make a quick relog skip the Play transition, leaving the client without
 `tests/test_character_screen_logout.py` covers rapid relogs, late logout
 packets, preservation of pending transfers, and normal Play routing.
 
+## Finished dungeon runs
+
+A fresh instance is derived per entry: `_select_dungeon_instance` mints a
+`uuid4` run unless a live same-group peer is already inside a matching
+map/access-group/difficulty run. When the authored `BOSS_death` event fires, the
+run is marked completed on its `MapEventRuntime` (`run_completed`). Every member
+receives `Achievements::ClearDungeonInfoCommand` (`0x0116`, clear time +
+physical map id) the way retail reports a cleared dungeon. The map's authored
+`_Template_MapTemplate.CloseSignal` entries (`CLOSE_MAP_*`) are fired as well,
+so the client marks the instance closed.
+
+The clear notification is what the client's map-access window reads to know the
+selected dungeon is finished. `Commands::MapAccessLockedCommand` has no body
+(the batch carries only the actor context) and flips the client's
+dungeon-instance flag; the map-access widget then bypasses its same-location
+comparison. `Commands::InstanceConfigCommand` is client-to-server (the client
+has no handler for it).
+
+Boss arenas receive the recorded retail `MapAccessLocked` command when their
+`BOSS_spawn` event starts. ClosedPVE dungeons have no `BOSS_spawn` event, so
+their runtime instead sends it after five monster kills
+(`MAP_ACCESS_UNLOCK_KILLS` in `services/map_events.py`); the client's map-access
+window then bypasses its same-location check even before the leader spawn.
+The flag is also replayed to each session that enters a dungeon or boss
+instance after the run was unlocked or cleared, so group members who load late
+do not miss it. Reaching the five-kill threshold sets `reentry_sealed` on the
+run: the players inside keep it, but the next entry mints a fresh instance and
+later group members join the newest live run.
+
+A completed run takes no new members. A later entry creates a fresh instance,
+and group members entering after that join the newest live run (`created_at`).
+Leaving the last player destroys the runtime, so a completed run is never
+reused.
+
 ## Scaling-difficulty access groups
 
 The client may request an access-group ID rather than a physical map, for
@@ -143,9 +177,13 @@ final Mortis pays rank `i`, Royal.
 
 `MapLoadPacket` keeps those two identities separate, matching the retail
 capture: its first string is the physical map and its second string is the
-selected access ID. A selected access variant uses ruleset `0`; repeating the
-physical ID in both fields leaves `ClientGauntletManager` without a valid map
-difficulty. Heroic physical IDs entered directly, such as by `!map` or an old
+selected access ID. A `Boss` arena is announced with ruleset `10` (the recorded
+Heredur's Mausoleum load used `10` with a physical/group access ID and
+`is_instance = false`); that is also the ruleset which makes the client hide
+the same-map death respawn. `ClosedPVE` dungeons stay on the ordinary ruleset
+or `0` for a selected access variant; sending them ruleset `10` makes the
+client treat them as boss arenas. Repeating the physical ID in both fields
+leaves `ClientGauntletManager` without a valid map difficulty. Heroic physical IDs entered directly, such as by `!map` or an old
 persisted state, are promoted to their difficulty-1 access row because the
 Heroic difficulty-zero staging row maps to the client's
 `InvalidMapDifficulty` enum and crashes `GauntletScoringWidget`. For an

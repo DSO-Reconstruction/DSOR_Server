@@ -1109,8 +1109,6 @@ class PVPCombatService:
         with target.flow_lock:
             if not target_is_summon and target.gameplay_inventory is not None:
                 target.gameplay_inventory.health_points = float(current)
-        if not target_is_summon and damage > 0:
-            CharacterService._cancel_respawn_protection(s)
         # Publishing the Kill clears the victim's effects, its mark with them.
         status_group_test = getattr(
             pending.combat, "status_sources_have_group", None
@@ -1374,8 +1372,6 @@ class PVPCombatService:
         with target.flow_lock:
             if not target_is_summon and target.gameplay_inventory is not None:
                 target.gameplay_inventory.health_points = float(current)
-        if not target_is_summon and damage > 0:
-            CharacterService._cancel_respawn_protection(s)
         resolution = DamageResolution(
             target_actor_id=state.target_actor_id,
             attacker_actor_id=state.source_actor_id,

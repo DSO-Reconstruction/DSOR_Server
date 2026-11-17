@@ -48,17 +48,6 @@ def respawn_map_allowed(database_path: str, map_id: str) -> bool:
     return row is not None and row[0] in {"OpenPVE", "ClosedPVE", "Boss"}
 
 
-@lru_cache(maxsize=512)
-def _is_open_pve_map(database_path: str, map_id: str) -> bool:
-    with connect(database_path) as database:
-        row = database.execute(
-            "SELECT AreaType FROM _Template_MapTemplate "
-            "WHERE MapTemplate=? LIMIT 1",
-            (map_id,),
-        ).fetchone()
-    return row is not None and str(row[0] or "") == "OpenPVE"
-
-
 @lru_cache(maxsize=8)
 def _respawn_prices(database_path: str) -> tuple[int, int]:
     with connect(database_path) as database:
@@ -430,20 +419,15 @@ class PlayerRespawnService:
                 )
             if len(effects) != 2:
                 raise ValueError("missing revival animation or protection effect")
-            pvp_open_world = (
-                bool(getattr(s, "gameplay_pvp_enabled", False))
-                and _is_open_pve_map(
-                    str(self.static_database_path), str(s.gameplay_map)
-                )
+            # The post-revive protection aura is a fixed ten-second window.
+            # It is cancelled by the first accepted skill cast.
+            effects = (
+                effects[0],
+                replace(
+                    effects[1],
+                    duration_ticks=10 * SERVER_TICKS_PER_SECOND,
+                ),
             )
-            if pvp_open_world:
-                effects = (
-                    effects[0],
-                    replace(
-                        effects[1],
-                        duration_ticks=5 * SERVER_TICKS_PER_SECOND,
-                    ),
-                )
             revival_seconds = effects[0].duration_ticks / SERVER_TICKS_PER_SECOND
             # Session and map locks must never overlap. Keep the corpse
             # untargetable while restoring its map-owned pool, then charge
@@ -524,18 +508,17 @@ class PlayerRespawnService:
             CharacterService._send_player_skill_status_effects(
                 s, effects, server_tick=tick, label="player-revive-effects"
             )
-            if pvp_open_world:
-                protection_effect_id = int(effects[1].effect_id)
-                with s.flow_lock:
-                    protection_ids = tuple(
-                        int(instance_id)
-                        for instance_id, (entry, _expiry)
-                        in s.gameplay_runtime_status_effects.items()
-                        if int(entry.effect_id) == protection_effect_id
-                    )
-                    s.gameplay_respawn_protection_instance_id = (
-                        max(protection_ids) if protection_ids else None
-                    )
+            protection_effect_id = int(effects[1].effect_id)
+            with s.flow_lock:
+                protection_ids = tuple(
+                    int(instance_id)
+                    for instance_id, (entry, _expiry)
+                    in s.gameplay_runtime_status_effects.items()
+                    if int(entry.effect_id) == protection_effect_id
+                )
+                s.gameplay_respawn_protection_instance_id = (
+                    max(protection_ids) if protection_ids else None
+                )
             with s.flow_lock:
                 s.gameplay_death_pending = False
                 revival_unlocked = True

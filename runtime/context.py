@@ -384,6 +384,8 @@ from dso_server.protocol.player_init_protocol import (
     ActivitySigninDay,
     Achievement,
     AchievementInfo,
+    ClearDungeonInfo,
+    CLEAR_DUNGEON_INFO_COMMAND,
     CurrencyChanged,
     CraftingResult,
     EventUpdate,

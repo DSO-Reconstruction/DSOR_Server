@@ -228,7 +228,7 @@ class HubTravelTests(unittest.TestCase):
         # Teleport MUST be cancelled
         self.assertIsNone(getattr(session, "gameplay_home_teleport_state", None))
 
-    def test_hub_teleport_dismounts_active_mount(self):
+    def test_hub_teleport_keeps_active_mount(self):
         from gameplay.local_mount_state import (
             find_mount, begin_mount_cast, begin_mount_ride
         )
@@ -242,8 +242,8 @@ class HubTravelTests(unittest.TestCase):
         self.assertIsNotNone(session.gameplay_mount_ride)
         self.server._perform_map_travel(session, HUB_REQUEST, command_id=0x0061)
 
-        # Mount must be removed and teleport channeling must be started
-        self.assertIsNone(session.gameplay_mount_ride)
+        # The ride stays through the urban-area teleport channel.
+        self.assertIsNotNone(session.gameplay_mount_ride)
         self.assertIsNotNone(getattr(session, "gameplay_home_teleport_state", None))
 
 
