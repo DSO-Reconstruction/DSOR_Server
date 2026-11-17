@@ -48,6 +48,17 @@ def respawn_map_allowed(database_path: str, map_id: str) -> bool:
     return row is not None and row[0] in {"OpenPVE", "ClosedPVE", "Boss"}
 
 
+@lru_cache(maxsize=512)
+def _is_open_pve_map(database_path: str, map_id: str) -> bool:
+    with connect(database_path) as database:
+        row = database.execute(
+            "SELECT AreaType FROM _Template_MapTemplate "
+            "WHERE MapTemplate=? LIMIT 1",
+            (map_id,),
+        ).fetchone()
+    return row is not None and str(row[0] or "") == "OpenPVE"
+
+
 @lru_cache(maxsize=8)
 def _respawn_prices(database_path: str) -> tuple[int, int]:
     with connect(database_path) as database:
