@@ -949,10 +949,6 @@ class CustomizationService:
             ride,
             actor_id=LOCAL_PLAYER_ACTOR_ID,
         )
-        if groundmarker_removal_entry is not None:
-            transitions = transitions + (
-                StatusEffect(False, (groundmarker_removal_entry,)),
-            )
         adjustment = CharacterService._refresh_admin_speed(
             s, static_database_path=self.static_database_path, publish=False,
         )
@@ -978,6 +974,23 @@ class CustomizationService:
             s.gameplay_presence_callback(
                 s, ("status_effects", transitions)
             )
+        if groundmarker_removal_entry is not None:
+            # Send the circle removal after the mount state so the client's
+            # ride transition cannot re-render the groundmarker from the same
+            # batch.
+            removal = StatusEffect(
+                clear_existing=False,
+                entries=(groundmarker_removal_entry,),
+            )
+            s.send_reliable_ordered(
+                encode_status_effect_batch(
+                    removal, actor_id=LOCAL_PLAYER_ACTOR_ID
+                ),
+                track=True,
+                label="groundmarker-suppress",
+            )
+            if s.gameplay_presence_callback is not None:
+                s.gameplay_presence_callback(s, ("status_effect", removal))
         CharacterService._select_mount_quickbar_shortcut(
             s, ride.definition.stickerbook_resource_id
         )
@@ -1610,19 +1623,71 @@ class CustomizationService:
             if definition.kind == "costume" else frozenset()
         )
         if decoration_group == "vanitygroundmarker" and s.gameplay_mount_ride is not None:
+            transitions = []
             with s.flow_lock:
                 current_resource, current_instance_id = (
                     s.gameplay_active_decorations.get(decoration_group, ("", None))
                 )
+                current_effect = (
+                    s.gameplay_persistent_status_effects.get(
+                        int(current_instance_id)
+                    )
+                    if current_instance_id is not None else None
+                )
                 if current_resource == definition.resource_id:
                     s.gameplay_active_decorations.pop(decoration_group, None)
-                    if current_instance_id is not None:
-                        s.gameplay_persistent_status_effects.pop(int(current_instance_id), None)
                 else:
-                    if current_instance_id is not None:
-                        s.gameplay_persistent_status_effects.pop(int(current_instance_id), None)
                     s.gameplay_active_decorations[decoration_group] = (
                         definition.resource_id, None,
+                    )
+                if current_effect is not None:
+                    removed = s.gameplay_persistent_status_effects.pop(
+                        int(current_instance_id), None
+                    )
+                    s.gameplay_timed_status_effect_expiries.pop(
+                        int(current_instance_id), None
+                    )
+                    if removed is not None:
+                        transitions.append(StatusEffect(
+                            clear_existing=False,
+                            entries=(
+                                replace(
+                                    removed,
+                                    end_tick=0,
+                                    tick_interval=0,
+                                    stack_index=0,
+                                    total_duration=0,
+                                    update_timing=False,
+                                    stacked=False,
+                                    permanent=False,
+                                    has_details=False,
+                                    values=(),
+                                    field_38=False,
+                                    field_3c=0xFF,
+                                    shape_values=(),
+                                ),
+                            ),
+                        ))
+            if transitions:
+                packet = encode_monster_spawn_batch(
+                    MonsterSpawnBatch(
+                        tuple(
+                            StatusEffectServerCommand(
+                                transition,
+                                LOCAL_PLAYER_ACTOR_ID,
+                            )
+                            for transition in transitions
+                        )
+                    )
+                )
+                s.send_reliable_ordered(
+                    packet,
+                    track=True,
+                    label=f"{definition.kind}-mounted-toggle",
+                )
+                if s.gameplay_presence_callback is not None:
+                    s.gameplay_presence_callback(
+                        s, ("status_effects", tuple(transitions))
                     )
             CharacterService._persist_gameplay_session(
                 self, s, reason=f"{definition.kind} toggle"

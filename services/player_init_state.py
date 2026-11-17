@@ -1784,7 +1784,12 @@ class PlayerInitializationStateService:
                 )
                 group = definition.exclusive_group.casefold() or definition.resource_id
                 if state.mount_ride is not None and group == "vanitygroundmarker":
+                    # Drop the circle from the status dict that becomes the
+                    # map-initialization packet. The old session dict is
+                    # replaced below, so popping only that left the mounted
+                    # player's circle visible after every map load.
                     for m_inst in matching:
+                        state.persistent_status_effects.pop(m_inst, None)
                         s.gameplay_persistent_status_effects.pop(m_inst, None)
                     s.gameplay_active_decorations[group] = (resource_id, None)
                 else:
