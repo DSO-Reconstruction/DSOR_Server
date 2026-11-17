@@ -1739,6 +1739,7 @@ class CustomizationService:
     def _toggle_mount_definition(
             self, s: Session, definition, *, source: str) -> None:
         """Run the shared timed cast/ride flow for any authored mount source."""
+        CharacterService._cancel_home_teleport(s, "mount action")
 
         # Reusing the active mount is the normal unmount operation.
         with s.flow_lock:
@@ -1840,6 +1841,7 @@ class CustomizationService:
             )
             if effect is None:
                 raise ValueError(f"emote {request.value!r} has no status effect")
+            CharacterService._cancel_home_teleport(s, "emote")
             CharacterService._cancel_mount_cast(s, "emote")
             CharacterService._remove_mount_ride(s, reason="emote")
             # Reusable emotes play their authored finite status animation.
