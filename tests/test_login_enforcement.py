@@ -99,6 +99,70 @@ class LoginEnforcementTests(unittest.TestCase):
         self.assertIsNone(LifecycleService._owned_character_ids(lenient, session))
 
 
+class DuplicateLoginTests(unittest.TestCase):
+    """A second login must take the account over, not play beside the first."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.registry = AccountRegistry(Path(self._tmp.name) / "accounts.sqlite3")
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(self.registry.close)
+        self.registry.register("alice", "Correct-Horse-9", client_ip="10.0.0.5")
+        self.session = self.registry.login(
+            "alice", "Correct-Horse-9", client_ip="10.0.0.5"
+        )
+
+    def _server(self) -> _Server:
+        server = _Server()
+        server.account_registry = self.registry
+        server.require_account_identity = True
+        return server
+
+    @staticmethod
+    def _track(server: _Server, session: Session) -> Session:
+        server.sessions[session.addr] = session
+        return session
+
+    def test_relogin_disconnects_the_previous_client(self):
+        server = self._server()
+        old = self._track(server, Session(("10.0.0.5", 41001), _Socket()))
+        server._on_message(old, 0x8A, _hello_with_session(self.session.session_id))
+        self.assertEqual(old.account_username, "alice")
+
+        rotated = self.registry.login(
+            "alice", "Correct-Horse-9", client_ip="10.0.0.5"
+        )
+        fresh = self._track(server, Session(("10.0.0.5", 41002), _Socket()))
+        server._on_message(fresh, 0x8A, _hello_with_session(rotated.session_id))
+
+        self.assertEqual(len(server.dropped), 1)
+        self.assertIn("another client", server.dropped[0])
+        self.assertNotEqual(fresh.login_session_id, old.login_session_id)
+
+    def test_map_handoff_with_the_same_session_guid_is_left_alone(self):
+        server = self._server()
+        source = self._track(server, Session(("10.0.0.5", 42001), _Socket()))
+        destination = self._track(server, Session(("10.0.0.5", 42002), _Socket()))
+        server._on_message(source, 0x8A, _hello_with_session(self.session.session_id))
+        server._on_message(
+            destination, 0x8A, _hello_with_session(self.session.session_id)
+        )
+
+        self.assertEqual(server.dropped, [])
+        self.assertEqual(source.login_session_id, destination.login_session_id)
+
+    def test_another_accounts_client_is_left_alone(self):
+        self.registry.register("bob", "Correct-Horse-9", client_ip="10.0.0.6")
+        bob = self.registry.login("bob", "Correct-Horse-9", client_ip="10.0.0.6")
+        server = self._server()
+        alice = self._track(server, Session(("10.0.0.5", 43001), _Socket()))
+        other = self._track(server, Session(("10.0.0.6", 43002), _Socket()))
+        server._on_message(alice, 0x8A, _hello_with_session(self.session.session_id))
+        server._on_message(other, 0x8A, _hello_with_session(bob.session_id))
+
+        self.assertEqual(server.dropped, [])
+
+
 class SharedAddressRouteTests(unittest.TestCase):
     def setUp(self):
         self.routes = GameplayRouteTable(ttl_seconds=60.0)
