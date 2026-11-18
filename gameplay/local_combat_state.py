@@ -2220,7 +2220,8 @@ class LocalCombatState:
             tuple[int, tuple[float, ...]],
             tuple[VictimStatusEffectDefinition, tuple[VictimStatusEffectDefinition, ...]] | None,
         ] = {}
-        self._next_player_location_visual_id = 0x00010000
+        self._next_player_location_visual_slot = 1
+        self._player_location_visual_epoch = 1
         self._monster_location_visual_casts: set[
             tuple[int, int, int]
         ] = set()
@@ -4631,6 +4632,36 @@ class LocalCombatState:
             geometry, attack_speed_multiplier
         )
 
+    def _allocate_player_location_visual_id(self) -> int:
+        """Allocate a client-safe location effect instance id.
+
+        The client indexes its active LocationEffect instances into a fixed-size
+        table of 10,000 entries (capacity 0x2710) using `id & 0xFFFF`.
+        Id 0 is InvalidLocationEffectId, and indices >= 10,000 or colliding with
+        an already-registered table entry abort the client with:
+            n_assert(!this->IsValid()) in ~LocationEffect()
+        We guarantee that:
+        1. Low 16 bits are strictly within 1 .. 9999 (0x0001 .. 0x270F).
+        2. Low 16 bits never collide with any still-active PlayerLocationVisual.
+        3. Monotonically advancing epoch in high bits ensures unique 32-bit ids.
+        """
+        active_slots = {
+            int(visual.instance_id) & 0xFFFF
+            for visual in self.player_location_visuals.values()
+        }
+        for _ in range(9999):
+            slot = self._next_player_location_visual_slot
+            self._next_player_location_visual_slot += 1
+            if self._next_player_location_visual_slot >= 10000:
+                self._next_player_location_visual_slot = 1
+                self._player_location_visual_epoch = (
+                    (self._player_location_visual_epoch + 1) & 0x7FFF
+                ) or 1
+            if slot not in active_slots:
+                return (self._player_location_visual_epoch << 16) | slot
+        slot = self._next_player_location_visual_slot
+        return (self._player_location_visual_epoch << 16) | slot
+
     def start_player_location_visuals(
         self,
         definitions: tuple[VictimStatusEffectDefinition, ...],
@@ -4676,10 +4707,7 @@ class LocalCombatState:
                 or (definition.duration_ticks <= 0 and definition.aura_radius <= 0.0)
             ):
                 continue
-            instance_id = self._next_player_location_visual_id
-            self._next_player_location_visual_id = (
-                instance_id + 1
-            ) & 0xFFFFFFFF
+            instance_id = self._allocate_player_location_visual_id()
             duration_ticks = max(
                 10 if definition.aura_radius > 0.0 and not visual_only else 1,
                 int(definition.duration_ticks),

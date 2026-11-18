@@ -100,3 +100,68 @@ def test_effect_creation_and_discard_keep_packet_order_across_threads():
             discarding.join(2)
     assert not creating.is_alive() and not discarding.is_alive()
     assert sent == ["player-location-effect-new", "player-location-effect-discard"]
+
+
+def test_location_effect_allocator_stays_within_client_table_limits():
+    """Client has a 10,000-entry table for (id & 0xFFFF).
+    Index 0 is InvalidLocationEffectId, and indices >= 10,000 abort in ~LocationEffect.
+    """
+    combat = SimpleNamespace(
+        player_location_visuals={},
+        _next_player_location_visual_slot=1,
+        _player_location_visual_epoch=1,
+    )
+    from dso_server.gameplay.local_combat_state import LocalCombatState
+    allocate = LocalCombatState._allocate_player_location_visual_id.__get__(combat)
+
+    allocated_ids = []
+    for _ in range(25000):
+        effect_id = allocate()
+        allocated_ids.append(effect_id)
+        slot = effect_id & 0xFFFF
+        assert 1 <= slot < 10000, f"slot {slot} outside [1, 9999]"
+
+    # Epoch must advance when slots wrap around
+    assert combat._player_location_visual_epoch > 1
+
+
+def test_location_effect_allocator_skips_active_slots():
+    """An active visual's slot must not be reused to avoid colliding in client table."""
+    combat = SimpleNamespace(
+        player_location_visuals={
+            0x10001: SimpleNamespace(instance_id=0x10001),
+            0x10002: SimpleNamespace(instance_id=0x10002),
+        },
+        _next_player_location_visual_slot=1,
+        _player_location_visual_epoch=1,
+    )
+    from dso_server.gameplay.local_combat_state import LocalCombatState
+    allocate = LocalCombatState._allocate_player_location_visual_id.__get__(combat)
+
+    # Slots 1 and 2 are active, so the first allocation must skip to slot 3
+    id3 = allocate()
+    assert (id3 & 0xFFFF) == 3
+
+
+def test_send_visuals_forces_discard_on_slot_collision():
+    """If an undiscarded effect still occupies the slot, the old effect must be discarded first."""
+    session = _client(57106)
+    # Session still holds 0x10005 (slot 5)
+    session.gameplay_location_effect_ids = {0x10005}
+
+    # Now a new visual arrives with ID 0x20005 (also slot 5)
+    new_visual = _visual(0x20005)
+    CharacterService._send_player_location_visuals_to(session, (new_visual,))
+
+    # Must have sent discard for 0x10005 before or alongside creation
+    calls = session.send_reliable_ordered.call_args_list
+    labels = [c.kwargs.get("label") for c in calls]
+    assert "player-location-effect-discard" in labels
+    assert "player-location-effect-new" in labels
+
+    # Check that 0x10005 was discarded
+    discard_call = [c for c in calls if c.kwargs.get("label") == "player-location-effect-discard"][0]
+    discarded_ids, _ = decode_discard_location_effect_batch(*discard_call.args[0])
+    assert 0x10005 in discarded_ids
+    assert session.gameplay_location_effect_ids == {0x20005}
+

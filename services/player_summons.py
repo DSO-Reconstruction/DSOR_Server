@@ -516,7 +516,6 @@ class PlayerSummonService:
             s.gameplay_projectile_timers.pop(timer_key, None)
             if (
                 not s.connected
-                or generation != s.gameplay_chase_generation
                 or s.gameplay_combat_state is not combat
             ):
                 return
@@ -530,7 +529,6 @@ class PlayerSummonService:
         with s.flow_lock:
             if (
                 not s.connected
-                or generation != s.gameplay_chase_generation
                 or s.gameplay_combat_state is not combat
             ):
                 return

@@ -853,7 +853,12 @@ class BattlegroundService(BattlegroundObjectiveService):
                              for actor_id in summon.client_actor_ids}
                 for owner in owners:
                     retired.update(combat.expire_player_summons_for_owner(owner))
-                    visuals = combat.expire_player_location_visuals_for_owner(owner)
+                combat.player_location_visuals = {
+                    instance_id: visual
+                    for instance_id, visual in combat.player_location_visuals.items()
+                    if int(visual.owner_actor_id) not in owners
+                }
+                visuals = combat.active_player_location_visuals()
                 traps = tuple(trap.trap_id for trap in combat.player_traps.values()
                               if trap.owner_actor_id in owners)
                 for trap_id in traps:
@@ -876,11 +881,8 @@ class BattlegroundService(BattlegroundObjectiveService):
                 CharacterService._publish_player_summon_despawn(source, tuple(sorted(retired)))
             for trap_id in traps:
                 CharacterService._publish_player_trap_discard(source, trap_id)
-            callback = source.gameplay_presence_callback
-            if callback is not None:
-                callback(source, ("player_location_visuals", visuals))
-            else:
-                CharacterService._send_player_location_visuals_to(source, visuals)
+            for viewer in viewers:
+                CharacterService._send_player_location_visuals_to(viewer, visuals)
 
     @staticmethod
     def _clear_battleground_round_effects(server, s):
