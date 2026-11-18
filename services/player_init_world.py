@@ -952,15 +952,9 @@ class PlayerInitializationWorldService:
             quick_slots_info = copy.deepcopy(persisted_state.quick_slots)
         else:
             quick_slots_info = None
-        client_inventory = pvp_arena_rules.mask_arena_inventory(
-            state.inventory,
-            pvp_arena_rules.arena_active(state.gameplay_map),
-            class_name=class_name,
-            database_path=self.static_database_path,
-        )
         commands = list(build_local_player_init_commands(
             state.new_player,
-            client_inventory,
+            state.inventory,
             CharacterService._quest_decorate_map_commands(
                 self, s, world.map_commands,
             ),
