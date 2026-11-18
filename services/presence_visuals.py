@@ -164,13 +164,31 @@ class PresenceVisualService:
                 return
             known = set(session.gameplay_location_effect_ids)
             current = set(current_by_id)
-            created_ids = tuple(sorted(current - known))
-            discarded_ids = tuple(sorted(known - current))
+            created_ids = list(sorted(current - known))
+            discarded_ids = list(sorted(known - current))
+
+            # Table collision safeguard: the client indexes LocationEffects by
+            # `id & 0xFFFF` into a 10,000-slot table. If a new visual shares a
+            # slot with an undiscarded effect still recorded in `known`, discard
+            # the stale effect first so the client's table slot is cleared.
+            active_slots = {
+                (int(x) & 0xFFFF): int(x)
+                for x in known
+                if x not in discarded_ids
+            }
+            forced_discards = set()
+            for new_id in created_ids:
+                slot = int(new_id) & 0xFFFF
+                if slot in active_slots:
+                    forced_discards.add(active_slots[slot])
+            if forced_discards:
+                discarded_ids.extend(sorted(forced_discards))
+
             session.gameplay_location_effect_ids = current
 
         if discarded_ids:
             session.send_reliable_ordered(
-                encode_discard_location_effect_batch(discarded_ids, actor_id=0),
+                encode_discard_location_effect_batch(tuple(discarded_ids), actor_id=0),
                 track=True,
                 label="player-location-effect-discard",
             )
