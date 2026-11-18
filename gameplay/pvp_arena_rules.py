@@ -210,6 +210,155 @@ def filter_talent_categories(categories, arena: bool):
     return tuple(result)
 
 
+# Standard, official non-set base crafted item templates for each equipment slot.
+# Used to mask equipped set items on the wire in PvP arenas without modifying any db4 files.
+BASE_CRAFTED_BY_SLOT_AND_CLASS: dict[str, dict[tuple[int, ...], str]] = {
+    "mage": {
+        (0,): "mage_base_helmet_crafted",
+        (1,): "mage_base_shoulders_crafted",
+        (2,): "mage_base_torso_crafted",
+        (3,): "mage_base_gloves_crafted",
+        (4,): "mage_base_boots_crafted",
+        (5,): "mage_base_rh_staff_crafted",
+        (5, 6): "mage_base_2h_staff_crafted",
+        (6, 5): "mage_base_2h_staff_crafted",
+        (6,): "mage_base_lh_book_crafted",
+        (7,): "mage_base_backitem_offense_crafted",
+        (8,): "all_base_ring_offense_crafted",
+        (9,): "all_base_ring_offense_crafted",
+        (10,): "all_base_amulet_crafted",
+        (11,): "all_base_belt_crafted",
+        (12,): "mage_base_weaponmod_crafted",
+    },
+    "warrior": {
+        (0,): "warrior_base_helmet_crafted",
+        (1,): "warrior_base_shoulders_crafted",
+        (2,): "warrior_base_torso_crafted",
+        (3,): "warrior_base_gloves_crafted",
+        (4,): "warrior_base_boots_crafted",
+        (5,): "warrior_base_rh_sword_crafted",
+        (5, 6): "warrior_base_2h_sword_crafted",
+        (6, 5): "warrior_base_2h_sword_crafted",
+        (6,): "warrior_base_lh_shield_crafted",
+        (7,): "warrior_base_backitem_offense_crafted",
+        (8,): "all_base_ring_offense_crafted",
+        (9,): "all_base_ring_offense_crafted",
+        (10,): "all_base_amulet_crafted",
+        (11,): "all_base_belt_crafted",
+        (12,): "warrior_base_weaponmod_crafted",
+    },
+    "ranger": {
+        (0,): "ranger_base_helmet_crafted",
+        (1,): "ranger_base_shoulders_crafted",
+        (2,): "ranger_base_torso_crafted",
+        (3,): "ranger_base_gloves_crafted",
+        (4,): "ranger_base_boots_crafted",
+        (5,): "ranger_base_rh_shortbow_crafted",
+        (5, 6): "ranger_base_2h_bow_crafted",
+        (6, 5): "ranger_base_2h_bow_crafted",
+        (6,): "ranger_base_lh_offensequiver_crafted",
+        (7,): "ranger_base_backitem_offense_crafted",
+        (8,): "all_base_ring_offense_crafted",
+        (9,): "all_base_ring_offense_crafted",
+        (10,): "all_base_amulet_crafted",
+        (11,): "all_base_belt_crafted",
+        (12,): "ranger_base_weaponmod_crafted",
+    },
+    "dwarf": {
+        (0,): "dwarf_base_helmet_crafted",
+        (1,): "dwarf_base_shoulders_crafted",
+        (2,): "dwarf_base_torso_crafted",
+        (3,): "dwarf_base_gloves_crafted",
+        (4,): "dwarf_base_boots_crafted",
+        (5,): "dwarf_base_rh_pistol_crafted",
+        (5, 6): "dwarf_base_2h_rifle_crafted",
+        (6, 5): "dwarf_base_2h_rifle_crafted",
+        (6,): "dwarf_base_lh_wrench_crafted",
+        (7,): "dwarf_base_backitem_offense_crafted",
+        (8,): "all_base_ring_offense_crafted",
+        (9,): "all_base_ring_offense_crafted",
+        (10,): "all_base_amulet_crafted",
+        (11,): "all_base_belt_crafted",
+        (12,): "dwarf_base_weaponmod_crafted",
+    },
+}
+
+
+@lru_cache(maxsize=8)
+def _set_item_templates(path: str, _modified_ns: int, _size: int) -> frozenset[str]:
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as database:
+        rows = database.execute(
+            "SELECT SetParts FROM _Template_ItemSet WHERE SetParts IS NOT NULL AND SetParts != ''"
+        ).fetchall()
+    parts = set()
+    for row in rows:
+        for part in row[0].split(';'):
+            part = part.strip()
+            if part:
+                parts.add(part)
+    return frozenset(parts)
+
+
+def set_item_templates(database_path=None) -> frozenset[str]:
+    """All item template IDs that belong to any set in the static database."""
+    path = Path(str(database_path or DEFAULT_STATIC_DB_PATH))
+    try:
+        stat = path.stat()
+    except OSError:
+        return frozenset()
+    return _set_item_templates(path.as_posix(), stat.st_mtime_ns, stat.st_size)
+
+
+def mask_arena_inventory(inventory, arena: bool, class_name: str = "", database_path=None):
+    """Mask equipped set items with official non-set base crafted templates for arena wire view.
+
+    Without editing static.db4, mapping equipped set pieces to existing official
+    non-set crafted templates of the same slot/class ensures the client:
+    - Never evaluates set bonuses (0 matching set pieces).
+    - Preserves all enchantments, socketed gems, glyph upgrades and item level.
+    - Completely prevents client-side C-panel stat additions and projectile prediction (e.g. 3 iceballs).
+    """
+    if not arena or inventory is None:
+        return inventory
+    set_templates = set_item_templates(database_path)
+    if not set_templates:
+        return inventory
+    from dso_server.protocol.inventory_codec import clone_inventory_info, clone_item_info
+
+    cls_key = str(class_name or "").lower()
+    slots_map = BASE_CRAFTED_BY_SLOT_AND_CLASS.get(cls_key, BASE_CRAFTED_BY_SLOT_AND_CLASS.get("mage", {}))
+
+    equipped_slots_by_id = {
+        int(k): tuple(sorted(slots))
+        for k, slots in inventory.equipment_slots.items()
+        if slots
+    }
+
+    has_masked = False
+    new_items = []
+    for item in inventory.items:
+        item_id = int(item.item_id)
+        if item_id in equipped_slots_by_id and item.template_id in set_templates:
+            slots = equipped_slots_by_id[item_id]
+            fallback = slots_map.get(slots)
+            if fallback is None:
+                for s in slots:
+                    fallback = slots_map.get((s,))
+                    if fallback:
+                        break
+            if fallback:
+                cloned = clone_item_info(item)
+                cloned.template_id = fallback
+                new_items.append(cloned)
+                has_masked = True
+                continue
+        new_items.append(item)
+
+    if not has_masked:
+        return inventory
+    return clone_inventory_info(inventory, items=new_items)
+
+
 def banned_item_categories(database_path, battleground_id) -> frozenset[str]:
     """Item categories the arena's own row forbids.
 

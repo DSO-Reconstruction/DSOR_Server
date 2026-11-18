@@ -679,3 +679,74 @@ def test_the_arena_freezes_the_loadout():
     service._refuse_arena_loadout_change(
         inventory, bagged, action(0x02, bagged)
     )
+
+
+def test_arena_masks_equipped_set_items_to_crafted_base():
+    from dso_server.protocol.inventory_codec import ItemEnchantmentInfo
+    set_templates = pvp_arena_rules.set_item_templates()
+    assert "mage_mythic_helmet_dragan_sp" in set_templates
+
+    inventory = InventoryInfo(
+        items=[
+            ItemInfo(
+                item_id=1,
+                template_id="mage_mythic_helmet_dragan_sp",
+                item_level=140,
+                glyph_value=5000,
+                enchantments=[
+                    ItemEnchantmentInfo(value=150.0, template_id="crit_value"),
+                ],
+                socketed_templates=["gem_crit_05"],
+            ),
+            ItemInfo(
+                item_id=2,
+                template_id="mage_mythic_helmet_dragan_sp",
+                item_level=140,
+            ),
+            ItemInfo(
+                item_id=3,
+                template_id="mage_base_rh_staff_crafted",
+                item_level=100,
+            ),
+        ],
+        equipment_slots={1: (0,), 3: (5,)},
+        storage_slots={2: 0},
+    )
+
+    # Outside arena: untouched
+    outside = pvp_arena_rules.mask_arena_inventory(
+        inventory, arena=False, class_name="mage"
+    )
+    assert outside is inventory
+
+    # Inside arena: equipped set item is masked to official base crafted template
+    inside = pvp_arena_rules.mask_arena_inventory(
+        inventory, arena=True, class_name="mage"
+    )
+    assert inside is not inventory
+
+    equipped_helm = next(item for item in inside.items if item.item_id == 1)
+    assert equipped_helm.template_id == "mage_base_helmet_crafted"
+    assert equipped_helm.item_level == 140
+    assert equipped_helm.glyph_value == 5000
+    assert len(equipped_helm.enchantments) == 1
+    assert equipped_helm.socketed_templates == ["gem_crit_05"]
+
+    # Bagged set item remains untouched
+    bagged_helm = next(item for item in inside.items if item.item_id == 2)
+    assert bagged_helm.template_id == "mage_mythic_helmet_dragan_sp"
+
+    # Non-set equipped item remains untouched
+    equipped_staff = next(item for item in inside.items if item.item_id == 3)
+    assert equipped_staff.template_id == "mage_base_rh_staff_crafted"
+
+    # Verify other classes (warrior, ranger, dwarf) and 2H weapons
+    for cls, expected_template in [
+        ("warrior", "warrior_base_helmet_crafted"),
+        ("ranger", "ranger_base_helmet_crafted"),
+        ("dwarf", "dwarf_base_helmet_crafted"),
+    ]:
+        masked = pvp_arena_rules.mask_arena_inventory(inventory, arena=True, class_name=cls)
+        helm = next(item for item in masked.items if item.item_id == 1)
+        assert helm.template_id == expected_template
+
