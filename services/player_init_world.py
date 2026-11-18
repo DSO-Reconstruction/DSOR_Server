@@ -952,9 +952,14 @@ class PlayerInitializationWorldService:
             quick_slots_info = copy.deepcopy(persisted_state.quick_slots)
         else:
             quick_slots_info = None
+        client_inventory = pvp_arena_rules.mask_arena_inventory(
+            state.inventory,
+            pvp_arena_rules.arena_active(state.gameplay_map),
+            self.static_database_path,
+        )
         commands = list(build_local_player_init_commands(
             state.new_player,
-            state.inventory,
+            client_inventory,
             CharacterService._quest_decorate_map_commands(
                 self, s, world.map_commands,
             ),
@@ -1027,10 +1032,10 @@ class PlayerInitializationWorldService:
                         s.gameplay_persistent_status_effects
                     )
                 )
-                + tuple(
+                + (() if pvp_arena_rules.arena_active(state.gameplay_map) else tuple(
                     s.gameplay_item_set_effects[key]
                     for key in sorted(s.gameplay_item_set_effects)
-                )
+                ))
                 + tuple(
                     s.gameplay_socket_effects[key]
                     for key in sorted(s.gameplay_socket_effects)

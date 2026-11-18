@@ -1613,10 +1613,8 @@ class MonsterCombatService(
         # Entries are immutable; copy each container before iterating. Pure
         # modifier reads must not hold gameplay locks during evaluation.
         if pvp_arena_rules.arena_active(s):
-            # Arena rules: the Ancient Wisdom/Group talent trees and the
-            # Shadow Soul's gear do not contribute; item sets keep working
-            # (the client computes them itself) while rune/jewel sockets and
-            # their cast rules stay inert.
+            # Arena rules: the Ancient Wisdom/Group talent trees, the
+            # Shadow Soul's gear, item sets, and rune/jewel sockets do not contribute.
             disabled_effects = pvp_arena_rules.arena_disabled_effect_ids(
                 pvp_arena_rules.session_database_path(s)
             )
@@ -1633,10 +1631,6 @@ class MonsterCombatService(
                 victim_sources
                 + persistent
                 + runtime
-                + tuple(s.gameplay_item_set_effects.values())
-                + tuple(getattr(
-                    s.gameplay_item_set_evaluation, "modifiers", ()
-                ))
             )
         sources = (
             tuple(s.gameplay_persistent_status_effects.values())

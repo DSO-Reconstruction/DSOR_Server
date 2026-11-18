@@ -210,6 +210,64 @@ def filter_talent_categories(categories, arena: bool):
     return tuple(result)
 
 
+@lru_cache(maxsize=8)
+def _set_item_templates(path: str, _modified_ns: int, _size: int) -> frozenset[str]:
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as database:
+        rows = database.execute(
+            "SELECT SetParts FROM _Template_ItemSet WHERE SetParts IS NOT NULL AND SetParts != ''"
+        ).fetchall()
+    parts = set()
+    for row in rows:
+        for part in row[0].split(';'):
+            part = part.strip()
+            if part:
+                parts.add(part)
+    return frozenset(parts)
+
+
+def set_item_templates(database_path=None) -> frozenset[str]:
+    """All item template IDs that belong to any set in the static database."""
+    path = Path(str(database_path or DEFAULT_STATIC_DB_PATH))
+    try:
+        stat = path.stat()
+    except OSError:
+        return frozenset()
+    return _set_item_templates(path.as_posix(), stat.st_mtime_ns, stat.st_size)
+
+
+def mask_arena_inventory(inventory, arena: bool, database_path=None):
+    """Mask equipped set items with _pvp template variants for arena client view.
+
+    The client evaluates set bonuses locally whenever equipped items match
+    _Template_ItemSet.SetParts. By masking equipped set items with their _pvp
+    counterparts, the client displays all normal item stats, models, icons and
+    enchantments, but evaluates 0 matching set pieces, preventing client-side
+    stat boosts, extra projectiles, and active set tooltips.
+    """
+    if not arena or inventory is None:
+        return inventory
+    set_templates = set_item_templates(database_path)
+    if not set_templates:
+        return inventory
+    from dso_server.protocol.inventory_codec import clone_inventory_info, clone_item_info
+
+    equipped_ids = {int(k) for k, slots in inventory.equipment_slots.items() if slots}
+    has_masked = False
+    new_items = []
+    for item in inventory.items:
+        if int(item.item_id) in equipped_ids and item.template_id in set_templates:
+            cloned = clone_item_info(item)
+            cloned.template_id = f"{item.template_id}_pvp"
+            new_items.append(cloned)
+            has_masked = True
+        else:
+            new_items.append(item)
+
+    if not has_masked:
+        return inventory
+    return clone_inventory_info(inventory, items=new_items)
+
+
 def banned_item_categories(database_path, battleground_id) -> frozenset[str]:
     """Item categories the arena's own row forbids.
 
@@ -270,16 +328,18 @@ def mercenary_effect_ids(database_path) -> frozenset[int]:
 def arena_disabled_effect_ids(database_path) -> frozenset[int]:
     """Status effects an arena must never apply.
 
-    The Ancient Wisdom/Group talent ranks and the Shadow Soul and its gear are
-    authored as status effects.  Dropping them here covers every storage
-    container, including the ones a save restores into the player's persistent
-    list.  Item-set tiers are *not* listed: set bonuses keep working in an
-    arena, which is also what the client computes for its own panel.
+    The Ancient Wisdom/Group talent ranks, the Shadow Soul and its gear, and
+    item-set bonuses are authored as status effects. Dropping them here covers
+    every storage container, including the ones a save restores into the
+    player's persistent list.
     """
+
+    from dso_server.services.item_set_persistence import persistent_set_effect_ids
 
     return (
         disabled_talent_effect_ids(database_path)
         | mercenary_effect_ids(database_path)
+        | persistent_set_effect_ids(database_path)
     )
 
 

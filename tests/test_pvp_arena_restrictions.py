@@ -196,7 +196,7 @@ def test_arena_ignores_rift_force_lines(database):
     assert arena.final_damage_reduction == 0
 
 
-def test_arena_sources_drop_sockets_and_ancient_wisdom_but_keep_sets():
+def test_arena_sources_drop_sockets_ancient_wisdom_and_sets():
     s = session()
     disabled = pvp_arena_rules.disabled_talent_effect_ids(DEFAULT_STATIC_DB_PATH)
     knowledge_id = min(disabled)
@@ -221,12 +221,10 @@ def test_arena_sources_drop_sockets_and_ancient_wisdom_but_keep_sets():
     ids = [int(getattr(source, "effect_id", -1)) for source in sources]
     assert knowledge_id not in ids
     assert honor_id in ids
-    # Item sets keep working in an arena: the client computes them itself, so
-    # the server has to agree.  Rune/jewel sockets stay inert.
-    assert 7000 in ids
+    # Item sets, rune/jewel sockets stay inert in an arena.
+    assert 7000 not in ids
     assert 7001 not in ids
-    assert 7002 in ids
-    assert any(getattr(source, "kind", "") == "Damage" for source in sources)
+    assert not any(getattr(source, "kind", "") == "Damage" for source in sources)
 
     # Outside the arena the very same containers all contribute.
     s.gameplay_match = None
@@ -240,15 +238,13 @@ def test_arena_sources_drop_sockets_and_ancient_wisdom_but_keep_sets():
     assert 7001 in ids
 
 
-def test_item_set_bonuses_stay_active_in_the_arena():
-    # The client derives set bonuses from its own item table, so the arena
-    # keeps them instead of leaving the two sides disagreeing.
+def test_item_set_bonuses_are_disabled_in_the_arena():
     disabled = pvp_arena_rules.arena_disabled_effect_ids(DEFAULT_STATIC_DB_PATH)
     from dso_server.services.item_set_persistence import persistent_set_effect_ids
 
     set_ids = persistent_set_effect_ids(DEFAULT_STATIC_DB_PATH)
     assert set_ids
-    assert not (set_ids & disabled)
+    assert set_ids.issubset(disabled)
 
 
 def test_arena_entry_retires_the_pet_and_keeps_its_selection():
@@ -268,7 +264,7 @@ def test_arena_entry_retires_the_pet_and_keeps_its_selection():
     assert "pvp-pet-cleanse" in server.labels
 
 
-def test_arena_entry_cleanses_only_the_rune_and_jewel_sockets():
+def test_arena_entry_cleanses_rune_jewel_sockets_and_sets():
     s = session()
     s.gameplay_item_set_effects = {10: entry(7000, 10)}
     s.gameplay_socket_effects = {11: entry(7001, 11)}
@@ -278,9 +274,9 @@ def test_arena_entry_cleanses_only_the_rune_and_jewel_sockets():
 
     CharacterService._clear_battleground_gear_effects(server, s)
 
-    # Sets survive an arena entry; only the rune/jewel socket effects leave.
-    assert list(s.gameplay_item_set_effects) == [10]
-    assert s.gameplay_item_set_evaluation is not None
+    # Sets and socket effects are cleansed on arena entry.
+    assert s.gameplay_item_set_effects == {}
+    assert s.gameplay_item_set_evaluation is None
     assert s.gameplay_socket_effects == {}
     assert "pvp-gear-cleanse" in server.labels
 
@@ -683,3 +679,29 @@ def test_the_arena_freezes_the_loadout():
     service._refuse_arena_loadout_change(
         inventory, bagged, action(0x02, bagged)
     )
+
+
+def test_arena_masks_equipped_set_items():
+    set_templates = pvp_arena_rules.set_item_templates()
+    assert "mage_mythic_helmet_dragan_sp" in set_templates
+
+    inv = InventoryInfo(
+        items=[
+            ItemInfo(item_id=10, template_id="mage_mythic_helmet_dragan_sp"),
+            ItemInfo(item_id=11, template_id="mage_base_helmet_crafted"),
+            ItemInfo(item_id=12, template_id="mage_mythic_shoulders_dragan_sp"),
+        ],
+        equipment_slots={10: (0,), 11: (1,)},  # 10 is equipped set item, 11 is equipped non-set item, 12 is in bag
+    )
+
+    # In arena: equipped set items get masked with _pvp
+    masked = pvp_arena_rules.mask_arena_inventory(inv, arena=True)
+    items_by_id = {item.item_id: item for item in masked.items}
+    assert items_by_id[10].template_id == "mage_mythic_helmet_dragan_sp_pvp"
+    assert items_by_id[11].template_id == "mage_base_helmet_crafted"
+    assert items_by_id[12].template_id == "mage_mythic_shoulders_dragan_sp"  # unequipped stays unchanged
+
+    # Outside arena: untouched
+    unmasked = pvp_arena_rules.mask_arena_inventory(inv, arena=False)
+    assert unmasked is inv
+    assert all(not item.template_id.endswith("_pvp") for item in unmasked.items)
