@@ -210,42 +210,6 @@ def filter_talent_categories(categories, arena: bool):
     return tuple(result)
 
 
-@lru_cache(maxsize=8)
-def _set_item_templates(path: str, _modified_ns: int, _size: int) -> frozenset[str]:
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as database:
-        rows = database.execute(
-            "SELECT SetParts FROM _Template_ItemSet WHERE SetParts IS NOT NULL AND SetParts != ''"
-        ).fetchall()
-    parts = set()
-    for row in rows:
-        for part in row[0].split(';'):
-            part = part.strip()
-            if part:
-                parts.add(part)
-    return frozenset(parts)
-
-
-def set_item_templates(database_path=None) -> frozenset[str]:
-    """All item template IDs that belong to any set in the static database."""
-    path = Path(str(database_path or DEFAULT_STATIC_DB_PATH))
-    try:
-        stat = path.stat()
-    except OSError:
-        return frozenset()
-    return _set_item_templates(path.as_posix(), stat.st_mtime_ns, stat.st_size)
-
-
-def mask_arena_inventory(inventory, arena: bool, class_name: str = "", database_path=None):
-    """Pass-through inventory for wire view.
-
-    Inventory template masking is intentionally disabled: replacing set template
-    IDs on the wire causes DSOClient assertions (ItemCreationInfo::AddEnchantments)
-    and strips base armor/damage stats on the 'C' status window. Set bonus suppression
-    is handled 100% authoritatively on the server.
-    """
-    return inventory
-
-
 def banned_item_categories(database_path, battleground_id) -> frozenset[str]:
     """Item categories the arena's own row forbids.
 
@@ -306,18 +270,16 @@ def mercenary_effect_ids(database_path) -> frozenset[int]:
 def arena_disabled_effect_ids(database_path) -> frozenset[int]:
     """Status effects an arena must never apply.
 
-    The Ancient Wisdom/Group talent ranks, the Shadow Soul and its gear, and
-    item-set bonuses are authored as status effects. Dropping them here covers
-    every storage container, including the ones a save restores into the
-    player's persistent list.
+    The Ancient Wisdom/Group talent ranks and the Shadow Soul and its gear are
+    authored as status effects.  Dropping them here covers every storage
+    container, including the ones a save restores into the player's persistent
+    list.  Item-set tiers are *not* listed: set bonuses keep working in an
+    arena, which is also what the client computes for its own panel.
     """
-
-    from dso_server.services.item_set_persistence import persistent_set_effect_ids
 
     return (
         disabled_talent_effect_ids(database_path)
         | mercenary_effect_ids(database_path)
-        | persistent_set_effect_ids(database_path)
     )
 
 

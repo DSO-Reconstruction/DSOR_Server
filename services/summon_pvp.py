@@ -332,12 +332,30 @@ class SummonPVPService:
     def _filter_pvp_actor_effects(owner, actor_id, definitions):
         if not CharacterService._pvp_actor_is_summon(owner, actor_id):
             return CharacterService._filter_player_status_effects(owner, definitions, pvp=True)
-        definitions = tuple(replace(effect, duration_ticks=effect.pvp_duration_ticks)
-                            if effect.pvp_duration_ticks is not None else effect
-                            for effect in definitions)
         combat = owner.gameplay_combat_state
+        clamped = []
+        for effect in definitions:
+            duration_ticks = (
+                effect.pvp_duration_ticks
+                if getattr(effect, "pvp_duration_ticks", None) is not None
+                else effect.duration_ticks
+            )
+            groups = combat._status_groups_for_effect(int(effect.effect_id)) if combat else frozenset()
+            is_cc = bool(groups & {"stun", "freeze", "crowdcontrol"})
+            if not is_cc and combat:
+                disabled_feats = combat.status_effect_disabled_features(int(effect.effect_id))
+                is_cc = "regularskills" in disabled_feats or "movement" in disabled_feats
+            if is_cc and duration_ticks > 50:
+                duration_ticks = 50
+            if hasattr(effect, "__dataclass_fields__"):
+                clamped.append(replace(effect, duration_ticks=duration_ticks))
+            else:
+                import copy
+                cloned = copy.copy(effect)
+                cloned.duration_ticks = duration_ticks
+                clamped.append(cloned)
         with combat.lock:
-            return combat.accepted_monster_status_effects(actor_id, definitions, now=time.perf_counter())
+            return combat.accepted_monster_status_effects(actor_id, tuple(clamped), now=time.perf_counter())
 
     @staticmethod
     def _record_pvp_summon_effects(combat, actor_id, definitions):

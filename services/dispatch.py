@@ -713,7 +713,7 @@ class DispatchService:
             elif command_id in PVP_OBJECTIVE_COMMANDS:
                 self._handle_pvp_objective_command(s, payload, command_id)
             elif command_id in {
-                0x00BB, 0x00E2, 0x00E8,
+                0x00BB, 0x00E2, 0x00E3, 0x00E8,
                 0x00EA, CLIENT_CURRENT_POSITION_FRAME_INFO_COMMAND,
             }:
                 self._handle_simple_gameplay_command(s, payload, command_id)

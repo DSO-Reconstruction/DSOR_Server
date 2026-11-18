@@ -258,8 +258,12 @@ class PresenceMovementService:
                 last_start, last_tick, last_motion, last_position = last
                 elapsed = (tick - last_tick) & 0xFFFFFFFF
                 if relayed.scalar_byte:
-                    due = relayed.start_tick != last_start and (
-                        elapsed >= moving_every or motion != last_motion
+                    due = (
+                        motion != last_motion
+                        or (
+                            (relayed.start_tick != last_start or position != last_position)
+                            and elapsed >= moving_every
+                        )
                     )
                 else:
                     due = (
@@ -295,7 +299,7 @@ class PresenceMovementService:
             if viewer.send_unreliable_sequenced(
                 encode_move_batch(MoveBatch(tuple(batch))),
                 label="player-movement",
-                skip_if_busy=True,
+                skip_if_busy=False,
             ) is None:
                 # Busy outbound: retry these on the next tick.
                 break

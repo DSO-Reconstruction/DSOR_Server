@@ -498,12 +498,13 @@ class BattlegroundService(BattlegroundObjectiveService):
 
     @staticmethod
     def _clear_battleground_gear_effects(server, s: Session) -> None:
-        """Retire rune/jewel socket bonuses and item-set bonuses for an arena entrant.
+        """Retire rune/jewel socket bonuses for an arena entrant.
 
         The arena keeps the item's base values, enchantments and the gems
-        socketed into ordinary equipment.  Rune/jewel programs, socket
-        effects, and item-set bonuses leave the session and the client on
-        entry; the hub map load rebuilds them from the saved equipment.
+        socketed into ordinary equipment, and it keeps item sets (the client
+        applies those itself).  Only the rune/jewel programs and their socket
+        effects therefore leave the session and the client on entry; the hub
+        map load rebuilds them from the saved equipment.
         """
 
         removed = []
@@ -513,10 +514,6 @@ class BattlegroundService(BattlegroundObjectiveService):
             s.gameplay_socket_effects = {}
             s.gameplay_socket_event_state = {}
             s.gameplay_socket_effect_evaluation = None
-            removed.extend(s.gameplay_item_set_effects.values())
-            s.gameplay_item_set_effects = {}
-            s.gameplay_item_set_programs = {}
-            s.gameplay_item_set_evaluation = None
             for key, timer in tuple(s.gameplay_projectile_timers.items()):
                 if isinstance(key, tuple) and key[0] == "periodic-aura":
                     timers.append(timer)

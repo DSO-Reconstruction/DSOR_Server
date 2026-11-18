@@ -473,7 +473,7 @@ _WEARER_EVENT_TRIGGERS = frozenset({
 # The minions that hunt players, with what their one strike deals. Summons
 # otherwise chase monsters only, and an arena has none. Fiery Vengeance's bombs
 # author no damage (``dwarf_BombExplode`` is 0): the 600% is the trait's tooltip.
-PLAYER_HUNTING_MINION_STRIKES = {"dwarf_bomb": 6.0}
+PLAYER_HUNTING_MINION_STRIKES = {"dwarf_bomb": 6.0, "minion_talent_frostnova_circle": 0.12}
 
 
 def _waits_for_wearer_event(arguments: tuple[str, ...]) -> bool:
@@ -6616,7 +6616,8 @@ class LocalCombatState:
                 "COALESCE(AuraHeight, 0), COALESCE(AuraShape, ''), "
                 "COALESCE(StartModifiers, ''), COALESCE(EffectHosts, 'Receiver'), "
                 "COALESCE(AuraTargets, ''), COALESCE(ExclusivityType, 'Replace'), "
-                "COALESCE(Persistent, 0) "
+                "COALESCE(Persistent, 0), "
+                "COALESCE(StatusEffectDurationPvP, 0) "
                 "FROM _Template_StatusEffect "
                 "WHERE Id=? LIMIT 1",
                 (parts[0],),
@@ -6636,6 +6637,7 @@ class LocalCombatState:
                     chance = chance_value
 
                 base_duration = max(0.0, float(effect_row[1] or 0.0))
+                base_pvp_duration = max(0.0, float(effect_row[11] or 0.0))
                 raw_duration = metadata.get(
                     "D", metadata.get("DP", "")
                 )
@@ -6657,12 +6659,15 @@ class LocalCombatState:
                 if "DP" in metadata:
                     raw_pvp = metadata["DP"]
                     amount = float(raw_pvp.split("<", 1)[0].strip())
+                    basis = base_pvp_duration if base_pvp_duration > 0.0 else base_duration
                     if "<relative" in raw_pvp.casefold():
-                        pvp_duration_seconds = base_duration * (1.0 + amount)
+                        pvp_duration_seconds = basis * (1.0 + amount)
                     elif "<absolute" in raw_pvp.casefold():
-                        pvp_duration_seconds = base_duration + amount
+                        pvp_duration_seconds = basis + amount
                     else:
                         pvp_duration_seconds = amount
+                elif base_pvp_duration > 0.0:
+                    pvp_duration_seconds = base_pvp_duration
                 raw_delay = metadata.get("DE", "0")
                 delay_seconds = float(
                     raw_delay.split("<", 1)[0].strip()
@@ -7489,6 +7494,8 @@ class LocalCombatState:
             for raw in str(encoded).split(";")
             for kind, separator, arguments in (raw.partition(":"),)
             if separator and kind.strip()
+            # Modern DSO: fireball is a basic/free skill; suppress legacy PvP arena 0.35 mana penalty
+            and not (kind.strip().casefold() == "resourcecost" and "fireball" in arguments.casefold())
         )
         self._status_effect_modifier_programs[effect_id] = parsed
         return parsed
@@ -8486,15 +8493,23 @@ class LocalCombatState:
                 bullet_death_effects
             ),
             trap_on_hit=trap_on_hit,
-            resource_cost_fraction=max(
-                0.0,
-                resource_cost_fraction * max(0.0, 1.0 + cost_relative)
-                + cost_absolute,
+            resource_cost_fraction=(
+                0.0
+                if 1.0 + cost_relative <= 0.0
+                else max(
+                    0.0,
+                    resource_cost_fraction * max(0.0, 1.0 + cost_relative)
+                    + cost_absolute,
+                )
             ),
-            resource_gain_fraction=max(
-                0.0,
-                resource_gain_fraction * max(0.0, 1.0 + gain_relative)
-                + gain_absolute,
+            resource_gain_fraction=(
+                0.0
+                if 1.0 + gain_relative <= 0.0
+                else max(
+                    0.0,
+                    resource_gain_fraction * max(0.0, 1.0 + gain_relative)
+                    + gain_absolute,
+                )
             ),
             cleanse_groups=frozenset(cleanse_groups),
         )

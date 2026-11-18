@@ -309,6 +309,169 @@ class PVPPlayerEffectTests(unittest.TestCase):
         self.assertIn("disabled", self.combat.player_skill_cleanse_groups(
             frenzyshout, modifier_sources=(talent,)))
 
+    def test_10s_freeze_scales_to_2s_in_pvp(self):
+        with sqlite3.connect(DEFAULT_STATIC_DB_PATH) as database:
+            freeze_effect = LocalCombatState._load_victim_status_effects(
+                database, "debuff_cc_freeze"
+            )[0]
+        # In PvE (raw definition): 10.0s = 250 ticks
+        self.assertEqual(freeze_effect.duration_ticks, 250)
+        self.assertEqual(freeze_effect.pvp_duration_ticks, 50)
+        # In PvP: _filter_player_status_effects scales it down to 2.0s = 50 ticks
+        filtered = CharacterService._filter_player_status_effects(
+            self.target, (freeze_effect,), pvp=True
+        )
+        self.assertEqual(filtered[0].duration_ticks, 50)
+        # In PvE: duration stays 250 ticks (10s)
+        pve_filtered = CharacterService._filter_player_status_effects(
+            self.target, (freeze_effect,), pvp=False
+        )
+        self.assertEqual(pve_filtered[0].duration_ticks, 250)
+
+    def test_all_classes_escape_skills_break_stun_in_pvp(self):
+        stun_effect = self.effect()
+        self.impact(effects=(stun_effect,))
+        self.assertIn("regularskills", CharacterService._player_disabled_actor_features(self.target))
+
+        for skill_name in ("warshout", "teleport", "jump", "HoverJump"):
+            skill_idx = self.skill_index(skill_name)
+            self.assertFalse(
+                CharacterService._player_skill_cast_locked(self.target, skill_idx),
+                f"{skill_name} should not be locked when stunned",
+            )
+            with patch.object(CharacterService, "_refresh_player_combat_vitals"):
+                CharacterService._cleanse_player_skill_debuffs(
+                    self.target, self.combat, skill_index=skill_idx, modifier_sources=()
+                )
+            self.assertFalse(self.target.gameplay_victim_status_effect_instances)
+            self.assertNotIn(
+                "regularskills",
+                CharacterService._player_disabled_actor_features(self.target),
+            )
+            # Re-apply stun for next class escape skill test
+            self.impact(effects=(stun_effect,))
+
+    def test_escape_skill_while_stunned_cleanses_and_suppresses_snapback(self):
+        stun_effect = self.effect()
+        self.impact(effects=(stun_effect,))
+        self.assertTrue(CharacterService._player_victim_feature_locked(self.target, "movement"))
+        self.assertIn("regularskills", CharacterService._player_disabled_actor_features(self.target))
+
+        teleport_idx = self.skill_index("teleport")
+        self.assertFalse(CharacterService._player_skill_cast_locked(self.target, teleport_idx))
+
+        with patch.object(CharacterService, "_refresh_player_combat_vitals"):
+            CharacterService._cleanse_player_skill_debuffs(
+                self.target, self.combat, skill_index=teleport_idx, modifier_sources=()
+            )
+
+        # Stun debuff and movement lock must be cleared immediately
+        self.assertFalse(self.target.gameplay_victim_status_effect_instances)
+        self.assertFalse(CharacterService._player_victim_feature_locked(self.target, "movement"))
+        self.assertNotIn("regularskills", CharacterService._player_disabled_actor_features(self.target))
+        self.assertEqual(self.target.gameplay_disabled_feature_cache[1], frozenset())
+
+    def test_frost_nova_ice_resist_debuff_clamped_in_pvp(self):
+        with sqlite3.connect(DEFAULT_STATIC_DB_PATH) as database:
+            raw = LocalCombatState._load_victim_status_effects(
+                database, "skill_frostnova_debuff_resist_ice"
+            )[0]
+        # In PvE with 11 talent points: -0.55 (-55% ice resistance)
+        pve_effect = replace(raw, values=(-0.55,))
+        pve_filtered = CharacterService._filter_player_status_effects(
+            self.target, (pve_effect,), pvp=False
+        )
+        self.assertEqual(pve_filtered[0].values, (-0.55,))
+
+        # In PvP: clamped to at most -0.10 (-10% ice resistance)
+        pvp_filtered = CharacterService._filter_player_status_effects(
+            self.target, (pve_effect,), pvp=True
+        )
+        self.assertEqual(pvp_filtered[0].values, (-0.10,))
+
+    def test_piercing_nova_minion_scaling_configured(self):
+        from dso_server.gameplay.local_combat_state import PLAYER_HUNTING_MINION_STRIKES
+        self.assertIn("minion_talent_frostnova_circle", PLAYER_HUNTING_MINION_STRIKES)
+        self.assertEqual(PLAYER_HUNTING_MINION_STRIKES["minion_talent_frostnova_circle"], 0.12)
+
+    def test_pvp_ground_aura_rolls_block_and_mitigation(self):
+        with sqlite3.connect(DEFAULT_STATIC_DB_PATH) as database:
+            aura = LocalCombatState._load_victim_status_effects(
+                database, "skill_firetorrent_burning_ground_aura"
+            )[0]
+            effect = LocalCombatState._load_victim_status_effects(
+                database, "skill_firetorrent_burning_ground_effect"
+            )[0]
+        # Configure target with 100% block chance and 50% block reduction
+        target_character = SimpleNamespace(character_id=2, class_id=1, level=100)
+        self.target.gameplay_character = target_character
+        target_stats = SimpleNamespace(
+            block_chance=1.0,
+            block_damage_reduction=0.50,
+            incoming_damage_multiplier=lambda dt: 0.80,
+            pvp_damage_permeability=1.0,
+        )
+        # Move target within range of ground aura
+        self.move(self.target, (0.0, 0.0, 0.0))
+        with patch("dso_server.services.pvp_combat.calculate_player_combat_stats", return_value=target_stats), \
+             patch.object(CharacterService, "_resolve_pvp_skill_hit") as resolve:
+            CharacterService._strike_pvp_ground_aura(
+                self.source,
+                self.source.gameplay_chase_generation,
+                None,
+                self.combat,
+                replace(aura, aura_radius=10.0),
+                (effect,),
+                (0.0, 0.0, 0.0),
+                (100.0, 100.0),
+                server_tick=100,
+            )
+        self.assertTrue(resolve.called)
+        hit_key = resolve.call_args[0][2]
+        pending = self.source.gameplay_pending_pvp_hits[hit_key]
+        self.assertTrue(pending.blocked)
+        self.assertIn("Fire", (pending.damage_type, "Fire"))
+
+    def test_fireball_cost_is_zero_in_pvp_and_with_bloodmage(self):
+        geom = self.combat._load_player_skill_geometry(1856)
+        self.assertEqual(geom.resource_id, "fireball")
+        # 6279 is pvp_char_modifier wire id
+        mod_geom = self.combat._modified_player_skill_geometry(geom, (6279,))
+        self.assertEqual(mod_geom.resource_cost_fraction, 0.0)
+
+        # With Blood Mage (-1.0 relative cost)
+        bm_mod = SimpleNamespace(kind="ResourceCost", arguments=("-1.0", "relative", "mage_skills"))
+        mod_geom_bm = self.combat._modified_player_skill_geometry(geom, (6279, bm_mod))
+        self.assertEqual(mod_geom_bm.resource_cost_fraction, 0.0)
+
+    def test_pvp_summon_cc_duration_clamped_to_two_seconds(self):
+        # Summon freeze effect with 10s (250 ticks) or 3s (75 ticks)
+        freeze_def = SimpleNamespace(
+            effect_id=60,
+            duration_ticks=250,
+            pvp_duration_ticks=75,
+            resource_id="debuff_cc_freeze",
+        )
+        # Mock summon actor
+        self.combat.player_summon_health = {67072: [100]}
+        with patch.object(self.combat, "_status_groups_for_effect", return_value=frozenset({"freeze"})):
+            with patch.object(self.combat, "accepted_monster_status_effects", side_effect=lambda a, defs, now: defs):
+                filtered = CharacterService._filter_pvp_actor_effects(self.source, 67072, (freeze_def,))
+                self.assertEqual(len(filtered), 1)
+                self.assertLessEqual(filtered[0].duration_ticks, 50)
+
+    def test_decode_command_0x00e3(self):
+        from dso_server.protocol.gameplay_protocol import (
+            decode_simple_gameplay_command,
+            ChatClientChannelInfo,
+        )
+        payload = bytes.fromhex("8be30014c2eb0b14c2eb0b0600")
+        cmd = decode_simple_gameplay_command(payload)
+        self.assertIsInstance(cmd, ChatClientChannelInfo)
+        self.assertEqual(cmd.character_id, 200000020)
+        self.assertEqual(cmd.target_id, 200000020)
+        self.assertEqual(cmd.channel_id, 6)
+
 
 if __name__ == "__main__":
     unittest.main()

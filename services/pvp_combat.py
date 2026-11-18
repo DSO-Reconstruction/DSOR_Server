@@ -238,13 +238,25 @@ class PVPCombatService:
         # Only debuffs other actors installed are cleansed (see
         # ``_cleanse_player_skill_debuffs``); the player's own sources keep
         # whatever lock they author.
-        remaining = CharacterService._active_status_effect_ids(s) + tuple(
+        def _effect_is_cleansed(effect_id: int) -> bool:
+            groups = combat._status_groups_for_effect(int(effect_id))
+            if cleansed & groups:
+                return True
+            if cleansed & {"debuff", "disabled", "stun", "crowdcontrol", "freeze"}:
+                disabled_feats = combat.status_effect_disabled_features(int(effect_id))
+                if "regularskills" in disabled_feats or "movement" in disabled_feats:
+                    return True
+            return False
+
+        remaining = tuple(
+            int(effect_id)
+            for effect_id in CharacterService._active_status_effect_ids(s)
+            if not _effect_is_cleansed(int(effect_id))
+        ) + tuple(
             int(source.effect_id)
             for source in CharacterService._active_pvp_victim_modifier_sources(s)
             if hasattr(source, "effect_id")
-            and not cleansed & combat._status_groups_for_effect(
-                int(source.effect_id)
-            )
+            and not _effect_is_cleansed(int(source.effect_id))
         )
         return any(
             "regularskills" in combat.status_effect_disabled_features(effect_id)
@@ -270,6 +282,17 @@ class PVPCombatService:
         character = s.gameplay_character
         if not cleansed or character is None:
             return
+
+        def _effect_is_cleansed(effect_id: int) -> bool:
+            groups = combat._status_groups_for_effect(int(effect_id))
+            if cleansed & groups:
+                return True
+            if cleansed & {"debuff", "disabled", "stun", "crowdcontrol", "freeze"}:
+                disabled_feats = combat.status_effect_disabled_features(int(effect_id))
+                if "regularskills" in disabled_feats or "movement" in disabled_feats:
+                    return True
+            return False
+
         remote_actor_id = int(
             s.gameplay_remote_actor_id
             or CharacterService._remote_actor_id(character.character_id)
@@ -293,9 +316,7 @@ class PVPCombatService:
                     if (
                         int(key[0]) == actor_id
                         and float(expires_at) > now
-                        and cleansed & combat._status_groups_for_effect(
-                            int(entry.effect_id)
-                        )
+                        and _effect_is_cleansed(int(entry.effect_id))
                     ):
                         cache.pop(key)
                         removed.append(entry)
@@ -315,6 +336,9 @@ class PVPCombatService:
                 label="player-skill-cleanse",
             )
         if cleansed_own:
+            with s.flow_lock:
+                s.gameplay_disabled_feature_cache = None
+                s.gameplay_move_correction_at = now + 0.5
             CharacterService._refresh_player_combat_vitals(
                 s, inventory_changed=False,
             )
@@ -326,9 +350,7 @@ class PVPCombatService:
         # so casting IronDwarfEnd left the transformation running.
         CharacterService._end_player_runtime_effects(
             s,
-            lambda entry: bool(
-                cleansed & combat._status_groups_for_effect(int(entry.effect_id))
-            ),
+            lambda entry: _effect_is_cleansed(int(entry.effect_id)),
             label="player-skill-cleanse-own",
         )
 
@@ -430,13 +452,37 @@ class PVPCombatService:
     def _filter_player_status_effects(s: Session, definitions, *, pvp=False) -> tuple:
         """Apply socket immunity and authored status-group duration changes."""
 
-        definitions = tuple(
-            replace(definition, duration_ticks=definition.pvp_duration_ticks)
-            if pvp and getattr(definition, "pvp_duration_ticks", None) is not None
-            else definition
-            for definition in definitions
-        )
         combat = s.gameplay_combat_state
+        if pvp:
+            clamped = []
+            for definition in definitions:
+                pvp_ticks = getattr(definition, "pvp_duration_ticks", None)
+                if pvp_ticks is not None:
+                    duration_ticks = pvp_ticks
+                else:
+                    duration_ticks = definition.duration_ticks
+                # In PvP, stuns/freezes/crowd-controls (or 10s PvE CCs) scale down to at most 2s (50 ticks)
+                groups = combat._status_groups_for_effect(int(definition.effect_id)) if combat else frozenset()
+                is_cc = bool(groups & {"stun", "freeze", "crowdcontrol"})
+                if not is_cc and combat:
+                    disabled_feats = combat.status_effect_disabled_features(int(definition.effect_id))
+                    is_cc = "regularskills" in disabled_feats or "movement" in disabled_feats
+                if is_cc and duration_ticks > 50:
+                    duration_ticks = 50
+                values = definition.values
+                if values and (
+                    definition.resource_id == "skill_frostnova_debuff_resist_ice"
+                    or any(v < -0.10 for v in values)
+                ):
+                    # In PvP, resistance/armor reduction debuffs (e.g. frost nova ice resist) cannot reduce by more than 10% (-0.10)
+                    is_shred = definition.resource_id == "skill_frostnova_debuff_resist_ice"
+                    if not is_shred and combat:
+                        prog = combat._status_modifier_program(int(definition.effect_id))
+                        is_shred = any(kind.casefold() in {"resistance", "armor"} for kind, _ in prog)
+                    if is_shred:
+                        values = tuple(max(-0.10, v) if v < -0.10 else v for v in values)
+                clamped.append(replace(definition, duration_ticks=duration_ticks, values=values))
+            definitions = tuple(clamped)
         definitions = CharacterService._defiance_durations(s, combat, definitions)
         blocked = CharacterService._player_status_immunity_groups(s)
         evaluation = getattr(
@@ -603,17 +649,37 @@ class PVPCombatService:
                 inventory=target.gameplay_inventory,
                 modifier_sources=CharacterService._active_skill_modifier_sources(target),
             )
+            target_block_chance = float(getattr(target_stats, "block_chance", 0.0))
+            target_block_reduction = float(getattr(target_stats, "block_damage_reduction", 0.0))
+            block_roll = deterministic_combat_roll(
+                0x50565042,
+                int(server_tick),
+                int(source_actor_id),
+                int(actor_id),
+                int(aura.effect_id),
+            )
+            blocked = target_block_chance > 0.0 and block_roll < min(1.0, target_block_chance)
+            if blocked:
+                reduction = target_block_reduction if target_block_reduction > 0.0 else 0.50
+                block_multiplier = 1.0 - min(0.80, max(0.0, reduction))
+            else:
+                block_multiplier = 1.0
+
+            status_progs = [
+                (coeff, dmg_type, rel)
+                for receiver in receivers
+                for coeff, dmg_type, rel in combat._status_damage_programs(receiver, ticks=False)
+            ]
+            primary_dmg_type = status_progs[0][1] if status_progs else "Physical"
             damage = int(math.ceil(sum(
                 (average * coefficient if relative else coefficient)
                 * CharacterService._pvp_damage_type_multiplier(target_stats, damage_type)
-                for receiver in receivers
-                for coefficient, damage_type, relative in (
-                    combat._status_damage_programs(receiver, ticks=False)
-                )
+                * block_multiplier
+                for coefficient, damage_type, relative in status_progs
             )))
             if pvp_arena_rules.arena_active(s):
                 damage = max(1, math.ceil(damage * PVP_ARENA_DAMAGE_MULTIPLIER))
-            probe[-1] += f" dmg={damage}"
+            probe[-1] += f" dmg={damage} blocked={blocked}"
             key = ("pvp-ground-hit", int(aura.effect_id), int(actor_id), int(server_tick))
             pending = SimpleNamespace(
                 round_token=CharacterService._pvp_round_token(s),
@@ -624,9 +690,9 @@ class PVPCombatService:
                 server_tick=int(server_tick) & 0xFFFFFFFF,
                 position=wire_position, damage=damage, rift_damage=0,
                 victim_status_effects=receivers, user_status_effects=(),
-                frost_hit=False, damage_type="Physical",
+                frost_hit=False, damage_type=primary_dmg_type,
                 player_damage_range=tuple(float(value) for value in damage_range),
-                critical_hit=False, blocked=False,
+                critical_hit=False, blocked=blocked,
             )
             with s.flow_lock:
                 s.gameplay_pending_pvp_hits[key] = pending
@@ -1054,7 +1120,8 @@ class PVPCombatService:
                 )
             )
             key = (
-                "pvp-hit", int(source_actor_id), int(skill.cast_id), actor_id, projectile_index
+                "pvp-hit", int(source_actor_id), int(skill.cast_id),
+                int(skill.server_tick), actor_id, projectile_index,
             )
             base_hit_damage = scaled_skill_damage(
                 rolled_damage, target_geometry.damage_modifier,

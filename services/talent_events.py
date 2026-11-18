@@ -228,27 +228,23 @@ def _live_sources(session) -> tuple:
     the Ancient Wisdom and Group talent rules are inert.
     """
 
-    if pvp_arena_rules.arena_active(session):
-        disabled_effects = pvp_arena_rules.arena_disabled_effect_ids(
-            pvp_arena_rules.session_database_path(session)
-        )
-        return tuple(
-            entry for entry in snapshot_active_status_entries(
-                dict(session.gameplay_persistent_status_effects),
-                dict(session.gameplay_timed_status_effect_expiries),
-                dict(session.gameplay_runtime_status_effects),
-                {},
-                {},
-            )
-            if int(getattr(entry, "effect_id", -1)) not in disabled_effects
-        )
-
-    return snapshot_active_status_entries(
+    entries = snapshot_active_status_entries(
         dict(session.gameplay_persistent_status_effects),
         dict(session.gameplay_timed_status_effect_expiries),
         dict(session.gameplay_runtime_status_effects),
         dict(session.gameplay_item_set_effects),
         dict(session.gameplay_socket_effects),
+    )
+    if not pvp_arena_rules.arena_active(session):
+        return entries
+    # The arena only retires the Ancient Wisdom/Group talent ranks and the
+    # Shadow Soul's gear; item sets and their programs keep running.
+    disabled_effects = pvp_arena_rules.arena_disabled_effect_ids(
+        pvp_arena_rules.session_database_path(session)
+    )
+    return tuple(
+        entry for entry in entries
+        if int(getattr(entry, "effect_id", -1)) not in disabled_effects
     )
 
 

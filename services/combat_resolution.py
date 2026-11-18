@@ -612,7 +612,7 @@ class CombatResolutionService:
 
         evaluation = getattr(s, "gameplay_item_set_evaluation", None)
         if pvp_arena_rules.arena_active(s):
-            return None
+            return evaluation
         return with_set_socket_overrides(
             evaluation,
             getattr(
@@ -668,8 +668,6 @@ class CombatResolutionService:
         the active set evaluation instead of being limited to hit/kill.
         """
 
-        if pvp_arena_rules.arena_active(s):
-            return ()
         evaluation = getattr(s, "gameplay_item_set_evaluation", None)
         combat_state = getattr(s, "gameplay_combat_state", None)
         if evaluation is None or combat_state is None:

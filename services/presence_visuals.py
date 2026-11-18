@@ -361,12 +361,15 @@ class PresenceVisualService:
         # deadline so both viewers see the projectile arrive when damage does.
         with session.flow_lock:
             pvp_hits = tuple(session.gameplay_pending_pvp_hits.values())
+        expected_source_id = int(
+            session.gameplay_remote_actor_id
+            or (CharacterService._remote_actor_id(session.gameplay_character.character_id)
+                if getattr(session, "gameplay_character", None) is not None else -2)
+        )
         for value in pvp_hits:
             if (
-                int(getattr(value, "source_actor_id", -1))
-                == int(getattr(session, "gameplay_remote_actor_id", -2))
-                and int(getattr(value, "cast_id", -1))
-                == int(skill.cast_id)
+                int(getattr(value, "source_actor_id", -1)) == expected_source_id
+                and int(getattr(value, "cast_id", -1)) == int(skill.cast_id)
             ):
                 scheduled_ticks.append(
                     int(getattr(value, "server_tick")) & 0xFFFFFFFF
@@ -435,6 +438,10 @@ class PresenceVisualService:
             modifier_sources = ()
             skill_speed_multiplier = 1.0
         combat = session.gameplay_combat_state
+        current_server_tick = int(getattr(session, "gameplay_chase_server_tick", 0) or getattr(skill, "server_tick", 0))
+        broadcast_tick = max(int(skill.server_tick), current_server_tick) & 0xFFFFFFFF
+        if broadcast_tick != skill.server_tick:
+            skill = replace(skill, server_tick=broadcast_tick)
         geometry = (
             combat._load_player_skill_geometry(skill.skill_index)
             if combat is not None
