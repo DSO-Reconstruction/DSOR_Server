@@ -24,6 +24,7 @@ from dso_server.protocol.pvp_match_protocol import (
     MATCH_MODE_LAST_MAN_STANDING_8FFA,
 )
 from dso_server.gameplay.player_skill_timing import reset_player_skill_timing
+from dso_server.gameplay import pvp_arena_rules
 from dso_server.gameplay.status_modifier_runtime import (
     evaluate_active_status_modifiers, load_status_modifier_catalog,
     snapshot_player_modifier_sources,
@@ -355,6 +356,12 @@ class BattlegroundService(BattlegroundObjectiveService):
         """
 
         removed: dict[int, object] = {}
+        # Shadow Soul gear authors ``Mercenary`` statuses of its own (the
+        # companion auras and their buffs); like runes and jewels they are
+        # inert in an arena, so any such entry leaves with the companion.
+        mercenary_effect_ids = pvp_arena_rules.mercenary_effect_ids(
+            pvp_arena_rules.session_database_path(s)
+        )
         with s.flow_lock:
             for attribute in (
                 "gameplay_mercenary_status_effect",
@@ -384,6 +391,28 @@ class BattlegroundService(BattlegroundObjectiveService):
                     instance_id, None,
                 )
             s.gameplay_mercenary_aura_status_effects = ()
+            if mercenary_effect_ids:
+                for instance_id, entry in tuple(
+                    s.gameplay_persistent_status_effects.items()
+                ):
+                    if int(getattr(entry, "effect_id", -1)) not in (
+                        mercenary_effect_ids
+                    ):
+                        continue
+                    removed[instance_id] = s.gameplay_persistent_status_effects.pop(
+                        instance_id
+                    )
+                    s.gameplay_timed_status_effect_expiries.pop(instance_id, None)
+                for instance_id, (entry, _expiry) in tuple(
+                    s.gameplay_runtime_status_effects.items()
+                ):
+                    if int(getattr(entry, "effect_id", -1)) not in (
+                        mercenary_effect_ids
+                    ):
+                        continue
+                    removed[instance_id] = s.gameplay_runtime_status_effects.pop(
+                        instance_id
+                    )[0]
             # The active selection remains saved, but must not respawn its
             # actor or recreate the buff while this arena session is active.
             s.gameplay_mercenary_restore_pending = False
@@ -399,6 +428,356 @@ class BattlegroundService(BattlegroundObjectiveService):
         ), label="pvp-shadow-soul-cleanse")
         if s.gameplay_presence_callback is not None:
             s.gameplay_presence_callback(s, ("status_effects", (value,)))
+        CharacterService._refresh_player_combat_vitals(
+            s, inventory_changed=False,
+        )
+
+    @staticmethod
+    def _clear_battleground_pet_effects(server, s: Session) -> None:
+        """Retire the active pet when its owner enters a PvP arena.
+
+        A pet carries its own bonuses and the Collector's Bag health line, so
+        the status entry has to leave the session (and the client) with the
+        rest of the arena cleanup.  The selection stays saved in
+        ``gameplay_active_pet`` and the next non-arena map load brings it back.
+        """
+
+        entry = None
+        with s.flow_lock:
+            instance_id = getattr(
+                s, "gameplay_active_pet_effect_instance_id", None
+            )
+            if instance_id is not None:
+                entry = s.gameplay_persistent_status_effects.pop(
+                    int(instance_id), None,
+                )
+                s.gameplay_timed_status_effect_expiries.pop(
+                    int(instance_id), None,
+                )
+            s.gameplay_active_pet_effect_instance_id = None
+            s.gameplay_pet_restore_pending = False
+
+        if entry is None:
+            return
+        value = StatusEffect(False, (replace(
+            entry, has_details=False, values=(), update_timing=False,
+            permanent=False, field_38=False, field_3c=0xFF, shape_values=(),
+        ),))
+        server._send_pvp(s, encode_status_effect_batch(
+            value, actor_id=LOCAL_PLAYER_ACTOR_ID,
+        ), label="pvp-pet-cleanse")
+        if s.gameplay_presence_callback is not None:
+            s.gameplay_presence_callback(s, ("status_effects", (value,)))
+        CharacterService._refresh_player_combat_vitals(
+            s, inventory_changed=False,
+        )
+
+    @staticmethod
+    def _clear_battleground_mount_effects(server, s: Session) -> None:
+        """Dismount on entering an arena that does not allow mounts.
+
+        Mounts are only ridden on the five-versus-five arenas; anywhere else
+        the ride (or its pending cast) is retired on entry.  The recalled
+        mount is remembered so the hub can put the player back on it.
+        """
+
+        if pvp_arena_rules.mount_allowed(s):
+            return
+        with s.flow_lock:
+            ride = s.gameplay_mount_ride
+            casting = s.gameplay_mount_cast is not None
+        if ride is None and not casting:
+            return
+        if ride is not None:
+            with s.flow_lock:
+                s.gameplay_mount_restore_pending = (
+                    ride.definition.stickerbook_resource_id
+                )
+        CharacterService._cancel_mount_cast(s, "pvp arena entry")
+        CharacterService._remove_mount_ride(s, reason="pvp arena entry")
+
+    @staticmethod
+    def _clear_battleground_gear_effects(server, s: Session) -> None:
+        """Retire rune/jewel socket bonuses and item-set bonuses for an arena entrant.
+
+        The arena keeps the item's base values, enchantments and the gems
+        socketed into ordinary equipment.  Rune/jewel programs, socket
+        effects, and item-set bonuses leave the session and the client on
+        entry; the hub map load rebuilds them from the saved equipment.
+        """
+
+        removed = []
+        timers = []
+        with s.flow_lock:
+            removed.extend(s.gameplay_socket_effects.values())
+            s.gameplay_socket_effects = {}
+            s.gameplay_socket_event_state = {}
+            s.gameplay_socket_effect_evaluation = None
+            removed.extend(s.gameplay_item_set_effects.values())
+            s.gameplay_item_set_effects = {}
+            s.gameplay_item_set_programs = {}
+            s.gameplay_item_set_evaluation = None
+            for key, timer in tuple(s.gameplay_projectile_timers.items()):
+                if isinstance(key, tuple) and key[0] == "periodic-aura":
+                    timers.append(timer)
+                    s.gameplay_projectile_timers.pop(key, None)
+            s.gameplay_disabled_feature_cache = None
+        for timer in timers:
+            timer.cancel()
+        if not removed:
+            return
+        value = StatusEffect(False, tuple(replace(
+            entry, has_details=False, values=(), update_timing=False,
+            permanent=False, field_38=False, field_3c=0xFF, shape_values=(),
+        ) for entry in removed))
+        server._send_pvp(s, encode_status_effect_batch(
+            value, actor_id=LOCAL_PLAYER_ACTOR_ID,
+        ), label="pvp-gear-cleanse")
+        if s.gameplay_presence_callback is not None:
+            s.gameplay_presence_callback(s, ("status_effects", (value,)))
+        CharacterService._refresh_player_combat_vitals(
+            s, inventory_changed=False,
+        )
+
+    @staticmethod
+    def _clear_battleground_talent_effects(server, s: Session) -> None:
+        """Retire everything an arena must never keep on the character.
+
+        The client applies the status effects it receives, so ignoring them in
+        the server's own maths is not enough: set occurrences, Shadow Soul
+        gear and the Ancient Wisdom/Group talent ranks all have to leave the
+        client as well.  The saved selections are untouched, and every later
+        map load rebuilds them from the player's own state.
+        """
+
+        disabled = pvp_arena_rules.arena_disabled_effect_ids(
+            pvp_arena_rules.session_database_path(s)
+        )
+        if not disabled:
+            return
+        removed = []
+        with s.flow_lock:
+            for key, entry in tuple(s.gameplay_persistent_status_effects.items()):
+                if int(getattr(entry, "effect_id", -1)) not in disabled:
+                    continue
+                removed.append(s.gameplay_persistent_status_effects.pop(key))
+                s.gameplay_timed_status_effect_expiries.pop(key, None)
+            for key, (entry, _expiry) in tuple(
+                s.gameplay_runtime_status_effects.items()
+            ):
+                if int(getattr(entry, "effect_id", -1)) not in disabled:
+                    continue
+                removed.append(s.gameplay_runtime_status_effects.pop(key)[0])
+        if not removed:
+            return
+        value = StatusEffect(False, tuple(replace(
+            entry, has_details=False, values=(), update_timing=False,
+            permanent=False, field_38=False, field_3c=0xFF, shape_values=(),
+        ) for entry in removed))
+        server._send_pvp(s, encode_status_effect_batch(
+            value, actor_id=LOCAL_PLAYER_ACTOR_ID,
+        ), label="pvp-talent-cleanse")
+        if s.gameplay_presence_callback is not None:
+            s.gameplay_presence_callback(s, ("status_effects", (value,)))
+        CharacterService._refresh_player_combat_vitals(
+            s, inventory_changed=False,
+        )
+
+    @staticmethod
+    def _apply_battleground_loadout_restrictions(server, s: Session) -> None:
+        """Enforce the arena loadout on a session that just arrived."""
+
+        CharacterService._clear_battleground_pet_effects(server, s)
+        CharacterService._clear_battleground_mount_effects(server, s)
+        CharacterService._clear_battleground_talent_effects(server, s)
+        CharacterService._clear_battleground_gear_effects(server, s)
+        CharacterService._unequip_battleground_mercenary_gear(server, s)
+
+    @staticmethod
+    def _unequip_battleground_mercenary_gear(server, s: Session) -> None:
+        """Take the Shadow Soul's gear off for the arena stay.
+
+        An arena has no companion, so those pieces do nothing for the player
+        there.  Dropping their effects from the server's maths is not enough:
+        the client derives item and set stats from whatever it sees equipped,
+        so the pieces have to leave their slots.  The original allocations are
+        remembered and put back on the way out.
+        """
+
+        from dso_server.protocol.inventory_codec import (
+            equipment_allocation_snapshot, store_inventory_item,
+        )
+        from dso_server.protocol.player_init_protocol import (
+            INVENTORY_INFO_COMMAND, ServerCommand, encode_server_command_batch,
+        )
+
+        with s.flow_lock:
+            inventory = s.gameplay_inventory
+            if inventory is None:
+                return
+            mercenary_slots = pvp_arena_rules.MERCENARY_EQUIPMENT_SLOTS
+            equipped = {
+                int(item_id): tuple(int(slot) for slot in slots)
+                for item_id, slots in inventory.equipment_slots.items()
+                if mercenary_slots.intersection(int(slot) for slot in slots)
+            }
+            # A Shadow Soul piece can also resolve to an ordinary slot, so the
+            # item's own category decides as well.
+            definitions = prime_player_combat_database(
+                server.static_database_path
+            ).items
+            for item in inventory.items:
+                item_id = int(item.item_id)
+                if item_id in equipped or item_id not in inventory.equipment_slots:
+                    continue
+                definition = definitions.get(str(item.template_id))
+                if definition is not None and pvp_arena_rules.mercenary_definition(
+                    definition
+                ):
+                    equipped[item_id] = tuple(
+                        int(slot)
+                        for slot in inventory.equipment_slots[item_id]
+                    )
+        if not equipped:
+            return
+        stored = []
+        try:
+            for item_id, slots in equipped.items():
+                inventory = store_inventory_item(
+                    inventory, item_id, storage_name="storage_slots",
+                )
+                stored.append((item_id, slots))
+        except ValueError as exc:
+            # A full storage keeps the loadout as it is: the arena filters the
+            # pieces from its own maths either way.
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] could not stow Shadow Soul gear "
+                f"for the arena: {exc}"
+            )
+            if not stored:
+                return
+        with s.flow_lock:
+            s.gameplay_inventory = inventory
+            s.gameplay_mercenary_restore_slots = tuple(stored)
+        packet, packet_bits = encode_server_command_batch(
+            (
+                ServerCommand(
+                    INVENTORY_INFO_COMMAND,
+                    equipment_allocation_snapshot(inventory),
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+            ),
+            include_terminator=True,
+        )
+        CharacterService._send_world_loot_state_batch(
+            s, packet, packet_bits, label="pvp-mercenary-gear-stowed",
+        )
+        CharacterService._refresh_player_combat_vitals(
+            s, inventory_changed=True,
+        )
+        CharacterService._request_account_save(
+            s, "pvp arena stowed Shadow Soul gear", flush=True,
+        )
+
+    @staticmethod
+    def _restore_battleground_mercenary_gear(server, s: Session) -> None:
+        """Put the Shadow Soul's gear back on when the arena stay ends."""
+
+        from dso_server.protocol.inventory_codec import (
+            equip_inventory_item, equipment_allocation_snapshot,
+        )
+        from dso_server.protocol.player_init_protocol import (
+            INVENTORY_INFO_COMMAND, ServerCommand, encode_server_command_batch,
+        )
+
+        with s.flow_lock:
+            restore = tuple(getattr(s, "gameplay_mercenary_restore_slots", ()))
+            s.gameplay_mercenary_restore_slots = ()
+            inventory = s.gameplay_inventory
+        if not restore or inventory is None:
+            return
+        for item_id, slots in restore:
+            if not any(
+                int(item.item_id) == item_id for item in inventory.items
+            ):
+                continue
+            if item_id in inventory.equipment_slots:
+                continue
+            inventory = equip_inventory_item(inventory, item_id, slots)
+        with s.flow_lock:
+            s.gameplay_inventory = inventory
+        packet, packet_bits = encode_server_command_batch(
+            (
+                ServerCommand(
+                    INVENTORY_INFO_COMMAND,
+                    equipment_allocation_snapshot(inventory),
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+            ),
+            include_terminator=True,
+        )
+        CharacterService._send_world_loot_state_batch(
+            s, packet, packet_bits, label="pvp-mercenary-gear-restored",
+        )
+        CharacterService._refresh_player_combat_vitals(
+            s, inventory_changed=True,
+        )
+        CharacterService._request_account_save(
+            s, "pvp arena restored Shadow Soul gear", flush=True,
+        )
+
+    @staticmethod
+    def _restore_battleground_mount(server, s: Session) -> None:
+        """Put the player back on the mount an arena entry interrupted.
+
+        The arena session is replaced by the hub socket, so the ride has to
+        exist before ``_begin_map_transfer`` snapshots it into the destination
+        route.  Only the selection is remembered; the ride state is rebuilt.
+        """
+
+        with s.flow_lock:
+            resource_id = str(
+                getattr(s, "gameplay_mount_restore_pending", "") or ""
+            )
+            s.gameplay_mount_restore_pending = ""
+            busy = (
+                s.gameplay_mount_ride is not None
+                or s.gameplay_mount_cast is not None
+            )
+        if not resource_id or busy:
+            return
+        definition = load_sticker_definition(
+            server.static_database_path, resource_id
+        )
+        mount = getattr(definition, "mount", None) if definition is not None else None
+        if mount is None:
+            return
+        with s.flow_lock:
+            last_move = s.gameplay_last_move
+            start_tick = (
+                (last_move.start_tick + 1) & 0xFFFFFFFF
+                if last_move is not None
+                else (server_time() // 40) & 0xFFFFFFFF
+            )
+            cast = begin_mount_cast(
+                mount,
+                instance_id=s.gameplay_next_status_effect_instance_id,
+                start_tick=start_tick,
+            )
+            s.gameplay_next_status_effect_instance_id += 1
+            ride = begin_mount_ride(
+                cast, instance_id=s.gameplay_next_status_effect_instance_id,
+            )
+            s.gameplay_next_status_effect_instance_id += 1
+            s.gameplay_mount_ride = ride
+            s.gameplay_persistent_status_effects[ride.instance_id] = (
+                mount_status_effect(
+                    ride, actor_id=LOCAL_PLAYER_ACTOR_ID, active=True,
+                ).entries[0]
+            )
+        CharacterService._send_mount_effect(
+            s, ride, active=True, label="mount-arena-restore",
+        )
         CharacterService._refresh_player_combat_vitals(
             s, inventory_changed=False,
         )
@@ -450,6 +829,13 @@ class BattlegroundService(BattlegroundObjectiveService):
             CharacterService._clear_battleground_mercenary_effects(
                 server, session,
             )
+            # The round boundary re-applies the arena loadout: a pet, mount
+            # (outside 5v5), talent tree or item-set/rune effect activated
+            # between rounds must not survive into the fight.
+            CharacterService._clear_battleground_pet_effects(server, session)
+            CharacterService._clear_battleground_mount_effects(server, session)
+            CharacterService._clear_battleground_talent_effects(server, session)
+            CharacterService._clear_battleground_gear_effects(server, session)
             with session.flow_lock:
                 timers = tuple(session.gameplay_projectile_timers.values())
                 session.gameplay_projectile_timers.clear()
@@ -1052,6 +1438,10 @@ class BattlegroundService(BattlegroundObjectiveService):
             self, s,
             enabled=bool(getattr(persisted, "pvp_enabled", False)),
         )
+        # A mount the arena entry interrupted has to exist before the
+        # transfer snapshot; the hub's map load then carries it on.
+        CharacterService._restore_battleground_mount(self, s)
+        CharacterService._restore_battleground_mercenary_gear(self, s)
         try:
             CharacterService._begin_map_transfer(
                 self,

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dso_server.runtime.context import *
+from dso_server.gameplay import pvp_arena_rules
 from dso_server.gameplay.combat_entities import (
     CombatEntity,
+    EntityImpact,
     impact_status_effects,
     scaled_skill_damage,
     rift_force_echo_damage,
@@ -17,6 +19,10 @@ from dso_server.gameplay.local_combat_state import (
     deterministic_combat_roll,
     parse_disabled_actor_features,
 )
+
+# In PvP arenas, scale raw damage (from level 140 PvE gear) to prevent one-shots
+# and maintain competitive arena match pacing (25% damage / 75% PvP mitigation).
+PVP_ARENA_DAMAGE_MULTIPLIER = 0.25
 
 
 class PVPCombatService:
@@ -566,15 +572,27 @@ class PVPCombatService:
             or CharacterService._remote_actor_id(s.gameplay_character.character_id)
         )
         frame = combat.encounter.coordinate_frame
+        struck = 0
+        seen = 0
+        probe = []
         for actor_id, wire_position, target in tuple(
             s.gameplay_presence_callback(s, ("combat_targets",)) or ()
         ):
-            if (
-                target is s
-                or not CharacterService._pvp_target_is_hostile(s, target)
-                or combat._distance(frame.wire_to_world(wire_position), position) > radius
-            ):
+            seen += 1
+            world = frame.wire_to_world(wire_position)
+            distance = combat._distance(world, position)
+            hostile = CharacterService._pvp_target_is_hostile(s, target)
+            # Players get the same collision-radius margin the monster aura
+            # loop grants (Frost Nova and friends reached 0.75 m inside the
+            # drawn ring).
+            accepted = target is not s and hostile and distance <= radius + 0.75
+            probe.append(
+                f"actor={actor_id} d={distance:.2f} hostile={hostile} "
+                f"self={target is s} hit={accepted}"
+            )
+            if not accepted:
                 continue
+            struck += 1
             target_character = target.gameplay_character
             target_stats = calculate_player_combat_stats(
                 combat.encounter.static_database_path, cache_owner=target,
@@ -593,6 +611,9 @@ class PVPCombatService:
                     combat._status_damage_programs(receiver, ticks=False)
                 )
             )))
+            if pvp_arena_rules.arena_active(s):
+                damage = max(1, math.ceil(damage * PVP_ARENA_DAMAGE_MULTIPLIER))
+            probe[-1] += f" dmg={damage}"
             key = ("pvp-ground-hit", int(aura.effect_id), int(actor_id), int(server_tick))
             pending = SimpleNamespace(
                 round_token=CharacterService._pvp_round_token(s),
@@ -610,6 +631,117 @@ class PVPCombatService:
             with s.flow_lock:
                 s.gameplay_pending_pvp_hits[key] = pending
             CharacterService._resolve_pvp_skill_hit(s, generation, key)
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] pvp ground probe "
+            f"aura={int(aura.effect_id)} r={radius:.2f} "
+            f"seen={seen} struck={struck}: " + "; ".join(probe)
+        )
+
+    @staticmethod
+    def _pvp_area_fallback_plan(combat, hit_plan, entities, *, skill,
+                                source_position):
+        """Hit the hostile players the monster-shaped geometry rejected.
+
+        Radius/point projectiles are resolved by the client against players,
+        but ``plan_entity_skill`` sweeps only the monster population, so an
+        aimed cast could produce an empty plan while an enemy stood inside the
+        authored area.  Accept the players within the skill's reach that lie in
+        front of the caster, nearest first.
+        """
+
+        geometry = hit_plan.geometry
+        if hit_plan.impacts:
+            return hit_plan
+        reach_limit = max(
+            float(getattr(geometry, "attack_range", 0.0) or 0.0),
+            float(getattr(geometry, "hit_range", 0.0) or 0.0),
+            float(getattr(geometry, "projectile_range", 0.0) or 0.0),
+        )
+        if reach_limit <= 0.0:
+            return hit_plan
+        frame = combat.encounter.coordinate_frame
+        origin = frame.wire_to_world(tuple(source_position))
+        angle = float(getattr(skill, "aim_angle", 0.0) or 0.0)
+        aim = (-math.sin(angle), -math.cos(angle))
+        cos_limit = math.cos(math.radians(70.0))
+        accepted = []
+        for entity in entities:
+            position = entity.position
+            dx, dz = position[0] - origin[0], position[2] - origin[2]
+            reach = math.hypot(dx, dz)
+            if reach > reach_limit + float(entity.collision_radius):
+                continue
+            if reach > 1e-6 and (
+                dx * aim[0] + dz * aim[1]
+            ) / reach < cos_limit:
+                continue
+            accepted.append((reach, int(entity.actor_id), entity))
+        if not accepted:
+            return hit_plan
+        accepted.sort(key=lambda row: (row[0], row[1]))
+        budget = max(1, int(getattr(geometry, "impact_count", 1)))
+        # A player hit must land when the projectile does, not when the cast is
+        # accepted.  ``plan_entity_skill`` derives that from the travel
+        # distance over the authored velocity; mirror it here so a fallback
+        # impact is not an instant hit at the caster's feet.
+        velocity = float(getattr(geometry, "projectile_velocity", 0.0) or 0.0)
+        static_delay = float(getattr(geometry, "hit_frame", 0.0) or 0.0) / 25.0
+        emit_delay = float(getattr(hit_plan, "emit_delay", 0.0) or 0.0)
+        impacts = tuple(
+            EntityImpact(
+                entity, 0, reach, reach,
+                emit_delay + (reach / velocity if velocity > 1e-6
+                              else static_delay),
+            )
+            for reach, _actor_id, entity in accepted[:budget]
+        )
+        return replace(hit_plan, impacts=impacts)
+
+    @staticmethod
+    def _strike_pvp_location_aura_ticks(combat, target_sessions, *,
+                                        server_tick: int) -> None:
+        """Land this tick's player ground auras on the enemy players inside.
+
+        ``apply_player_location_auras`` walks the monster population only, so
+        an owner aura such as Hornet Cloud never touched an arena opponent.
+        The combat world records each ticking aura and this publishes it
+        through the PvP ground strike.
+        """
+
+        strikes = tuple(getattr(combat, "player_location_aura_pvp_strikes", ()))
+        if not strikes:
+            return
+        combat.player_location_aura_pvp_strikes = []
+        ranges = {}
+        for definition, receivers, position, owner_actor_id in strikes:
+            owner = target_sessions.get(int(owner_actor_id))
+            if owner is None or not getattr(owner, "gameplay_pvp_enabled", False):
+                continue
+            damage_range = ranges.get(int(owner_actor_id))
+            if damage_range is None:
+                character = owner.gameplay_character
+                stats = calculate_player_combat_stats(
+                    combat.encounter.static_database_path,
+                    cache_owner=owner,
+                    class_name=CLASS_NAMES.get(
+                        int(getattr(character, "class_id", 0)), "mage"
+                    ),
+                    level=max(1, int(getattr(character, "level", 1))),
+                    inventory=owner.gameplay_inventory,
+                    modifier_sources=(
+                        CharacterService._active_skill_modifier_sources(owner)
+                    ),
+                )
+                damage_range = (
+                    float(stats.minimum_damage), float(stats.maximum_damage),
+                )
+                ranges[int(owner_actor_id)] = damage_range
+            CharacterService._schedule_pvp_ground_strike(
+                owner, combat, definition, tuple(receivers),
+                position=tuple(position),
+                damage_range=damage_range,
+                server_tick=server_tick,
+            )
 
     @staticmethod
     def _active_pvp_victim_modifier_sources(
@@ -701,7 +833,10 @@ class PVPCombatService:
             player_rift_force_echo_multiplier: float = 0.0,
             explicit_target_actor_ids: tuple[int, ...] = (),
             target_position: tuple[float, float, float] | None = None,
-            now: float | None = None, hit_plan=None, target_snapshot=None
+            now: float | None = None, hit_plan=None, target_snapshot=None,
+            additional_victim_effects: tuple[object, ...] = (),
+            area_radius_override: float | None = None,
+            impact_delay_override: float | None = None,
     ) -> tuple[GameplayDeadlineHandle, ...]:
         """Queue authoritative per-projectile hits against hostile actors."""
 
@@ -729,11 +864,24 @@ class PVPCombatService:
                     modifier_sources=modifier_sources, additional_entities=entities,
                     attack_speed_multiplier=attack_speed_multiplier, now=now,
                     require_explicit_target=isinstance(skill, TargetBulletSkill),
+                    area_radius_override=area_radius_override,
+                    impact_delay_override=impact_delay_override,
                 )
         if hit_plan is None:
             return ()
+        if (
+            not hit_plan.impacts
+            and entities
+            and not isinstance(skill, (BulletSkill, TargetBulletSkill))
+        ):
+            hit_plan = CharacterService._pvp_area_fallback_plan(
+                combat, hit_plan, entities, skill=skill,
+                source_position=source_position,
+            )
         geometry = hit_plan.geometry
         target_by_id = {actor_id: (position, owner) for actor_id, position, owner in targets}
+        frame = combat.encounter.coordinate_frame
+        armed_explosions: set[tuple[int, str, int]] = set()
         timers = []
         for impact_index, impact in enumerate(hit_plan.impacts):
             actor_id = impact.target.actor_id
@@ -741,6 +889,16 @@ class PVPCombatService:
                 continue
             position, target_session = target_by_id[actor_id]
             delay = impact.delay
+            velocity = float(getattr(geometry, "projectile_velocity", 0.0) or 0.0)
+            if velocity > 1e-6:
+                # Visual projectile flight time: ensure the hit resolves only after
+                # the projectile has visually crossed the entire distance to the target.
+                target_world = frame.wire_to_world(position)
+                source_world = frame.wire_to_world(source_position)
+                real_reach = combat._distance(source_world, target_world)
+                emit_delay = float(getattr(hit_plan, "emit_delay", 0.0) or 0.0)
+                visual_arrival = emit_delay + (real_reach / velocity)
+                delay = max(delay, visual_arrival)
             projectile_index = impact.projectile_index
             target_is_summon = CharacterService._pvp_actor_is_summon(target_session, actor_id)
             victim_sources = (
@@ -820,15 +978,11 @@ class PVPCombatService:
                 target_block_chance > 0.0
                 and block_roll < min(1.0, target_block_chance)
             )
-            block_multiplier = (
-                1.0
-                - max(
-                    0.0,
-                    min(1.0, target_block_reduction),
-                )
-                if blocked
-                else 1.0
-            )
+            if blocked:
+                reduction = target_block_reduction if target_block_reduction > 0.0 else 0.50
+                block_multiplier = 1.0 - min(0.80, max(0.0, reduction))
+            else:
+                block_multiplier = 1.0
             wearer_low_health = CharacterService._player_is_low_health(s)
             status_group_test = getattr(
                 combat, "status_sources_have_group", None
@@ -865,6 +1019,17 @@ class PVPCombatService:
                     if status_group_test is not None else False,
                     stunned_hit=stunned_hit,
                 )
+            }
+            # A native trap carries its own victim effects; a trap trip is not
+            # a cast, so nothing in the skill column supplies them.
+            for effect in additional_victim_effects:
+                impact_effects.setdefault(
+                    str(getattr(effect, "resource_id", "")), effect
+                )
+            impact_effects = {
+                resource_id: effect
+                for resource_id, effect in impact_effects.items()
+                if resource_id
             }
             # Only the hit half of the caster column belongs to an impact.
             # ``skillstart`` effects already went out with the cast; sending
@@ -911,6 +1076,9 @@ class PVPCombatService:
                 combat, impact_effects.values(), player_damage_range,
                 target_stats,
             )
+            if pvp_arena_rules.arena_active(s):
+                base_hit_damage = max(1, math.ceil(base_hit_damage * PVP_ARENA_DAMAGE_MULTIPLIER))
+                hit_damage = max(1, math.ceil(hit_damage * PVP_ARENA_DAMAGE_MULTIPLIER))
             pending = SimpleNamespace(
                 round_token=CharacterService._pvp_round_token(s),
                 combat=combat,
@@ -963,6 +1131,47 @@ class PVPCombatService:
             if old is not None:
                 old.cancel()
             timers.append(timer)
+            # A delayed bullet explosion (Explosive Arrow's second hit) is
+            # armed by the monster-hit path only, and an arena has no monster
+            # resolutions to carry it.  Arm it here for the player hit.
+            for explosion in combat.delayed_bullet_explosions(geometry):
+                aura_key = (
+                    int(skill.cast_id), str(explosion.resource_id), actor_id,
+                )
+                if aura_key in armed_explosions:
+                    continue
+                armed_explosions.add(aura_key)
+                own_children = combat.location_aura_child_ids(
+                    explosion.resource_id
+                )
+                CharacterService._schedule_bullet_explosion(
+                    s, combat, explosion,
+                    tuple(
+                        effect for effect in getattr(
+                            geometry, "location_status_effects", ()
+                        )
+                        if effect.chance >= 1.0
+                        and effect.resource_id in own_children
+                    ),
+                    position=frame.wire_to_world(tuple(position)),
+                    owner_actor_id=int(source_actor_id),
+                    cast_id=int(skill.cast_id),
+                    skill_index=int(skill.skill_index),
+                    player_damage_range=player_damage_range,
+                    critical_hit_chance=player_critical_hit_chance,
+                    critical_damage_multiplier=(
+                        player_critical_damage_multiplier
+                    ),
+                    server_tick=int(skill.server_tick),
+                    extra_delay=delay,
+                )
+        if not timers and (explicit_target_actor_ids or targets):
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] pvp skill probe skill="
+                f"{getattr(skill, 'skill_index', '?')} targets={len(targets)} "
+                f"explicit={tuple(explicit_target_actor_ids)} "
+                f"impacts={len(hit_plan.impacts) if hit_plan else 0}"
+            )
         return tuple(timers)
 
     @staticmethod
@@ -1342,6 +1551,8 @@ class PVPCombatService:
                 )
             )),
         )
+        if pvp_arena_rules.arena_active(s):
+            requested_damage = max(1, math.ceil(requested_damage * PVP_ARENA_DAMAGE_MULTIPLIER))
         match_opponents = not target_is_summon and CharacterService._pvp_match_opponents(s, target)
         lethal_allowed = target_is_summon or CharacterService._pvp_lethal_damage_allowed(s, target)
         if not target_is_summon and requested_damage > 0:

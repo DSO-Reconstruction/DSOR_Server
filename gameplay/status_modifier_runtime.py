@@ -19,6 +19,7 @@ from types import MappingProxyType
 from typing import Iterable, Mapping
 
 from dso_server.runtime import resident_content
+from dso_server.gameplay import pvp_arena_rules
 
 
 VIRTUAL_CURRENCY_DROP_TEMPLATES = frozenset((
@@ -353,8 +354,28 @@ def snapshot_player_modifier_sources(session) -> tuple[object, ...]:
 
     Item-set tiers contribute their compiled modifiers (``QuestDropFactor``,
     ``HealthGlobeBonus``, Black Essence skill-cost rules) next to the status
-    entries; socket rules arrive through their status entries.
+    entries; socket rules arrive through their status entries.  Inside a PvP
+    arena the item-set and rune/jewel programs and the Ancient Wisdom/Group
+    talent trees are inert, so only the remaining statuses are returned.
     """
+
+    if pvp_arena_rules.arena_active(session):
+        # Arena rules: the Ancient Wisdom/Group talent trees, the Shadow
+        # Soul's gear, item sets, and rune/jewel sockets do not contribute.
+        disabled_effects = pvp_arena_rules.arena_disabled_effect_ids(
+            pvp_arena_rules.session_database_path(session)
+        )
+        return tuple(
+            entry
+            for entry in snapshot_active_status_entries(
+                getattr(session, 'gameplay_persistent_status_effects', {}),
+                getattr(session, 'gameplay_timed_status_effect_expiries', {}),
+                getattr(session, 'gameplay_runtime_status_effects', {}),
+                {},
+                {},
+            )
+            if int(getattr(entry, "effect_id", -1)) not in disabled_effects
+        )
 
     return snapshot_active_status_entries(
         getattr(session, 'gameplay_persistent_status_effects', {}),

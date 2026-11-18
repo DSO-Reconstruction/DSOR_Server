@@ -924,6 +924,9 @@ class MatchmakingService:
         # Shadow Soul summons are retired at match start; clear their separate
         # permanent buff now so it cannot linger after the pet disappears.
         CharacterService._clear_battleground_mercenary_effects(self, s)
+        # Pets, mounts (outside the 5v5 modes) and item-set/rune/jewel bonuses
+        # do not act in an arena; retire the ones the entrant was carrying.
+        CharacterService._apply_battleground_loadout_restrictions(self, s)
         # The arena's map-access row authors the PvP balance buff
         # (``pvp_char_modifier``); install it with the rest of the entry state.
         CharacterService._apply_battleground_map_effects(self, s)

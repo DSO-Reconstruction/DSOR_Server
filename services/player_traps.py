@@ -9,6 +9,7 @@ from dso_server.runtime.transport import Session
 
 TRAP_POLL_SECONDS = 0.10
 TRAP_TRIGGER_VISUAL_SECONDS = 0.50
+_LAST_TRAP_PROBE: dict[int, float] = {}
 
 
 class PlayerTrapService:
@@ -173,7 +174,25 @@ class PlayerTrapService:
                 and int(s.gameplay_chase_generation) == int(generation)
             )
         now = time.perf_counter()
+        with combat.lock:
+            trap = combat.player_traps.get(int(trap_id))
+            if trap is None:
+                return
+            trap_position = trap.position
+            trip_radius = float(trap.definition.trip_radius)
+            trap_expires_at = trap.expires_at
+        expired = not still_current or now >= trap_expires_at
+        # Hostile players are not part of the monster population, so they are
+        # tested separately; the presence callback owns their sessions and
+        # wire positions, which must be read outside ``combat.lock``.
+        pvp_targets = (
+            () if expired
+            else CharacterService._player_trap_victims(
+                s, combat, trap_position, trip_radius,
+            )
+        )
         pending_hits = ()
+        pvp_timers = ()
         tripped = False
         trap = None
         with combat.lock:
@@ -196,6 +215,8 @@ class PlayerTrapService:
                     )
                     for actor_id in combat.living_actor_ids
                 )
+                if not tripped and pvp_targets:
+                    tripped = True
             if not expired and not tripped:
                 trap = None
             else:
@@ -232,6 +253,18 @@ class PlayerTrapService:
                             trap.definition.victim_status_effects
                         ),
                     )
+        # The PvP pipeline reads the presence layer (session locks), which may
+        # not nest inside the map/combat lock this poll ran under.
+        if trap is not None and tripped and pvp_targets:
+            pvp_timers = CharacterService._player_trap_pvp_hits(
+                s, combat, trap, pvp_targets, now=now,
+            )
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] trap tripped with "
+                f"pvp targets {pvp_targets}: "
+                f"{len(pvp_timers)} pvp hit(s), "
+                f"{len(pending_hits)} monster hit(s)"
+            )
         if trap is None:
             CharacterService._schedule_player_trap_poll(
                 s, combat, int(trap_id)
@@ -265,6 +298,8 @@ class PlayerTrapService:
                 with s.flow_lock:
                     s.gameplay_projectile_timers[impact_key] = timer
                 timer.start()
+            for timer in pvp_timers:
+                timer.start()
 
         discard_delay = TRAP_TRIGGER_VISUAL_SECONDS if tripped else 0.0
         timer = s.gameplay_deadline_timer(
@@ -274,6 +309,83 @@ class PlayerTrapService:
         )
         timer.daemon = True
         timer.start()
+
+    @staticmethod
+    def _player_trap_victims(s: Session, combat, position, radius) -> tuple[int, ...]:
+        """Hostile players standing inside a trap's trip radius.
+
+        The presence callback owns peer sessions and their wire positions, so
+        this has to run outside ``combat.lock``.  Monster trips are resolved
+        separately by the poll.
+        """
+
+        callback = s.gameplay_presence_callback
+        if not s.gameplay_pvp_enabled or callback is None:
+            return ()
+        frame = combat.encounter.coordinate_frame
+        victims = []
+        targets = tuple(callback(s, ("combat_targets",)) or ())
+        seen = []
+        for actor_id, wire_position, owner in targets:
+            world = frame.wire_to_world(tuple(wire_position))
+            distance = math.dist(position, world)
+            hostile = CharacterService._pvp_target_is_hostile(s, owner)
+            same_world = getattr(owner, "gameplay_combat_state", None) is combat
+            accepted = hostile and same_world and distance <= float(radius) + 0.75
+            seen.append(
+                f"actor={actor_id} d={distance:.2f} hostile={hostile} "
+                f"same_world={same_world} hit={accepted}"
+            )
+            if accepted:
+                victims.append(int(actor_id))
+        if targets and not victims:
+            # Throttled so a trap that never springs cannot flood the log.
+            now = time.perf_counter()
+            if now - _LAST_TRAP_PROBE.get(id(s), 0.0) > 1.0:
+                _LAST_TRAP_PROBE[id(s)] = now
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] trap probe "
+                    f"r={float(radius):.2f} targets={len(targets)}: "
+                    + "; ".join(seen)
+                )
+        return tuple(victims)
+
+    @staticmethod
+    def _player_trap_pvp_hits(s: Session, combat, trap, actor_ids, *, now):
+        """Queue PvP damage and effects for the players a trap caught."""
+
+        from types import SimpleNamespace
+
+        frame = combat.encounter.coordinate_frame
+        wire_position = frame.world_to_wire(trap.position)
+        trigger = SimpleNamespace(
+            skill_index=int(trap.skill_index),
+            cast_id=int(trap.cast_id),
+            aim_angle=float(trap.yaw),
+            server_tick=int(trap.server_tick),
+        )
+        return CharacterService._prepare_pvp_skill_hits(
+            s, combat, trigger,
+            source_position=wire_position,
+            source_actor_id=int(trap.owner_actor_id),
+            player_damage_range=trap.player_damage_range,
+            player_critical_hit_chance=trap.critical_hit_chance,
+            player_critical_damage_multiplier=trap.critical_damage_multiplier,
+            attack_speed_multiplier=1.0,
+            modifier_sources=tuple(trap.modifier_sources),
+            player_rift_force_echo_chance=trap.rift_force_echo_chance,
+            player_rift_force_echo_multiplier=(
+                trap.rift_force_echo_multiplier
+            ),
+            explicit_target_actor_ids=tuple(int(value) for value in actor_ids),
+            target_position=wire_position,
+            now=now,
+            area_radius_override=float(trap.definition.trip_radius),
+            impact_delay_override=0.0,
+            additional_victim_effects=tuple(
+                trap.definition.victim_status_effects
+            ),
+        )
 
     @staticmethod
     def _publish_player_trap_discard(s: Session, trap_id: int) -> None:

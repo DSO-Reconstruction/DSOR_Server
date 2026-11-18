@@ -2201,6 +2201,13 @@ class LocalCombatState:
         self._next_monster_beam_id = 0x40000000
         self.player_location_aura_members: set[tuple[int, int]] = set()
         self.player_location_aura_refresh_at: dict[tuple[int, int], float] = {}
+        # Enemy players are not part of the monster population the aura loop
+        # walks, so each ticking ground aura is recorded here for the service
+        # layer to strike them through the PvP pipeline.
+        self.player_location_aura_pvp_strikes: list[
+            tuple[object, tuple, tuple[float, float, float], int]
+        ] = []
+        self._player_location_aura_pvp_ticks: dict[int, float] = {}
         self.player_location_owner_auras: dict[tuple[int, int], tuple[VictimStatusEffectDefinition, float]] = {}
         # Player-owned equipment auras are not all cast as location visuals.
         # Keep the server-side receiver leases for the Winter set's enemy
@@ -4760,6 +4767,12 @@ class LocalCombatState:
         current_time = time.perf_counter() if now is None else float(now)
         visuals = self.active_player_location_visuals(now=current_time)
         live_visual_ids = {int(visual.instance_id) for visual in visuals}
+        self.player_location_aura_pvp_strikes = []
+        self._player_location_aura_pvp_ticks = {
+            instance_id: stamp
+            for instance_id, stamp in self._player_location_aura_pvp_ticks.items()
+            if instance_id in live_visual_ids
+        }
         living = set(self.living_actor_ids)
         self.player_location_aura_members = {
             key
@@ -4819,6 +4832,17 @@ class LocalCombatState:
                         if old is None or visual.expires_at > old[1]:
                             owner_auras[key] = (effect, visual.expires_at)
                 continue
+            # Record this tick for the PvP strike: the loop below only walks
+            # the monster population, so enemy players would never be touched.
+            strike_key = int(visual.instance_id)
+            if self._player_location_aura_pvp_ticks.get(strike_key, 0.0) <= current_time:
+                self._player_location_aura_pvp_ticks[strike_key] = current_time + 0.5
+                self.player_location_aura_pvp_strikes.append((
+                    visual.definition,
+                    tuple(visual.receiver_status_effects),
+                    tuple(visual.position),
+                    int(visual.owner_actor_id),
+                ))
             for actor_id in self.living_actor_ids:
                 monster = self.monsters[actor_id]
                 if self._distance(
@@ -6035,18 +6059,23 @@ class LocalCombatState:
             owner = (player_positions or {}).get(summon.owner_actor_id)
             follows = bool(getattr(definition, "follows_owner", False))
             target_positions = self.monster_positions
+            player_positions = player_positions or {}
+            player_targets = tuple(
+                target_id
+                for target_id in (hostile_player_actor_ids_by_owner or {}).get(
+                    summon.owner_actor_id, ()
+                )
+                if target_id in player_positions
+                and self.player_health.get(target_id, [0])[0] > 0
+            )
             if definition.monster_template_id in PLAYER_HUNTING_MINION_STRIKES:
-                target_positions = player_positions or {}
+                target_positions = player_positions
                 candidates = tuple(
                     (self._distance(summon.position, target_positions[target_id]), target_id)
-                    for target_id in (hostile_player_actor_ids_by_owner or {}).get(
-                        summon.owner_actor_id, ()
-                    )
-                    if target_id in target_positions
-                    and self.player_health.get(target_id, [0])[0] > 0
+                    for target_id in player_targets
                 )
             else:
-                candidates = tuple(
+                candidates = [
                     (
                         self._distance(
                             summon.position, self.monster_positions[target_id]
@@ -6058,12 +6087,28 @@ class LocalCombatState:
                     and self.monsters[target_id].summon_targetable
                     and (not follows or owner is None or
                          self._distance(owner, self.monster_positions[target_id]) <= definition.aggro_range)
+                ]
+                # A mobile minion also closes on its owner's enemies: Wild
+                # Pack's wolves used to chase only the monster population and
+                # stood still while an arena opponent walked past.
+                candidates.extend(
+                    (
+                        self._distance(summon.position, player_positions[target_id]),
+                        target_id,
+                    )
+                    for target_id in player_targets
                 )
+                candidates = tuple(candidates)
             nearest = min(candidates) if candidates else None
             geometry = self._load_player_skill_geometry(definition.attack_skill_database_index)
             if nearest is not None and (definition.aggro_range <= 0.0 or nearest[0] <= definition.aggro_range):
                 distance, target_actor_id = nearest
-                target = target_positions[target_actor_id]
+                target = target_positions.get(target_actor_id)
+                if target is None:
+                    target = player_positions.get(target_actor_id)
+                if target is None:
+                    stop_if_moving(summon)
+                    continue
                 # Within its attack's reach it stops, follower or not: a
                 # ranged summon shoots from where it stands instead of
                 # walking up to 2 m of its target.
@@ -6084,6 +6129,7 @@ class LocalCombatState:
                 continue
             patrol = getattr(definition, "patrol_points", ())
             if (follows and patrol and nearest is not None
+                    and nearest[1] in self.monsters
                     and self.monsters[nearest[1]].rank_id.casefold().startswith("rank_boss")
                     and nearest[0] <= definition.aggro_range):
                 # Authored CompanionStrategy paths place allies inside the
@@ -13688,6 +13734,8 @@ class LocalCombatState:
         lethal_player_actor_ids_by_owner: (
             dict[int, frozenset[int] | set[int]] | None
         ) = None,
+        player_block_chances: dict[int, float] | None = None,
+        player_block_reductions: dict[int, float] | None = None,
     ) -> tuple[
         tuple[DamageResolution, ...],
         tuple[PlayerSupportApplication, ...],
@@ -13827,13 +13875,50 @@ class LocalCombatState:
                             )),
                         )
                     )))
+
+                    # Perform block roll for player victim
+                    target_block_chance = float(
+                        player_block_chances.get(target_actor_id, 0.0)
+                        if player_block_chances is not None
+                        else 0.0
+                    )
+                    target_block_reduction = float(
+                        player_block_reductions.get(target_actor_id, 0.0)
+                        if player_block_reductions is not None
+                        else 0.0
+                    )
+                    self._player_block_roll_sequence = (
+                        self._player_block_roll_sequence + 1
+                    ) & _COMBAT_ROLL_MASK
+                    block_roll = deterministic_combat_roll(
+                        0x50565042,  # "PVPB" domain separator
+                        self._player_block_roll_sequence,
+                        int(attack.impact_tick),
+                        int(actor_id),
+                        int(target_actor_id),
+                        int(attack.skill_index),
+                    )
+                    blocked = (
+                        target_block_chance > 0.0
+                        and block_roll < max(0.0, min(1.0, target_block_chance))
+                    )
+                    if blocked:
+                        damage = max(
+                            0,
+                            int(round(
+                                damage * (
+                                    1.0 - max(0.0, min(1.0, target_block_reduction))
+                                )
+                            )),
+                        )
+
                     lethal_allowed = target_actor_id in lethal_by_owner.get(
                         summon.owner_actor_id, ()
                     )
                     current = max(0 if lethal_allowed else 1, int(previous) - damage)
                     killed = lethal_allowed and current == 0
                     damage = int(previous) - current
-                    if damage <= 0:
+                    if damage <= 0 and not blocked:
                         continue
                     health[0] = current
                     if expired is None:
@@ -13870,6 +13955,7 @@ class LocalCombatState:
                         skill_index=attack.skill_index,
                         victim_status_effects=effects,
                         source_actor_id=summon.owner_actor_id,
+                        blocked=blocked,
                     ))
                     continue
                 if (

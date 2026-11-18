@@ -9,6 +9,7 @@ from dso_server.protocol.gameplay_protocol import (
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.gameplay import pvp_arena_rules
 
 TRIGGERED_JEWEL_PROC_COOLDOWN_SECONDS = 2.0
 
@@ -325,7 +326,8 @@ class SocketEffectService:
         if not occurrences:
             return ()
         empty_results = tuple(() for _ in occurrences)
-        if _depth > 2:
+        if _depth > 2 or pvp_arena_rules.arena_active(s):
+            # Runes, jewels and gems' event programs are inert in an arena.
             return empty_results
         # The same accepted block/pickup/health transition also belongs to
         # item sets, even if the wearer has no event-triggered socket item.

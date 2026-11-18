@@ -70,6 +70,16 @@ def _known_effect_ids(path, modified, size):
     return frozenset(_eligible_definitions(path, modified, size, rules))
 
 
+def persistent_set_effect_ids(database_path) -> frozenset[int]:
+    """Every wire id a saved item-set program occurrence can carry.
+
+    A PvP arena runs without item sets, so these occurrences must not be
+    replayed as player statuses there.
+    """
+
+    return _known_effect_ids(*_revision(database_path))
+
+
 def prepare_persistent_item_set_effects(state, database_path):
     """Prune ineligible saves before they affect initialization vitals/wire."""
     revision = _revision(database_path)

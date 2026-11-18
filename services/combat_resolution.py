@@ -14,6 +14,7 @@ from dso_server.protocol.gameplay_protocol import (
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.gameplay import pvp_arena_rules
 from dso_server.gameplay.player_skill_timing import apply_skill_cooldown_effect_locked
 from dso_server.gameplay.status_modifier_runtime import (
     load_status_modifier_catalog, parse_modifier_program, resolve_modifier_value,
@@ -605,11 +606,15 @@ class CombatResolutionService:
 
         See ``item_set_procs.with_socket_overrides``: Jewel of Glory's
         ``mod`` rules must reach the set's program bookkeeping, not only the
-        skill column.
+        skill column.  A PvP arena still runs item sets but not the jewel
+        rules, so only the socket overrides are dropped there.
         """
 
+        evaluation = getattr(s, "gameplay_item_set_evaluation", None)
+        if pvp_arena_rules.arena_active(s):
+            return None
         return with_set_socket_overrides(
-            getattr(s, "gameplay_item_set_evaluation", None),
+            evaluation,
             getattr(
                 getattr(s, "gameplay_socket_effect_evaluation", None),
                 "cast_rules", (),
@@ -663,6 +668,8 @@ class CombatResolutionService:
         the active set evaluation instead of being limited to hit/kill.
         """
 
+        if pvp_arena_rules.arena_active(s):
+            return ()
         evaluation = getattr(s, "gameplay_item_set_evaluation", None)
         combat_state = getattr(s, "gameplay_combat_state", None)
         if evaluation is None or combat_state is None:

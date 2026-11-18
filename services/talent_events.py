@@ -16,6 +16,7 @@ from dataclasses import dataclass, field, replace
 from functools import lru_cache
 
 from dso_server.gameplay.local_combat_state import LocalCombatState
+from dso_server.gameplay import pvp_arena_rules
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 from dso_server.gameplay.status_modifier_runtime import (
     parse_modifier_program,
@@ -223,8 +224,24 @@ def _live_sources(session) -> tuple:
 
     ``spare_player`` runs under combat.lock, where the map must never wait for
     one player's flow_lock. Each ``dict()`` is a single atomic copy, and the
-    deadlines are enforced here because a timer can run late.
+    deadlines are enforced here because a timer can run late.  In a PvP arena
+    the Ancient Wisdom and Group talent rules are inert.
     """
+
+    if pvp_arena_rules.arena_active(session):
+        disabled_effects = pvp_arena_rules.arena_disabled_effect_ids(
+            pvp_arena_rules.session_database_path(session)
+        )
+        return tuple(
+            entry for entry in snapshot_active_status_entries(
+                dict(session.gameplay_persistent_status_effects),
+                dict(session.gameplay_timed_status_effect_expiries),
+                dict(session.gameplay_runtime_status_effects),
+                {},
+                {},
+            )
+            if int(getattr(entry, "effect_id", -1)) not in disabled_effects
+        )
 
     return snapshot_active_status_entries(
         dict(session.gameplay_persistent_status_effects),

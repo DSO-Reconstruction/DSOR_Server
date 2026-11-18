@@ -908,6 +908,11 @@ class Session:
         self.gameplay_active_costume = ""
         self.gameplay_active_pet = ""
         self.gameplay_active_mercenary = ""
+        # PvP arenas deactivate pets and (outside the 5v5 modes) mounts on
+        # entry.  The selections stay saved; these flags say whether the hub
+        # map load should bring them back.
+        self.gameplay_pet_restore_pending = False
+        self.gameplay_mount_restore_pending = ""
         self.gameplay_mercenary_restore_pending = False
         self.gameplay_mercenary_status_effect = None
         self.gameplay_mercenary_aura_status_effect = None
@@ -927,6 +932,8 @@ class Session:
         # and removed on the way out; they are never written to the save.
         self.gameplay_map_status_effect_instance_ids = frozenset()
         self.gameplay_item_set_effects = {}
+        # Shadow Soul gear stowed for an arena stay, with its original slots.
+        self.gameplay_mercenary_restore_slots = ()
         self.gameplay_item_set_evaluation = None
         self.gameplay_socket_effects = {}
         self.gameplay_socket_effect_evaluation = None

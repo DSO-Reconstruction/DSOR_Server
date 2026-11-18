@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.gameplay import pvp_arena_rules
 
 
 class MonsterTickContextService:
@@ -363,13 +364,19 @@ class MonsterTickContextService:
                 active_statuses = list(
                     target_session.gameplay_runtime_status_effects.values()
                 )
-                active_statuses.extend(
-                    (entry, None)
-                    for entry in (
-                        tuple(target_session.gameplay_persistent_status_effects.values())
-                        + tuple(target_session.gameplay_item_set_effects.values())
-                        + tuple(target_session.gameplay_socket_effects.values())
+                extra_entries = (
+                    ()
+                    if pvp_arena_rules.arena_active(target_session)
+                    else tuple(
+                        target_session.gameplay_persistent_status_effects.values()
                     )
+                ) + tuple(target_session.gameplay_item_set_effects.values()) + (
+                    ()
+                    if pvp_arena_rules.arena_active(target_session)
+                    else tuple(target_session.gameplay_socket_effects.values())
+                )
+                active_statuses.extend(
+                    (entry, None) for entry in extra_entries
                 )
 
             actor_id = int(actor_id)

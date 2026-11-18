@@ -10,6 +10,7 @@ import traceback
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.runtime.monster_runtime_diagnostics import mark_phase
+from dso_server.gameplay import pvp_arena_rules
 from dso_server.gameplay.local_monster_state import (
     _grounded_spawn_position,
     is_new_year_dungeon_summon_controller,
@@ -1090,6 +1091,8 @@ class MonsterCombatService(
                         block_chance = target_stats.block_chance
                         block_damage_reduction = (
                             target_stats.block_damage_reduction
+                            if target_stats.block_damage_reduction > 0.0
+                            else 0.50
                         )
                     invulnerable = bool(getattr(
                         target_session, "gameplay_gm_invulnerable", False
@@ -1191,6 +1194,8 @@ class MonsterCombatService(
                     hostile_player_actor_ids_by_owner=summon_context[0],
                     player_damage_multipliers=summon_context[1],
                     lethal_player_actor_ids_by_owner=summon_context[2],
+                    player_block_chances=summon_context[3] if len(summon_context) > 3 else None,
+                    player_block_reductions=summon_context[4] if len(summon_context) > 4 else None,
                 )
                 pvp_summon_resolutions = spare_lethal_hits(
                     combat, combat_targets, pvp_summon_resolutions
@@ -1315,6 +1320,10 @@ class MonsterCombatService(
         with _post_commit_step("location-aura-applications"):
             CharacterService._dispatch_location_aura_applications(
                 target_sessions, location_aura_applications
+            )
+        with _post_commit_step("pvp-ground-auras"):
+            CharacterService._strike_pvp_location_aura_ticks(
+                combat, target_sessions, server_tick=server_tick,
             )
         with _post_commit_step("player-owned-resolutions"):
             CharacterService._dispatch_player_owned_resolutions(
@@ -1607,6 +1616,26 @@ class MonsterCombatService(
         )
         # Entries are immutable; copy each container before iterating. Pure
         # modifier reads must not hold gameplay locks during evaluation.
+        if pvp_arena_rules.arena_active(s):
+            # Arena rules: the Ancient Wisdom/Group talent trees, the
+            # Shadow Soul's gear, item sets, and rune/jewel sockets do not contribute.
+            disabled_effects = pvp_arena_rules.arena_disabled_effect_ids(
+                pvp_arena_rules.session_database_path(s)
+            )
+            persistent = tuple(
+                entry for entry in s.gameplay_persistent_status_effects.values()
+                if int(getattr(entry, "effect_id", -1)) not in disabled_effects
+            )
+            runtime = tuple(
+                entry for entry, _expires_at
+                in tuple(s.gameplay_runtime_status_effects.values())
+                if int(getattr(entry, "effect_id", -1)) not in disabled_effects
+            )
+            return (
+                victim_sources
+                + persistent
+                + runtime
+            )
         sources = (
             tuple(s.gameplay_persistent_status_effects.values())
             + tuple(s.gameplay_item_set_effects.values())

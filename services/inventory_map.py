@@ -8,6 +8,11 @@ from dataclasses import replace
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.gameplay import pvp_arena_rules
+
+
+class ArenaLoadoutLocked(ValueError):
+    """Raised when a PvP arena refuses an equipment change."""
 
 
 class InventoryMapService:
@@ -474,7 +479,10 @@ class InventoryMapService:
                         s.gameplay_next_status_effect_instance_id
                     )
                 server_tick = int(time.perf_counter() * 25) & 0xFFFFFFFF
-                if self.item_set_database is not None:
+                if (
+                    self.item_set_database is not None
+                    and not pvp_arena_rules.arena_active(s)
+                ):
                     item_set_evaluation = (
                         self.item_set_database.evaluate_inventory(
                             mutation.inventory,
@@ -493,7 +501,10 @@ class InventoryMapService:
                             server_tick=server_tick,
                         )
                     )
-                if self.socket_effect_database is not None:
+                if (
+                    self.socket_effect_database is not None
+                    and not pvp_arena_rules.arena_active(s)
+                ):
                     socket_effect_evaluation = (
                         self.socket_effect_database.evaluate_inventory(
                             mutation.inventory
@@ -699,6 +710,33 @@ class InventoryMapService:
             swapped.append(int(displaced_id))
             break
         return inventory, tuple(swapped)
+
+    # InventoryCommand opcodes that put an item onto an equipment slot: equip
+    # to a slot, move to an equipment slot, and the occupied-slot swap.
+    _ARENA_LOCKED_EQUIP_OPERATIONS = frozenset({0x01, 0x06, 0x0B})
+    # Storing into ordinary/extra/bank/extra-bank storage only changes the
+    # loadout when the stored item was worn, i.e. it is an unequip.
+    _ARENA_LOCKED_STORE_OPERATIONS = frozenset({0x02, 0x03, 0x04, 0x05})
+
+    def _refuse_arena_loadout_change(self, inventory, item, action) -> None:
+        """An arena freezes the loadout: nothing may be worn or taken off.
+
+        The ban list alone was not enough: the client applies an inventory
+        move locally before it reaches the server, so a piece swapped mid
+        match could still act from the client's own item table.  Refusing
+        every equip/unequip keeps both sides on the loadout the match began
+        with.
+        """
+
+        equipped = int(item.item_id) in inventory.equipment_slots
+        if action.operation in self._ARENA_LOCKED_EQUIP_OPERATIONS or (
+            equipped
+            and action.operation in self._ARENA_LOCKED_STORE_OPERATIONS
+        ):
+            raise ArenaLoadoutLocked(
+                f"item {item.template_id!r} cannot be equipped or removed in "
+                f"a PvP arena (operation 0x{action.operation:02x})"
+            )
 
     def _handle_inventory_item_action(
             self, s: Session, payload: bytes) -> None:
@@ -961,7 +999,10 @@ class InventoryMapService:
                         mutation.equipment_item,
                         actor_id=LOCAL_PLAYER_ACTOR_ID,
                     )
-                if self.socket_effect_database is not None:
+                if (
+                    self.socket_effect_database is not None
+                    and not pvp_arena_rules.arena_active(s)
+                ):
                     socket_effect_evaluation = (
                         self.socket_effect_database.evaluate_inventory(
                             mutation.inventory
@@ -1172,6 +1213,10 @@ class InventoryMapService:
                 if action.operation in {
                     0x01, MOVE_ITEM_EQUIPMENT_OPERATION, 0x0B
                 }:
+                    if pvp_arena_rules.arena_active(s):
+                        self._refuse_arena_loadout_change(
+                            inventory, item, action,
+                        )
                     if action.operation != 0x0B:
                         # Operation 6 is MoveItemToEquipmentAt: the same
                         # destination-slot argument as an ordinary equip.
@@ -1290,6 +1335,10 @@ class InventoryMapService:
                         )
                 else:
                     swapped_ids = ()
+                    if pvp_arena_rules.arena_active(s):
+                        self._refuse_arena_loadout_change(
+                            inventory, item, action,
+                        )
                     if len(arguments) > 1:
                         raise ValueError(
                             "store operation has more than one destination "
@@ -1318,7 +1367,10 @@ class InventoryMapService:
                 item_set_transition = None
                 socket_effect_evaluation = None
                 socket_effect_transition = None
-                if self.item_set_database is not None:
+                if (
+                    self.item_set_database is not None
+                    and not pvp_arena_rules.arena_active(s)
+                ):
                     item_set_evaluation = (
                         self.item_set_database.evaluate_inventory(
                             inventory,
@@ -1343,7 +1395,10 @@ class InventoryMapService:
                             ),
                         )
                     )
-                if self.socket_effect_database is not None:
+                if (
+                    self.socket_effect_database is not None
+                    and not pvp_arena_rules.arena_active(s)
+                ):
                     socket_effect_evaluation = (
                         self.socket_effect_database.evaluate_inventory(
                             inventory
@@ -1398,6 +1453,28 @@ class InventoryMapService:
                     tuple(commands),
                     include_terminator=True,
                 )
+            except ArenaLoadoutLocked as exc:
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] arena loadout locked: {exc}"
+                )
+                # The client applied the move before sending it, so the
+                # authoritative allocations have to be replayed to undo the
+                # local result; otherwise the player keeps a client-only
+                # loadout for the rest of the match.
+                packet, packet_bits = encode_server_command_batch(
+                    (
+                        ServerCommand(
+                            INVENTORY_INFO_COMMAND,
+                            equipment_allocation_snapshot(inventory),
+                            LOCAL_PLAYER_ACTOR_ID,
+                        ),
+                    ),
+                    include_terminator=True,
+                )
+                CharacterService._send_world_loot_state_batch(
+                    s, packet, packet_bits, label="arena-loadout-locked",
+                )
+                return
             except ValueError as exc:
                 print(
                     f"[{GAMEPLAY_SERVICE_NAME}] rejected equipment action "

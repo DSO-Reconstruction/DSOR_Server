@@ -28,6 +28,7 @@ data/exports/
 releases/
 *.bak
 *.sqlite3*
+Caddyfile
 
 # Client assets are supplied locally; keep only copy instructions in Git.
 data/maps/*
@@ -35,6 +36,7 @@ data/maps/*
 data/navigation/*
 !data/navigation/README.txt
 data/db/static.db4*
+
 
 # The quest definitions are supplied locally, not kept in Git.
 data/quests.xml
