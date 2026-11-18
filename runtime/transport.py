@@ -635,8 +635,10 @@ class Session:
             self, addr, sock,
             gameplay_deadline_scheduler: GameplayDeadlineScheduler | None = None,
             gameplay_ingress_scheduler: GameplayDeadlineScheduler | None = None,
-            *, outbound_sender: BoundedOutboundSender | None = None):
+            *, outbound_sender: BoundedOutboundSender | None = None,
+            transport_addr: tuple[str, int] | None = None):
         self.addr = addr
+        self.transport_addr = transport_addr or addr
         self.sock = sock
         self.outbound_sender = outbound_sender
         self.transport_failure_reason = None
@@ -1151,7 +1153,7 @@ class Session:
                 raise
             return backpressure_began, 0.0
         try:
-            self.sock.sendto(data, self.addr)
+            self.sock.sendto(data, getattr(self, "transport_addr", self.addr))
         except OSError:
             pass
         self._mark_send_attempt(data)
@@ -1806,7 +1808,7 @@ class Session:
     def _send_control(self, data: bytes) -> None:
         """Send unqueued control traffic using the bounded socket timeout."""
         try:
-            self.sock.sendto(data, self.addr)
+            self.sock.sendto(data, getattr(self, "transport_addr", self.addr))
         except OSError:
             pass
 
@@ -1865,6 +1867,7 @@ class RakNetServer:
         # as it was before accounts existed: the whole configured roster.
         self.require_account_identity = False
         self._last_rejection_log_at = {}
+        self.client_address_resolver = None
         self.gameplay_deadline_scheduler = GameplayDeadlineScheduler(
             name=f"{service_name}-gameplay-deadline",
             worker_count=gameplay_deadline_workers,
@@ -2013,13 +2016,14 @@ class RakNetServer:
     def _detach_all_sessions(self) -> tuple[Session, ...]:
         return self.sessions.drain()
 
-    def _new_session(self, addr) -> Session:
+    def _new_session(self, addr, transport_addr=None) -> Session:
         return Session(
             addr,
             self.sock,
             self.gameplay_deadline_scheduler,
             self.gameplay_ingress_scheduler,
             outbound_sender=self._outbound_sender,
+            transport_addr=transport_addr,
         )
 
     def request_session_retirement(self, session: Session, reason: str) -> None:
@@ -2079,7 +2083,11 @@ class RakNetServer:
                 sock = self.sock
                 if sock is None:
                     return
-                data, addr = sock.recvfrom(4096)
+                data, raw_addr = sock.recvfrom(4096)
+                transport_addr = raw_addr
+                addr = raw_addr
+                if self.client_address_resolver is not None:
+                    addr = self.client_address_resolver(raw_addr)
             except socket.timeout:
                 continue
             except ConnectionResetError as exc:
@@ -2112,7 +2120,7 @@ class RakNetServer:
                 # RakNet datagram and reliable-order indices are sequential.
                 # An unbounded thread per UDP packet both reordered handlers
                 # and allowed a movement burst to exhaust the process.
-                self._dispatch(data, addr)
+                self._dispatch(data, addr, transport_addr=transport_addr)
             except Exception as exc:
                 print(
                     f"[{self.service_name}] packet handler failed for "
@@ -2454,23 +2462,24 @@ class RakNetServer:
         )
         return True
 
-    def _session(self, addr) -> Session:
+    def _session(self, addr, transport_addr=None) -> Session:
         return self.sessions.get_or_create(
-            addr, lambda: self._new_session(addr)
+            addr, lambda: self._new_session(addr, transport_addr=transport_addr)
         )
 
-    def _dispatch(self, data: bytes, addr):
+    def _dispatch(self, data: bytes, addr, transport_addr=None):
         if not data: return
+        transport_addr = transport_addr or addr
         pid = data[0]
         if pid in (0x01, 0x02):
-            self._reply_unconnected_ping(None, data, addr=addr)
+            self._reply_unconnected_ping(None, data, addr=transport_addr)
             return
         if pid in (0x05, 0x07):
             if not self._connection_is_authorized(addr[0]):
                 return
             if addr not in self.sessions and len(self.sessions) >= MAX_SESSIONS:
                 return
-            s = self._session(addr)
+            s = self._session(addr, transport_addr=transport_addr)
         else:
             # Only offline messages open a session. A frameset, ACK or NAK
             # from an endpoint without one belongs to a connection this server
@@ -2485,6 +2494,8 @@ class RakNetServer:
         if s.retired or s.retiring or s.transport_failure_reason:
             return
         s.last_received_at = time.perf_counter()
+        if transport_addr and getattr(s, "transport_addr", None) != transport_addr:
+            s.transport_addr = transport_addr
 
         # A post-selection map connection may reuse the character connection's
         # UDP source port.  OpenConnectionRequest1 starts a fresh RakNet session,
@@ -2493,7 +2504,7 @@ class RakNetServer:
             if getattr(self, "_lifecycle_scheduler", None) is not None:
                 self._retire_session(s, reason='connection replaced', remove=True)
                 return
-            replacement = self._new_session(addr)
+            replacement = self._new_session(addr, transport_addr=transport_addr)
             replacement.last_received_at = time.perf_counter()
             if self._replace_session(s, replacement):
                 # Replacement is already visible before retirement callbacks;

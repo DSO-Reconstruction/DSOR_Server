@@ -90,7 +90,9 @@ class BoundedOutboundSender:
                 self._bytes -= len(data)
             if not session.retired and not session.retiring and not session.transport_failure_reason:
                 try:
-                    session.sock.sendto(data, session.addr)
+                    session.sock.sendto(
+                        data, getattr(session, "transport_addr", session.addr)
+                    )
                 except OSError:
                     # Reliable datagrams remain pending and will be retried.
                     pass
