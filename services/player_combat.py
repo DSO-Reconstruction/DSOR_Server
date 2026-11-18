@@ -11,6 +11,7 @@ from dso_server.runtime import latency_stats
 from dso_server.runtime.transport import Session
 from dso_server.services.player_cast_timing import PlayerCastTimingService
 from dso_server.services.player_projectiles import location_effect_waits_for_hit
+from dso_server.protocol.gameplay_protocol import Move
 from dso_server.services import movement_validation
 from dso_server.gameplay.player_skill_timing import (
     reserve_player_skill_timing, rollback_player_skill_timing,
@@ -1041,6 +1042,32 @@ class PlayerCombatService(PlayerCastTimingService):
                     movement_validation.record_movement_allowance(
                         s, position, movement_skill_destination
                     )
+                    frame = (
+                        encounter.coordinate_frame
+                        if encounter is not None
+                        else getattr(s, "gameplay_coordinate_frame", None)
+                    )
+                    if frame is not None:
+                        destination_wire = frame.world_to_wire(
+                            movement_skill_destination
+                        )
+                        yaw = float(getattr(client_skill, "aim_angle", 0.0))
+                        tick = int(
+                            getattr(
+                                client_skill,
+                                "server_tick",
+                                s.gameplay_chase_server_tick,
+                            )
+                        )
+                        s.gameplay_last_move = Move.from_values(
+                            destination_wire, 0.0, yaw, yaw, tick, 0
+                        )
+                        s.gameplay_spawn_position = movement_skill_destination
+                        s.gameplay_move_budget = (
+                            movement_validation.BURST_SECONDS
+                            * movement_validation.MAX_PLAYER_SPEED
+                        )
+                        s.gameplay_move_correction_at = now + 0.5
         if (
             rejection is None
             and combat is not None

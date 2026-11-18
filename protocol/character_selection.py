@@ -104,7 +104,7 @@ CLIENT_SKILL_MANAGER_ROW_OFFSET = -1
 NEW_CHARACTER_QUICKBAR_SKILL_SLOTS = {
     CLASS_IDS["warrior"]: (
         "angrystrike", "mightyswing", "enragingleap", "stuncharge",
-        "mightybash", "bloody360", "mighty360", "battlecry",
+        "mightybash", "bloody360", "mighty360", "warshout",
     ),
     CLASS_IDS["mage"]: (
         "magicmissile", "iceball", "chainlightning", "fireball",

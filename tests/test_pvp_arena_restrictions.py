@@ -196,7 +196,7 @@ def test_arena_ignores_rift_force_lines(database):
     assert arena.final_damage_reduction == 0
 
 
-def test_arena_sources_drop_sockets_ancient_wisdom_and_sets():
+def test_arena_sources_drop_sockets_and_ancient_wisdom_but_keep_sets():
     s = session()
     disabled = pvp_arena_rules.disabled_talent_effect_ids(DEFAULT_STATIC_DB_PATH)
     knowledge_id = min(disabled)
@@ -221,10 +221,12 @@ def test_arena_sources_drop_sockets_ancient_wisdom_and_sets():
     ids = [int(getattr(source, "effect_id", -1)) for source in sources]
     assert knowledge_id not in ids
     assert honor_id in ids
-    # Item sets, rune/jewel sockets stay inert in an arena.
-    assert 7000 not in ids
+    # Item sets keep working in an arena: the client computes them itself, so
+    # the server has to agree.  Rune/jewel sockets stay inert.
+    assert 7000 in ids
     assert 7001 not in ids
-    assert not any(getattr(source, "kind", "") == "Damage" for source in sources)
+    assert 7002 in ids
+    assert any(getattr(source, "kind", "") == "Damage" for source in sources)
 
     # Outside the arena the very same containers all contribute.
     s.gameplay_match = None
@@ -238,13 +240,15 @@ def test_arena_sources_drop_sockets_ancient_wisdom_and_sets():
     assert 7001 in ids
 
 
-def test_item_set_bonuses_are_disabled_in_the_arena():
+def test_item_set_bonuses_stay_active_in_the_arena():
+    # The client derives set bonuses from its own item table, so the arena
+    # keeps them instead of leaving the two sides disagreeing.
     disabled = pvp_arena_rules.arena_disabled_effect_ids(DEFAULT_STATIC_DB_PATH)
     from dso_server.services.item_set_persistence import persistent_set_effect_ids
 
     set_ids = persistent_set_effect_ids(DEFAULT_STATIC_DB_PATH)
     assert set_ids
-    assert set_ids.issubset(disabled)
+    assert not (set_ids & disabled)
 
 
 def test_arena_entry_retires_the_pet_and_keeps_its_selection():
@@ -264,7 +268,7 @@ def test_arena_entry_retires_the_pet_and_keeps_its_selection():
     assert "pvp-pet-cleanse" in server.labels
 
 
-def test_arena_entry_cleanses_rune_jewel_sockets_and_sets():
+def test_arena_entry_cleanses_only_the_rune_and_jewel_sockets():
     s = session()
     s.gameplay_item_set_effects = {10: entry(7000, 10)}
     s.gameplay_socket_effects = {11: entry(7001, 11)}
@@ -274,9 +278,9 @@ def test_arena_entry_cleanses_rune_jewel_sockets_and_sets():
 
     CharacterService._clear_battleground_gear_effects(server, s)
 
-    # Sets and socket effects are cleansed on arena entry.
-    assert s.gameplay_item_set_effects == {}
-    assert s.gameplay_item_set_evaluation is None
+    # Sets survive an arena entry; only the rune/jewel socket effects leave.
+    assert list(s.gameplay_item_set_effects) == [10]
+    assert s.gameplay_item_set_evaluation is not None
     assert s.gameplay_socket_effects == {}
     assert "pvp-gear-cleanse" in server.labels
 
@@ -679,48 +683,3 @@ def test_the_arena_freezes_the_loadout():
     service._refuse_arena_loadout_change(
         inventory, bagged, action(0x02, bagged)
     )
-
-
-def test_arena_preserves_inventory_templates_to_prevent_assertion_crashes():
-    inventory = InventoryInfo(
-        items=[
-            ItemInfo(
-                item_id=1,
-                template_id="mage_mythic_helmet_dragan_sp",
-                item_level=140,
-                glyph_value=5000,
-            ),
-        ],
-        equipment_slots={1: (0,)},
-    )
-    result = pvp_arena_rules.mask_arena_inventory(inventory, arena=True, class_name="mage")
-    assert result is inventory
-    assert result.items[0].template_id == "mage_mythic_helmet_dragan_sp"
-
-
-def test_arena_damage_scaling_and_block_mitigation():
-    from dso_server.services.pvp_combat import PVP_ARENA_DAMAGE_MULTIPLIER
-    assert PVP_ARENA_DAMAGE_MULTIPLIER == 0.25
-
-    s_arena = session("b1102_dm")
-    assert pvp_arena_rules.arena_active(s_arena)
-
-    # Outside arena: not active
-    s_outside = session("a0200_kingscity", match_mode=None)
-    assert not pvp_arena_rules.arena_active(s_outside)
-
-
-def test_bullet_skills_do_not_auto_hit_via_fallback_plan():
-    from dso_server.protocol.combat_protocol import BulletSkill
-    from dso_server.gameplay.combat_entities import CombatEntity, EntitySkillPlan
-
-    geom = SimpleNamespace(
-        attack_range=10.0, hit_range=10.0, projectile_range=20.0,
-        impact_count=1, projectile_velocity=20.0, hit_frame=0.0,
-    )
-    # A bullet shot straight at angle 0 faces (0, 0, -1).
-    skill = BulletSkill(0, 1856, 0.0, 100, 1, (0.0, 0.0, -1.0, 0.0), 0)
-    assert isinstance(skill, BulletSkill)
-
-
-

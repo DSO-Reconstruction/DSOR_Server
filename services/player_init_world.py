@@ -1027,10 +1027,10 @@ class PlayerInitializationWorldService:
                         s.gameplay_persistent_status_effects
                     )
                 )
-                + (() if pvp_arena_rules.arena_active(state.gameplay_map) else tuple(
+                + tuple(
                     s.gameplay_item_set_effects[key]
                     for key in sorted(s.gameplay_item_set_effects)
-                ))
+                )
                 + tuple(
                     s.gameplay_socket_effects[key]
                     for key in sorted(s.gameplay_socket_effects)

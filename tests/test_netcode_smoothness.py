@@ -173,6 +173,12 @@ def test_tick_relay_batches_the_echo_with_every_due_player(world):
     assert [actor for actor, _ in _batched(viewer)[0]] == [
         peer.gameplay_remote_actor_id
     ]
+    # A position change while continuing to run with the same start_tick is also relayed.
+    peer.gameplay_last_move = _at(5.4, scalar=166, tick=1001)
+    server._publish_presence_movement(2003)
+    assert [actor for actor, _ in _batched(viewer)[0]] == [
+        peer.gameplay_remote_actor_id
+    ]
 
 
 def test_tick_relay_refreshes_standing_and_far_players_on_a_schedule(world):

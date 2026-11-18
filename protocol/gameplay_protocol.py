@@ -31,6 +31,7 @@ PROP_REQUEST_COMMAND = command_id("Commands::PropRequestCommand", 0x0038)
 STILL_ALIVE_COMMAND = command_id("Commands::StillAliveCommand", 0x006F)
 GUILD_MOTD_REQUEST_COMMAND = command_id("Commands::GuildMessageOfTheDayRequestCommand", 0x00BB)
 CHAT_CLIENT_LOGGED_IN_COMMAND = command_id("ChatClientLoggedInCommand", 0x00E2)
+CHAT_CLIENT_CHANNEL_INFO_COMMAND = command_id("ChatClientChannelInfoCommand", 0x00E3)
 OCP_OFFER_REQUEST_COMMAND = command_id("Commands::OCPOfferRequestCommand", 0x010B)
 STAGING_SIGNAL_COMMAND = command_id("Commands::StagingSignalCommand", 0x0113)
 USE_STICKER_BOOK_ITEM_COMMAND = command_id("Commands::UseStickerBookItemCommand", 0x0135)
@@ -418,6 +419,25 @@ def decode_chat_client_logged_in(payload: bytes) -> ChatClientLoggedIn:
     result = ChatClientLoggedIn(reader.read_uint32_le(), reader.read_uint32_le())
     if reader.remaining:
         raise ValueError("ChatClientLoggedIn has unread bits")
+    return result
+
+
+@dataclass(frozen=True)
+class ChatClientChannelInfo:
+    character_id: int
+    target_id: int
+    channel_id: int
+
+
+def decode_chat_client_channel_info(payload: bytes) -> ChatClientChannelInfo:
+    reader = _reader(payload, CHAT_CLIENT_CHANNEL_INFO_COMMAND)
+    result = ChatClientChannelInfo(
+        reader.read_uint32_le(),
+        reader.read_uint32_le(),
+        int.from_bytes(reader.read_bytes(2), "little"),
+    )
+    if reader.remaining:
+        raise ValueError("ChatClientChannelInfo has unread bits")
     return result
 
 
@@ -3327,6 +3347,8 @@ def decode_simple_gameplay_command(payload: bytes):
         return decode_fieldless_command(payload, command_id)
     if command_id == CHAT_CLIENT_LOGGED_IN_COMMAND:
         return decode_chat_client_logged_in(payload)
+    if command_id == CHAT_CLIENT_CHANNEL_INFO_COMMAND:
+        return decode_chat_client_channel_info(payload)
     if command_id == OCP_OFFER_REQUEST_COMMAND:
         return decode_boolean_command(payload, command_id)
     if command_id == STAGING_SIGNAL_COMMAND:

@@ -479,10 +479,7 @@ class InventoryMapService:
                         s.gameplay_next_status_effect_instance_id
                     )
                 server_tick = int(time.perf_counter() * 25) & 0xFFFFFFFF
-                if (
-                    self.item_set_database is not None
-                    and not pvp_arena_rules.arena_active(s)
-                ):
+                if self.item_set_database is not None:
                     item_set_evaluation = (
                         self.item_set_database.evaluate_inventory(
                             mutation.inventory,
@@ -1367,10 +1364,7 @@ class InventoryMapService:
                 item_set_transition = None
                 socket_effect_evaluation = None
                 socket_effect_transition = None
-                if (
-                    self.item_set_database is not None
-                    and not pvp_arena_rules.arena_active(s)
-                ):
+                if self.item_set_database is not None:
                     item_set_evaluation = (
                         self.item_set_database.evaluate_inventory(
                             inventory,

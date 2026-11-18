@@ -1449,7 +1449,7 @@ class PlayerInitializationStateService:
             next_status_effect_instance_id += len(effects)
         item_set_evaluation = None
         item_set_effects = {}
-        if self.item_set_database is not None and not arena_load:
+        if self.item_set_database is not None:
             item_set_evaluation = (
                 self.item_set_database.evaluate_inventory(
                     state.inventory,
@@ -1514,8 +1514,7 @@ class PlayerInitializationStateService:
         from dso_server.services.item_set_persistence import (
             prepare_persistent_item_set_effects,
         )
-        if not arena_load:
-            prepare_persistent_item_set_effects(state, self.static_database_path)
+        prepare_persistent_item_set_effects(state, self.static_database_path)
 
     def _resolve_initialization_vitals(
             self, state: PlayerInitializationState) -> None:
@@ -1527,9 +1526,9 @@ class PlayerInitializationStateService:
         arena = pvp_arena_rules.arena_active(state.gameplay_map)
         modifier_sources = (
             tuple(state.persistent_status_effects.values())
-            + (() if arena else tuple(state.item_set_effects.values()))
+            + tuple(state.item_set_effects.values())
             + (() if arena else tuple(state.socket_effects.values()))
-            + (() if arena else tuple(getattr(state.item_set_evaluation, "modifiers", ())))
+            + tuple(getattr(state.item_set_evaluation, "modifiers", ()))
         )
         if arena:
             disabled_talents = pvp_arena_rules.disabled_talent_effect_ids(

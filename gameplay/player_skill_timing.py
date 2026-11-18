@@ -139,7 +139,8 @@ def reserve_player_skill_timing(session, geometry, speed=1.0, *, now=None):
         ))
         # Authored escape/charge skills can interrupt recovery. Their own
         # cooldown still gates the interrupt, and their recovery starts now.
-        ready = (now if force else max(now, previous_ready)) + frames / TICKS_PER_SECOND
+        base_ready = min(now + CAST_GRACE_SECONDS, max(now, previous_ready)) if not force else now
+        ready = base_ready + frames / TICKS_PER_SECOND
         length = max(0.0, _finite(geometry.cooldown_seconds))
         cooldown = max(now, previous_cooldown) + length
         state.cast_ready_at = ready

@@ -828,7 +828,13 @@ class WorldService:
                             revive_lock_until
                         )
                 else:
-                    correction_needed = True
+                    now = time.perf_counter()
+                    last_corr = float(getattr(s, "gameplay_move_correction_at", 0.0) or 0.0)
+                    correction_needed = (
+                        now - last_corr >= movement_validation.CORRECTION_INTERVAL
+                    )
+                    if correction_needed:
+                        s.gameplay_move_correction_at = now
                 stopped = (
                     replace(previous_move, scalar_byte=0, duration_ticks=0,
                             start_tick=move.start_tick)
@@ -958,11 +964,11 @@ class WorldService:
                     )
             return
         CharacterService._accept_gameplay_state_command(s, 0x005F)
-        if not s.gameplay_move_echo_deferred:
-            # Once the movement tick covers this session the echo travels in
-            # its per-tick batch (services/presence_movement.py).
-            update = encode_move(move, actor_id=LOCAL_PLAYER_ACTOR_ID)
-            s.send_unreliable_sequenced(update)
+        # Always echo the accepted move immediately so the local player experiences
+        # zero input delay and no stutter, and update echo tracking.
+        update = encode_move(move, actor_id=LOCAL_PLAYER_ACTOR_ID)
+        s.send_unreliable_sequenced(update)
+        s.gameplay_move_echo_sent = move
         # Resolve player-contact hazards as soon as the validated position is
         # accepted. Vicinity discovery and monster culling can do substantial
         # work on this movement path, so running collision after those steps
