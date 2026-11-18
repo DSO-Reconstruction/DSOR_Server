@@ -116,7 +116,7 @@ class PVPPlayerEffectTests(unittest.TestCase):
 
     def test_lethal_dot_uses_current_world_position_after_victim_moves(self):
         with patch.object(self.combat, "monster_status_damage_program",
-                          return_value=(0.5, 1000.0, "Fire", False)):
+                          return_value=(0.5, 5000.0, "Fire", False)):
             self.impact(effects=(self.effect(),))
         timer = self.timers[-1]
         self.move(self.target, (30.66, 0.0, 45.85))

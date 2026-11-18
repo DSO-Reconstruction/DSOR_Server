@@ -1284,6 +1284,7 @@ class PlayerSummonDefinition:
     # Extra monsters the same cast creates (SummonAnotherMonsterId/Amount),
     # each with its own template, category and cap.
     additional_summons: tuple["PlayerSummonDefinition", ...] = ()
+    damage_multiplier: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -1965,6 +1966,7 @@ class LocalCombatState:
         self.monster_status_immunities: dict[
             int, dict[str, tuple[float, float]]
         ] = {}
+        self.monster_mind_control_sources: dict[int, tuple[int, float]] = {}
         self._status_effect_content_cache: dict[
             str, tuple[frozenset[str], tuple[frozenset[str], float] | None]
         ] = {}
@@ -4250,6 +4252,23 @@ class LocalCombatState:
                 default=0.0,
             ),
         )
+        heal_fraction = definition.heal_fraction
+        heal_radius = definition.heal_radius
+        heal_interval_seconds = definition.heal_interval_seconds
+        damage_multiplier = getattr(definition, "damage_multiplier", 1.0)
+        for effect in geometry.user_status_effects:
+            if effect.chance <= 0.0:
+                continue
+            if "heal_trigger_aura" in effect.resource_id.casefold():
+                if effect.values and effect.values[0] > 0.0:
+                    heal_fraction = float(effect.values[0])
+                if effect.aura_radius > 0.0:
+                    heal_radius = float(effect.aura_radius)
+                elif heal_radius <= 0.0:
+                    heal_radius = 60.0
+                heal_interval_seconds = 1.0
+                if len(effect.values) > 1 and effect.values[1] != 0.0:
+                    damage_multiplier = max(0.0, 1.0 + float(effect.values[1]))
         return replace(
             definition,
             lifetime_seconds=max(
@@ -4257,6 +4276,10 @@ class LocalCombatState:
                 visual_lifetime,
             ),
             location_visual_effects=location_visual_effects,
+            heal_fraction=heal_fraction,
+            heal_radius=heal_radius,
+            heal_interval_seconds=heal_interval_seconds,
+            damage_multiplier=damage_multiplier,
         )
 
     def _player_summon_shape(
@@ -9085,10 +9108,13 @@ class LocalCombatState:
                 self.monster_status_damage.pop(
                     (actor_id, resource_id), None
                 )
+                if resource_id == "skill_mindcontrol_effect":
+                    getattr(self, "monster_mind_control_sources", {}).pop(actor_id, None)
         if not active:
             self.monster_status_effects.pop(actor_id, None)
             self.monster_taunt_sources.pop(actor_id, None)
             self.player_buff_taunt_sources.pop(actor_id, None)
+            getattr(self, "monster_mind_control_sources", {}).pop(actor_id, None)
             return ()
         return tuple(definition for definition, _expires_at in active.values())
 
@@ -9571,6 +9597,13 @@ class LocalCombatState:
                 definition,
                 expires_at,
             )
+            if definition.resource_id == "skill_mindcontrol_effect":
+                getattr(self, "monster_mind_control_sources", {})[int(actor_id)] = (
+                    int(source_actor_id),
+                    expires_at,
+                )
+                self.pending_monster_attacks.pop(int(actor_id), None)
+                self.pending_player_summon_attacks.pop(int(actor_id), None)
             if "taunt" in self._status_groups_for_effect(
                 definition.effect_id
             ):
@@ -9647,7 +9680,11 @@ class LocalCombatState:
         return tuple(
             definition
             for definition in definitions
-            if not self.monster_status_effect_blocked(
+            if not (
+                str(getattr(definition, "resource_id", "")).casefold() == "pvp_disguise_talent"
+                or "clonesummoner" in str(getattr(definition, "resource_id", "")).casefold()
+            )
+            and not self.monster_status_effect_blocked(
                 actor_id, definition.resource_id, now=now
             )
         )
@@ -10568,12 +10605,24 @@ class LocalCombatState:
         return self.template_teams.get(str(monster.template_id).casefold())
 
     def monster_hostile_to_player(
-        self, monster_actor_id: int, player_actor_id: int,
+        self, monster_actor_id: int, player_actor_id: int, *, now: float | None = None
     ) -> bool:
         """Whether a monster and a player may harm each other.
 
         Always ``True`` unless both have an arena team and it is the same.
         """
+
+        if self._monster_is_mind_controlled(monster_actor_id, now=now):
+            controller_info = getattr(self, "monster_mind_control_sources", {}).get(int(monster_actor_id))
+            controller_id = controller_info[0] if controller_info is not None else getattr(self, "player_actor_id", 1)
+            if int(player_actor_id) == int(controller_id):
+                return False
+            player_team = self.player_teams.get(int(player_actor_id))
+            controller_team = self.player_teams.get(int(controller_id))
+            if player_team is not None and controller_team is not None and player_team == controller_team:
+                return False
+            if not self.player_teams:
+                return False
 
         if not self.template_teams and not self.monster_teams:
             return True
@@ -12749,6 +12798,8 @@ class LocalCombatState:
                     if value_index >= len(definition.values):
                         continue
                     fraction = float(definition.values[value_index])
+                elif raw_value == "$talent_warrior_spikedShield_heal":
+                    fraction = 0.05
                 else:
                     try:
                         fraction = float(raw_value)
@@ -13054,6 +13105,8 @@ class LocalCombatState:
         started = []
         for actor_id, summon in tuple(self.player_summons.items()):
             definition = summon.definition
+            controller_info = getattr(self, "monster_mind_control_sources", {}).get(int(actor_id))
+            effective_owner = controller_info[0] if (controller_info and self._monster_is_mind_controlled(actor_id, now=current_time)) else summon.owner_actor_id
             can_target_players = not (
                 str(getattr(definition, "category", "")).casefold()
                 == "mercenary"
@@ -13201,7 +13254,7 @@ class LocalCombatState:
                 hostile_player_ids = tuple(
                     target_actor_id
                     for target_actor_id in (
-                        hostile_by_owner.get(summon.owner_actor_id, ())
+                        hostile_by_owner.get(effective_owner, ())
                         if can_target_players else ()
                     )
                     if target_actor_id in player_positions
@@ -13257,11 +13310,11 @@ class LocalCombatState:
                     if monster_actor_id not in self.returning_home_actor_ids
                     and self.monsters[monster_actor_id].summon_targetable
                     and self.monster_hostile_to_player(
-                        monster_actor_id, summon.owner_actor_id)
+                        monster_actor_id, effective_owner, now=current_time)
                 ]
                 players_in_area = [
                     (self._distance(summon.position, player_positions[target_actor_id]), target_actor_id)
-                    for target_actor_id in hostile_by_owner.get(summon.owner_actor_id, ())
+                    for target_actor_id in hostile_by_owner.get(effective_owner, ())
                     if can_target_players and target_actor_id in player_positions
                 ]
                 area = sorted(
@@ -13324,7 +13377,7 @@ class LocalCombatState:
                     if monster_actor_id not in self.returning_home_actor_ids
                     and self.monsters[monster_actor_id].summon_targetable
                     and self.monster_hostile_to_player(
-                        monster_actor_id, summon.owner_actor_id)
+                        monster_actor_id, effective_owner, now=current_time)
                 ) + tuple(
                     (
                         self._distance(
@@ -13334,7 +13387,7 @@ class LocalCombatState:
                         target_actor_id,
                     )
                     for target_actor_id in hostile_by_owner.get(
-                        summon.owner_actor_id, ()
+                        effective_owner, ()
                     )
                     if can_target_players
                     and target_actor_id in player_positions
@@ -13802,7 +13855,10 @@ class LocalCombatState:
                     summon is None or self.player_summon_health.get(actor_id, [0])[0] <= 0
                     or self._monster_actions_disabled(actor_id, now=current_time)):
                 continue
-            if attack.target_actor_id == summon.owner_actor_id:
+            controller_info = getattr(self, "monster_mind_control_sources", {}).get(int(actor_id))
+            is_mind_controlled = bool(controller_info and self._monster_is_mind_controlled(actor_id, now=current_time))
+            effective_owner = controller_info[0] if is_mind_controlled else summon.owner_actor_id
+            if attack.target_actor_id == effective_owner and not is_mind_controlled:
                 effects = tuple(
                     effect
                     for effect in pending.geometry.victim_status_effects
@@ -13816,7 +13872,7 @@ class LocalCombatState:
                     support_applications.append(
                         PlayerSupportApplication(
                             actor_id,
-                            summon.owner_actor_id,
+                            effective_owner,
                             attack.impact_tick,
                             effects,
                         )
@@ -13854,7 +13910,7 @@ class LocalCombatState:
                         continue
                     if (
                         target_actor_id
-                        not in hostile_by_owner.get(summon.owner_actor_id, ())
+                        not in hostile_by_owner.get(effective_owner, ())
                         or player_positions is None
                         or target_actor_id not in player_positions
                     ):
@@ -13876,7 +13932,7 @@ class LocalCombatState:
                     base_damage = sum(pending.player_damage_range) * 0.5 * (
                         self._summon_status_scale(actor_id, "Damage", "Min", now=current_time)
                         + self._summon_status_scale(actor_id, "Damage", "Max", now=current_time)
-                    ) * 0.5 * self._monster_skill_damage_multiplier(actor_id, now=current_time)
+                    ) * 0.5 * self._monster_skill_damage_multiplier(actor_id, now=current_time) * getattr(summon.definition, "damage_multiplier", 1.0)
                     damage = max(0, int(round(
                         base_damage
                         * max(0.0, PLAYER_HUNTING_MINION_STRIKES.get(
@@ -13928,7 +13984,7 @@ class LocalCombatState:
                         )
 
                     lethal_allowed = target_actor_id in lethal_by_owner.get(
-                        summon.owner_actor_id, ()
+                        effective_owner, ()
                     )
                     current = max(0 if lethal_allowed else 1, int(previous) - damage)
                     killed = lethal_allowed and current == 0
@@ -13969,7 +14025,7 @@ class LocalCombatState:
                         ),
                         skill_index=attack.skill_index,
                         victim_status_effects=effects,
-                        source_actor_id=summon.owner_actor_id,
+                        source_actor_id=effective_owner,
                         blocked=blocked,
                     ))
                     continue
@@ -14006,7 +14062,7 @@ class LocalCombatState:
                 base_damage = sum(pending.player_damage_range) * 0.5 * (
                         self._summon_status_scale(actor_id, "Damage", "Min", now=current_time)
                         + self._summon_status_scale(actor_id, "Damage", "Max", now=current_time)
-                    ) * 0.5 * self._monster_skill_damage_multiplier(actor_id, now=current_time)
+                    ) * 0.5 * self._monster_skill_damage_multiplier(actor_id, now=current_time) * getattr(summon.definition, "damage_multiplier", 1.0)
                 damage = max(
                     0,
                     int(
@@ -14135,6 +14191,8 @@ class LocalCombatState:
             definition = summon.definition
             if current_time < summon.spawn_ready_at:
                 continue
+            if self._monster_is_mind_controlled(actor_id, now=current_time):
+                continue
             owner_position = (
                 player_positions.get(summon.owner_actor_id)
                 if player_positions is not None
@@ -14194,7 +14252,9 @@ class LocalCombatState:
             scale = (
                 self._summon_status_scale(actor_id, "Damage", "Min", now=now)
                 + self._summon_status_scale(actor_id, "Damage", "Max", now=now)
-            ) * 0.5 * self._monster_skill_damage_multiplier(actor_id, now=now)
+            ) * 0.5 * self._monster_skill_damage_multiplier(actor_id, now=now) * getattr(summon.definition, "damage_multiplier", 1.0)
+            controller_info = getattr(self, "monster_mind_control_sources", {}).get(int(actor_id))
+            effective_owner = controller_info[0] if (controller_info and self._monster_is_mind_controlled(actor_id, now=now)) else summon.owner_actor_id
             damage_range = tuple(value * scale for value in strike.player_damage_range)
             for target_actor_id in tuple(self.living_actor_ids):
                 target = self.monsters[target_actor_id]
@@ -14212,7 +14272,7 @@ class LocalCombatState:
                         summon.position, self.monster_positions[target_actor_id],
                     ) > strike.radius + max(0.0, target.collision_radius)
                     or not self.monster_hostile_to_player(
-                        target_actor_id, summon.owner_actor_id,
+                        target_actor_id, effective_owner, now=now,
                     )
                 ):
                     continue
@@ -14238,7 +14298,7 @@ class LocalCombatState:
                     hit_tags=hit_tags,
                     skill_index=strike.skill_index,
                     victim_status_effects=(),
-                    source_actor_id=summon.owner_actor_id,
+                    source_actor_id=effective_owner,
                 ))
         self.pending_player_summon_strikes = waiting
         return resolutions
@@ -16237,6 +16297,12 @@ class LocalCombatState:
                 targets_monster
                 and self.monster_health.get(attack.target_actor_id, 0) <= 0
             ):
+                continue
+            if not targets_monster and (
+                self._monster_is_mind_controlled(actor_id, now=current_time)
+                or not self.monster_hostile_to_player(actor_id, player_actor_id, now=current_time)
+            ):
+                self._remove_pending_monster_attack(actor_id, attack)
                 continue
             if not targets_monster and (target_health if target_health is not None else self.player_health.get(
                 player_actor_id, [self.player_maximum_health]

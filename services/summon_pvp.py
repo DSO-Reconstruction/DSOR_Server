@@ -41,10 +41,13 @@ class SummonPVPService:
             for actor_id, _position, target_session in combat_targets
         }
         with combat.lock:
-            owner_actor_ids = frozenset(
-                int(summon.owner_actor_id)
-                for summon in combat.player_summons.values()
-            )
+            owner_actor_ids = set()
+            for summon_actor_id, summon in combat.player_summons.items():
+                owner_actor_ids.add(int(summon.owner_actor_id))
+                controller_info = getattr(combat, "monster_mind_control_sources", {}).get(int(summon_actor_id))
+                if controller_info and combat._monster_is_mind_controlled(summon_actor_id, now=now):
+                    owner_actor_ids.add(int(controller_info[0]))
+            owner_actor_ids = frozenset(owner_actor_ids)
             due_damage_types = {}
             for pending in combat.pending_player_summon_attacks.values():
                 if pending.attack.due_at > now:
@@ -54,7 +57,9 @@ class SummonPVPService:
                 )
                 if summon is None:
                     continue
-                owner_actor_id = int(summon.owner_actor_id)
+                controller_info = getattr(combat, "monster_mind_control_sources", {}).get(int(pending.attack.attacker_actor_id))
+                effective_owner = controller_info[0] if (controller_info and combat._monster_is_mind_controlled(pending.attack.attacker_actor_id, now=now)) else summon.owner_actor_id
+                owner_actor_id = int(effective_owner)
                 for target_actor_id in pending.target_actor_ids:
                     due_damage_types[
                         (owner_actor_id, int(target_actor_id))

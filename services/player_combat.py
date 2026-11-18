@@ -1140,15 +1140,37 @@ class PlayerCombatService(PlayerCastTimingService):
                             player_rift_force_echo_multiplier
                         ),
                     )
+                target_count = len({
+                    impact.target.actor_id for impact in entity_plan.impacts
+                } if entity_plan is not None else {
+                    hit.target_actor_id for hit in pending_hits
+                })
+                if location_position_world is not None:
+                    # For placement aura skills such as Banner of War (defiance),
+                    # target_count is the number of hostile monsters and players inside
+                    # the arena radius the moment the banner is placed.
+                    arena_enemies = 0
+                    banner_radius = 5.75
+                    for monster_actor_id in combat.living_actor_ids:
+                        monster = combat.monsters.get(monster_actor_id)
+                        if monster is None:
+                            continue
+                        m_pos = combat.monster_positions.get(monster_actor_id)
+                        if m_pos is None:
+                            continue
+                        if combat._distance(m_pos, location_position_world) <= banner_radius + max(0.0, monster.collision_radius):
+                            if combat.monster_hostile_to_player(monster_actor_id, source_actor_id):
+                                arena_enemies += 1
+                    if pvp_snapshot and pvp_snapshot[1]:
+                        for entity in pvp_snapshot[1]:
+                            if combat._distance(entity.position, location_position_world) <= banner_radius + 0.75:
+                                arena_enemies += 1
+                    target_count = max(target_count, arena_enemies)
                 location_owner_effects = (
                     combat.player_skill_location_owner_effects(
                         client_skill.skill_index,
                         cast_id=client_skill.cast_id,
-                        target_count=len({
-                            impact.target.actor_id for impact in entity_plan.impacts
-                        } if entity_plan is not None else {
-                            hit.target_actor_id for hit in pending_hits
-                        }),
+                        target_count=target_count,
                         modifier_effect_ids=modifier_effect_ids,
                     )
                 )
