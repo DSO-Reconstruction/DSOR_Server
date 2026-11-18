@@ -481,7 +481,11 @@ class PresenceService:
                 with value.flow_lock:
                     move = value.gameplay_last_move
                     value_character = value.gameplay_character
-                if move is None or value_character is None:
+                    spawn_pos = getattr(value, "gameplay_spawn_position", None)
+                if value_character is None:
+                    continue
+                pos = move.relative_position if move is not None else spawn_pos
+                if pos is None:
                     continue
                 targets.append(
                     (
@@ -491,7 +495,7 @@ class PresenceService:
                                 value_character.character_id
                             )
                         ),
-                        move.relative_position,
+                        pos,
                         value,
                     )
                 )

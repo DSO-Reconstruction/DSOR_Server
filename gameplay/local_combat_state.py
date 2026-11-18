@@ -6611,6 +6611,11 @@ class LocalCombatState:
             ]
             if not parts:
                 continue
+            if (
+                parts[0].casefold() == "pvp_disguise_talent"
+                or "clonesummoner" in parts[0].casefold()
+            ):
+                continue
             metadata: dict[str, str] = {}
             parameters: dict[int, float] = {}
             for token in parts[1:]:
@@ -6654,6 +6659,8 @@ class LocalCombatState:
                 (parts[0],),
             ).fetchone()
             if effect_row is None:
+                continue
+            if "clonesummoner" in str(effect_row[6]).casefold():
                 continue
             try:
                 raw_chance = metadata.get("C", "1")
@@ -14209,6 +14216,11 @@ class LocalCombatState:
                 if player_positions is not None
                 else None
             )
+            if owner_position is None and player_positions:
+                if 1 in player_positions:
+                    owner_position = player_positions[1]
+                elif len(player_positions) == 1:
+                    owner_position = next(iter(player_positions.values()))
             if (
                 definition.heal_fraction <= 0.0
                 or definition.heal_radius <= 0.0

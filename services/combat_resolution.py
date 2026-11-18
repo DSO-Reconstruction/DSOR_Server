@@ -8,7 +8,9 @@ import sqlite3
 import math
 
 from dso_server.protocol.gameplay_protocol import (
+    ActorStatsUpdate,
     StatusEffectCommandBatch,
+    encode_actor_stats_update_batch,
     encode_status_effect_command_batch,
 )
 
@@ -262,6 +264,18 @@ class CombatResolutionService:
 
         if int(recovered) <= 0:
             return
+        with s.flow_lock:
+            if s.gameplay_inventory is not None:
+                s.gameplay_inventory.health_points = float(current_health)
+                current_resource = float(s.gameplay_inventory.secondary_resource)
+            else:
+                current_resource = 0.0
+            server_tick = max(
+                int(s.gameplay_chase_server_tick),
+                int(s.gameplay_last_heal_server_tick) + 1,
+                int(server_tick),
+            ) & 0xFFFFFFFF
+            s.gameplay_last_heal_server_tick = server_tick
         hit = Hit(
             server_tick=int(server_tick) & 0xFFFFFFFF,
             hit_tags=(),
@@ -289,6 +303,14 @@ class CombatResolutionService:
             track=True,
             label=label,
         )
+        s.send_reliable_ordered(
+            encode_actor_stats_update_batch(
+                ActorStatsUpdate(int(current_health), current_resource),
+                actor_id=LOCAL_PLAYER_ACTOR_ID,
+            ),
+            track=True,
+            label=f"{label}-stats-update",
+        )
         CharacterService._update_low_health_socket_state(
             s,
             current_health=int(current_health),
@@ -296,6 +318,24 @@ class CombatResolutionService:
             server_tick=int(server_tick),
             event_seed=int(recovered),
         )
+        if s.gameplay_presence_callback is not None:
+            remote_id = getattr(s, "gameplay_remote_actor_id", None)
+            if remote_id:
+                resolution = DamageResolution(
+                    target_actor_id=remote_id,
+                    attacker_actor_id=remote_id,
+                    current_health=int(current_health),
+                    maximum_health=int(maximum_health),
+                    damage=int(recovered),
+                    killed=False,
+                    position=getattr(s.gameplay_last_move, "relative_position", (0.0, 0.0, 0.0)) if s.gameplay_last_move else (0.0, 0.0, 0.0),
+                    server_tick=int(server_tick) & 0xFFFFFFFF,
+                    hit_tags=(),
+                    skill_index=0,
+                    victim_status_effects=(),
+                    source_actor_id=remote_id,
+                )
+                s.gameplay_presence_callback(s, ("pvp_combat_resolution", resolution))
 
     @staticmethod
     def _apply_player_damage_healing(

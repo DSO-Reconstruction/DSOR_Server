@@ -452,6 +452,11 @@ class PVPCombatService:
     def _filter_player_status_effects(s: Session, definitions, *, pvp=False) -> tuple:
         """Apply socket immunity and authored status-group duration changes."""
 
+        definitions = tuple(
+            d for d in definitions
+            if str(getattr(d, "resource_id", "")).casefold() != "pvp_disguise_talent"
+            and "clonesummoner" not in str(getattr(d, "resource_id", "")).casefold()
+        )
         combat = s.gameplay_combat_state
         if pvp:
             clamped = []

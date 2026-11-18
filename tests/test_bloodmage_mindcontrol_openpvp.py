@@ -1,6 +1,8 @@
 """Tests for Mage Bloodmage Guardian heal, Mind Control on mobs, and Open PvP skill features."""
 
 import math
+import sqlite3
+import threading
 import time
 import unittest
 from types import SimpleNamespace
@@ -509,6 +511,81 @@ class BloodmageGuardianMindControlOpenPvPTests(unittest.TestCase):
         # Guardian should now target Player 2 (enemy of Player 1)
         if attacks_expired:
             self.assertEqual(attacks_expired[0].target_actor_id, 202)
+
+    def test_clonesummoner_and_pvp_disguise_filtered_at_load(self):
+        """Verify _load_victim_status_effects drops pvp_disguise_talent and CloneSummoner."""
+        raw = "skill_mindcontrol_effect,C:1.0,D:10.0,DP:10.0;pvp_disguise_talent,C:1.0"
+        with sqlite3.connect(DEFAULT_STATIC_DB_PATH) as conn:
+            effects = LocalCombatState._load_victim_status_effects(conn, raw)
+        ids = [e.resource_id for e in effects]
+        self.assertIn("skill_mindcontrol_effect", ids)
+        self.assertNotIn("pvp_disguise_talent", ids)
+        self.assertFalse(any("clonesummoner" in i.lower() for i in ids))
+
+    def test_clonesummoner_filtered_for_players(self):
+        """Verify _filter_player_status_effects drops pvp_disguise_talent and CloneSummoner."""
+        mock_session = unittest.mock.MagicMock()
+        mock_session.gameplay_combat_state = self.combat
+        mock_session.gameplay_socket_effect_evaluation = None
+        mock_session.gameplay_player_cc_immunity = {}
+        
+        disguise_def = VictimStatusEffectDefinition(
+            resource_id="pvp_disguise_talent",
+            effect_id=9999,
+            duration_ticks=250,
+            chance=1.0,
+            values=(),
+            trigger="",
+        )
+        mc_def = VictimStatusEffectDefinition(
+            resource_id="skill_mindcontrol_effect",
+            effect_id=6000,
+            duration_ticks=50,
+            chance=1.0,
+            values=(),
+            trigger="",
+        )
+        filtered = CharacterService._filter_player_status_effects(
+            mock_session, (disguise_def, mc_def), pvp=True,
+        )
+        filtered_ids = [d.resource_id for d in filtered]
+        self.assertNotIn("pvp_disguise_talent", filtered_ids)
+        self.assertIn("skill_mindcontrol_effect", filtered_ids)
+
+    def test_send_player_heal_transition_updates_inventory_and_stats(self):
+        """Verify _send_player_heal_transition updates inventory health and sends stats update."""
+        mock_session = unittest.mock.MagicMock()
+        mock_session.flow_lock = threading.RLock()
+        mock_session.gameplay_inventory = unittest.mock.MagicMock()
+        mock_session.gameplay_inventory.health_points = 5000.0
+        mock_session.gameplay_inventory.secondary_resource = 100.0
+        mock_session.gameplay_chase_server_tick = 100
+        mock_session.gameplay_last_heal_server_tick = 90
+        mock_session.gameplay_presence_callback = unittest.mock.MagicMock()
+        mock_session.gameplay_remote_actor_id = 66497
+        mock_session.gameplay_last_move = None
+        mock_session.send_reliable_ordered = unittest.mock.MagicMock()
+        mock_session.gameplay_combat_state = self.combat
+
+        CharacterService._send_player_heal_transition(
+            mock_session,
+            current_health=5200,
+            maximum_health=10000,
+            recovered=200,
+            server_tick=105,
+            label="player-summon-support-heal",
+        )
+
+        # Inventory health must be updated
+        self.assertEqual(mock_session.gameplay_inventory.health_points, 5200.0)
+        # Packets sent must include HitServerCommand and ActorStatsUpdate
+        self.assertTrue(mock_session.send_reliable_ordered.call_count >= 2)
+        # Presence callback must be notified for PvP peers
+        mock_session.gameplay_presence_callback.assert_called_once()
+        event = mock_session.gameplay_presence_callback.call_args[0][1]
+        self.assertEqual(event[0], "pvp_combat_resolution")
+        self.assertEqual(event[1].damage, 200)
+        self.assertEqual(event[1].current_health, 5200)
 
 
 if __name__ == "__main__":
