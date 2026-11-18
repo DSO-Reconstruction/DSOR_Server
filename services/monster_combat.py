@@ -1091,13 +1091,9 @@ class MonsterCombatService(
                         block_chance = target_stats.block_chance
                         block_damage_reduction = (
                             target_stats.block_damage_reduction
+                            if target_stats.block_damage_reduction > 0.0
+                            else 0.50
                         )
-                        if (
-                            pvp_arena_rules.arena_active(target_session)
-                            and block_chance > 0.0
-                        ):
-                            block_chance = min(0.75, max(0.40, block_chance * 45.0))
-                            block_damage_reduction = 0.75
                     invulnerable = bool(getattr(
                         target_session, "gameplay_gm_invulnerable", False
                     ))

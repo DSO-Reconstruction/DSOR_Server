@@ -133,11 +133,8 @@ class SummonPVPService:
 
             target_block_chance = float(getattr(target_stats, "block_chance", 0.0))
             target_block_reduction = float(getattr(target_stats, "block_damage_reduction", 0.0))
-            if is_arena and target_block_chance > 0.0:
-                target_block_chance = min(0.75, max(0.40, target_block_chance * 45.0))
-                block_reduction = 0.75
-            else:
-                block_reduction = max(0.0, min(1.0, target_block_reduction))
+            reduction = target_block_reduction if target_block_reduction > 0.0 else 0.50
+            block_reduction = min(0.80, max(0.0, reduction))
             player_block_chances[target_actor_id] = target_block_chance
             player_block_reductions[target_actor_id] = block_reduction
 

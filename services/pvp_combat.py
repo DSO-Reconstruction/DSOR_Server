@@ -974,24 +974,13 @@ class PVPCombatService:
             target_block_reduction = float(
                 getattr(target_stats, "block_damage_reduction", 0.0)
             )
-            if pvp_arena_rules.arena_active(s) and target_block_chance > 0.0:
-                # In PvP arenas, shield block chance is scaled to an effective
-                # range (up to 75% cap), reflecting the arena's +75% block rating buff:
-                target_block_chance = min(0.75, max(0.40, target_block_chance * 45.0))
             blocked = (
                 target_block_chance > 0.0
                 and block_roll < min(1.0, target_block_chance)
             )
             if blocked:
-                # In PvP arenas, a successful block reduces incoming damage by 75%
-                # (matching the arena's +75% block buff), providing real damage mitigation.
-                if pvp_arena_rules.arena_active(s):
-                    block_multiplier = 0.25
-                else:
-                    block_multiplier = 1.0 - max(
-                        0.0,
-                        min(1.0, target_block_reduction),
-                    )
+                reduction = target_block_reduction if target_block_reduction > 0.0 else 0.50
+                block_multiplier = 1.0 - min(0.80, max(0.0, reduction))
             else:
                 block_multiplier = 1.0
             wearer_low_health = CharacterService._player_is_low_health(s)
