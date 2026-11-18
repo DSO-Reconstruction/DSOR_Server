@@ -1349,6 +1349,17 @@ class MonsterCombatService(
             target_session = target_sessions.get(
                 application.target_actor_id
             )
+            if target_session is None and int(application.target_actor_id) == LOCAL_PLAYER_ACTOR_ID:
+                target_session = s
+            if target_session is None:
+                target_session = next(
+                    (
+                        sess for sess in target_sessions.values()
+                        if int(getattr(sess, "gameplay_remote_actor_id", 0)) == int(application.target_actor_id)
+                        or int(getattr(sess, "session_id", 0)) == int(application.target_actor_id)
+                    ),
+                    None,
+                )
             with _post_commit_step("summon-support-status-effects"):
                 if target_session is None:
                     if application.target_actor_id in combat.player_summons:
@@ -1369,6 +1380,9 @@ class MonsterCombatService(
                     )
                 if application.healed is not None:
                     current, maximum, recovered = application.healed
+                    with target_session.flow_lock:
+                        if target_session.gameplay_inventory is not None:
+                            target_session.gameplay_inventory.health_points = float(current)
                     CharacterService._send_player_heal_transition(
                         target_session,
                         current_health=current,

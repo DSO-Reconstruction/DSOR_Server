@@ -430,7 +430,8 @@ class ChatClientChannelInfo:
 
 
 def decode_chat_client_channel_info(payload: bytes) -> ChatClientChannelInfo:
-    reader = _reader(payload, CHAT_CLIENT_CHANNEL_INFO_COMMAND)
+    cmd = int.from_bytes(payload[1:3], "little") if len(payload) >= 3 else 0x00E3
+    reader = _reader(payload, cmd)
     result = ChatClientChannelInfo(
         reader.read_uint32_le(),
         reader.read_uint32_le(),
@@ -3347,7 +3348,7 @@ def decode_simple_gameplay_command(payload: bytes):
         return decode_fieldless_command(payload, command_id)
     if command_id == CHAT_CLIENT_LOGGED_IN_COMMAND:
         return decode_chat_client_logged_in(payload)
-    if command_id == CHAT_CLIENT_CHANNEL_INFO_COMMAND:
+    if command_id in (0x00E3, CHAT_CLIENT_CHANNEL_INFO_COMMAND):
         return decode_chat_client_channel_info(payload)
     if command_id == OCP_OFFER_REQUEST_COMMAND:
         return decode_boolean_command(payload, command_id)

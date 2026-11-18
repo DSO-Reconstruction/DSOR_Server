@@ -584,6 +584,87 @@ def dispatch_incoming_hit(session, resolution) -> None:
         dispatch_talent_event(session, "hitblocked", server_tick=server_tick)
     if getattr(resolution, "periodic_damage", False):
         return
+    combat = getattr(session, "gameplay_combat_state", None)
+    if combat is not None and (int(getattr(resolution, "damage", 0)) > 0 or getattr(resolution, "blocked", False)):
+        db_path = _database_path(combat)
+        catalog = load_status_runtime_catalog(db_path)
+        runtime_effects = getattr(session, "gameplay_runtime_status_effects", {})
+        trigger_id = catalog.effect_ids.get("skill_spikedshield_buff_armor_trigger")
+        if trigger_id is not None and any(
+            getattr(entry, "effect_id", None) == trigger_id
+            for entry, _expires_at in tuple(runtime_effects.values())
+        ):
+            from dso_server.services.base import CharacterService
+            database = readonly_db.connect(db_path)
+            armor_defs = LocalCombatState._load_victim_status_effects(
+                database, "skill_spikedshield_buff_armor,C:1.0", default_trigger="hit"
+            )
+            if armor_defs:
+                CharacterService._send_player_skill_status_effects(
+                    session, armor_defs, server_tick=server_tick, label="spikedshield-armor-hit"
+                )
+        heal_trigger_id = catalog.effect_ids.get("skill_spikedshield_heal_talent")
+        spiked_buff_id = catalog.effect_ids.get("warrior_spikedShield_buff")
+        talent_heal_id = catalog.effect_ids.get("warrior_talent_spikeshield_heal")
+
+        has_heal_trigger = heal_trigger_id is not None and any(
+            getattr(entry, "effect_id", None) == heal_trigger_id
+            for entry, _expires_at in tuple(runtime_effects.values())
+        )
+        has_spiked_buff = spiked_buff_id is not None and any(
+            getattr(entry, "effect_id", None) == spiked_buff_id
+            for entry, _expires_at in tuple(runtime_effects.values())
+        )
+        has_heal_talent = False
+        if has_spiked_buff and not has_heal_trigger:
+            persistent_effects = getattr(session, "gameplay_persistent_status_effects", {})
+            if talent_heal_id is not None and any(
+                getattr(entry, "effect_id", None) == talent_heal_id
+                for entry in tuple(persistent_effects.values())
+            ):
+                has_heal_talent = True
+            elif hasattr(session, "gameplay_talent_categories"):
+                for cat in getattr(session, "gameplay_talent_categories", ()) or ():
+                    for sel in getattr(cat, "selected_skills", ()) or ():
+                        if getattr(sel, "resource_id", "") == "warrior_talent_spikeshield_heal" and int(getattr(sel, "field_00", 0)) > 0:
+                            has_heal_talent = True
+                            break
+
+        if has_heal_trigger or (has_spiked_buff and has_heal_talent):
+            from dso_server.services.base import CharacterService
+            database = readonly_db.connect(db_path)
+            heal_defs = LocalCombatState._load_victim_status_effects(
+                database, "skill_spikedshield_heal,C:1.0", default_trigger="hit"
+            )
+            if heal_defs:
+                CharacterService._send_player_skill_status_effects(
+                    session, heal_defs, server_tick=server_tick, label="spikedshield-heal-hit"
+                )
+            target_actor_id = getattr(session, "gameplay_remote_actor_id", None) or getattr(resolution, "target_actor_id", None) or combat.player_actor_id
+            if target_actor_id is not None:
+                with combat.lock:
+                    previous = combat.player_health.get(
+                        int(target_actor_id), [combat.player_maximum_health, combat.player_maximum_health]
+                    )[0]
+                    current, maximum = combat.heal_player_relative(int(target_actor_id), 0.05)
+                recovered = current - previous
+                if recovered > 0:
+                    with session.flow_lock:
+                        if getattr(session, "gameplay_inventory", None) is not None:
+                            session.gameplay_inventory.health_points = float(current)
+                        next_tick = max(
+                            int(getattr(session, "gameplay_chase_server_tick", 0)),
+                            int(getattr(session, "gameplay_last_heal_server_tick", 0)) + 1,
+                        ) & 0xFFFFFFFF
+                        session.gameplay_last_heal_server_tick = next_tick
+                    CharacterService._send_player_heal_transition(
+                        session,
+                        current_health=current,
+                        maximum_health=maximum,
+                        recovered=recovered,
+                        server_tick=next_tick,
+                        label="spikedshield-heal-hit",
+                    )
     if int(getattr(resolution, "damage", 0)) > 0 and int(
         resolution.current_health
     ) <= max(1, round(int(resolution.maximum_health) / 3.0)):

@@ -41,10 +41,13 @@ class SummonPVPService:
             for actor_id, _position, target_session in combat_targets
         }
         with combat.lock:
-            owner_actor_ids = frozenset(
-                int(summon.owner_actor_id)
-                for summon in combat.player_summons.values()
-            )
+            owner_actor_ids = set()
+            for summon_actor_id, summon in combat.player_summons.items():
+                owner_actor_ids.add(int(summon.owner_actor_id))
+                controller_info = getattr(combat, "monster_mind_control_sources", {}).get(int(summon_actor_id))
+                if controller_info and combat._monster_is_mind_controlled(summon_actor_id, now=now):
+                    owner_actor_ids.add(int(controller_info[0]))
+            owner_actor_ids = frozenset(owner_actor_ids)
             due_damage_types = {}
             for pending in combat.pending_player_summon_attacks.values():
                 if pending.attack.due_at > now:
@@ -54,7 +57,9 @@ class SummonPVPService:
                 )
                 if summon is None:
                     continue
-                owner_actor_id = int(summon.owner_actor_id)
+                controller_info = getattr(combat, "monster_mind_control_sources", {}).get(int(pending.attack.attacker_actor_id))
+                effective_owner = controller_info[0] if (controller_info and combat._monster_is_mind_controlled(pending.attack.attacker_actor_id, now=now)) else summon.owner_actor_id
+                owner_actor_id = int(effective_owner)
                 for target_actor_id in pending.target_actor_ids:
                     due_damage_types[
                         (owner_actor_id, int(target_actor_id))
@@ -168,7 +173,7 @@ class SummonPVPService:
 
         combat.resolve_due_player_summon_taunts(now=now)
         out_of_range_summons = combat.player_summons_outside_owner_range(
-            player_world_positions
+            player_world_positions, now=now,
         )
         summon_attacks = combat.maybe_start_player_summon_attacks(
             player_world_positions,
@@ -358,11 +363,14 @@ class SummonPVPService:
             return combat.accepted_monster_status_effects(actor_id, tuple(clamped), now=time.perf_counter())
 
     @staticmethod
-    def _record_pvp_summon_effects(combat, actor_id, definitions):
+    def _record_pvp_summon_effects(combat, actor_id, definitions, *, source_actor_id=None, now=None):
         # Keep controls in the existing actor-status evaluator. Periodic damage
         # belongs to the PvP timers, which revalidate hostility and round state.
-        now = time.perf_counter()
-        combat._record_monster_status_effects(actor_id, definitions, now=now)
+        current_time = time.perf_counter() if now is None else float(now)
+        combat._record_monster_status_effects(
+            actor_id, definitions, now=current_time,
+            source_actor_id=source_actor_id if source_actor_id is not None else 1,
+        )
         for effect in definitions:
             combat.monster_status_damage.pop((int(actor_id), effect.resource_id), None)
         combat._monster_action_lock_cache.pop(int(actor_id), None)

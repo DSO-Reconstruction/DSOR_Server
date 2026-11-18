@@ -452,6 +452,11 @@ class PVPCombatService:
     def _filter_player_status_effects(s: Session, definitions, *, pvp=False) -> tuple:
         """Apply socket immunity and authored status-group duration changes."""
 
+        definitions = tuple(
+            d for d in definitions
+            if str(getattr(d, "resource_id", "")).casefold() != "pvp_disguise_talent"
+            and "clonesummoner" not in str(getattr(d, "resource_id", "")).casefold()
+        )
         combat = s.gameplay_combat_state
         if pvp:
             clamped = []
@@ -536,20 +541,21 @@ class PVPCombatService:
         character = getattr(s, "gameplay_character", None)
         if (
             features is None or character is None or not definitions
-            or getattr(s, "gameplay_match", None) is None
+            or (getattr(s, "gameplay_match", None) is None and not getattr(s, "gameplay_pvp_enabled", False))
             or not any(
                 {"movement", "regularskills"} <= features(int(value.effect_id))
                 for value in definitions
             )
         ):
             return tuple(definitions)
-        scale = calculate_player_combat_stats(
+        target_stats = calculate_player_combat_stats(
             combat.encounter.static_database_path, cache_owner=s,
             class_name=CLASS_NAMES.get(int(character.class_id), "mage"),
             level=max(1, int(character.level)),
             inventory=s.gameplay_inventory,
             modifier_sources=CharacterService._active_skill_modifier_sources(s),
-        ).stun_duration_scale
+        )
+        scale = float(getattr(target_stats, "stun_duration_scale", 1.0))
         if scale >= 1.0:
             return tuple(definitions)
         return tuple(
@@ -677,9 +683,14 @@ class PVPCombatService:
                 * block_multiplier
                 for coefficient, damage_type, relative in status_progs
             )))
-            if pvp_arena_rules.arena_active(s):
+            if pvp_arena_rules.arena_active(s) and damage > 0:
                 damage = max(1, math.ceil(damage * PVP_ARENA_DAMAGE_MULTIPLIER))
             probe[-1] += f" dmg={damage} blocked={blocked}"
+            ground_receivers = tuple(
+                replace(receiver, duration_ticks=max(25, int(receiver.duration_ticks)))
+                if int(receiver.duration_ticks) <= 0 else receiver
+                for receiver in receivers
+            )
             key = ("pvp-ground-hit", int(aura.effect_id), int(actor_id), int(server_tick))
             pending = SimpleNamespace(
                 round_token=CharacterService._pvp_round_token(s),
@@ -689,7 +700,7 @@ class PVPCombatService:
                 projectile_index=0, impact_index=0,
                 server_tick=int(server_tick) & 0xFFFFFFFF,
                 position=wire_position, damage=damage, rift_damage=0,
-                victim_status_effects=receivers, user_status_effects=(),
+                victim_status_effects=ground_receivers, user_status_effects=(),
                 frost_hit=False, damage_type=primary_dmg_type,
                 player_damage_range=tuple(float(value) for value in damage_range),
                 critical_hit=False, blocked=blocked,
@@ -935,15 +946,6 @@ class PVPCombatService:
                 )
         if hit_plan is None:
             return ()
-        if (
-            not hit_plan.impacts
-            and entities
-            and not isinstance(skill, (BulletSkill, TargetBulletSkill))
-        ):
-            hit_plan = CharacterService._pvp_area_fallback_plan(
-                combat, hit_plan, entities, skill=skill,
-                source_position=source_position,
-            )
         geometry = hit_plan.geometry
         target_by_id = {actor_id: (position, owner) for actor_id, position, owner in targets}
         frame = combat.encounter.coordinate_frame
@@ -1144,8 +1146,10 @@ class PVPCombatService:
                 target_stats,
             )
             if pvp_arena_rules.arena_active(s):
-                base_hit_damage = max(1, math.ceil(base_hit_damage * PVP_ARENA_DAMAGE_MULTIPLIER))
-                hit_damage = max(1, math.ceil(hit_damage * PVP_ARENA_DAMAGE_MULTIPLIER))
+                if base_hit_damage > 0:
+                    base_hit_damage = max(1, math.ceil(base_hit_damage * PVP_ARENA_DAMAGE_MULTIPLIER))
+                if hit_damage > 0:
+                    hit_damage = max(1, math.ceil(hit_damage * PVP_ARENA_DAMAGE_MULTIPLIER))
             pending = SimpleNamespace(
                 round_token=CharacterService._pvp_round_token(s),
                 combat=combat,
@@ -1360,7 +1364,10 @@ class PVPCombatService:
             if not target_is_summon:
                 pending.combat.note_player_attacked(pending.target_actor_id, now=time.perf_counter())
             if target_is_summon and not killed:
-                CharacterService._record_pvp_summon_effects(pending.combat, pending.target_actor_id, effects)
+                CharacterService._record_pvp_summon_effects(
+                    pending.combat, pending.target_actor_id, effects,
+                    source_actor_id=pending.source_actor_id,
+                )
             resolution = DamageResolution(
                 target_actor_id=pending.target_actor_id,
                 attacker_actor_id=pending.source_actor_id,
@@ -1404,6 +1411,99 @@ class PVPCombatService:
             )
         if not target_is_summon:
             dispatch_incoming_hit(target, resolution)
+            target_character = getattr(target, "gameplay_character", None)
+            target_stats = (
+                calculate_player_combat_stats(
+                    pending.combat.encounter.static_database_path,
+                    cache_owner=target,
+                    class_name=CLASS_NAMES.get(
+                        int(getattr(target_character, "class_id", 0)), "mage"
+                    ),
+                    level=max(1, int(getattr(target_character, "level", 1))),
+                    inventory=target.gameplay_inventory,
+                    modifier_sources=CharacterService._active_skill_modifier_sources(target),
+                )
+                if target_character is not None and getattr(pending.combat, "encounter", None) is not None
+                else None
+            )
+            reflection_fraction = float(getattr(target_stats, "damage_reflection_fraction", 0.0)) if target_stats is not None else 0.0
+            if reflection_fraction > 0.0 and damage > 0 and not getattr(pending, "periodic_damage", False) and not getattr(pending, "reflected", False):
+                attacker_session = s
+                if (
+                    int(getattr(s, "gameplay_remote_actor_id", 0)) != int(pending.source_actor_id)
+                    and int(getattr(getattr(s, "gameplay_character", None), "character_id", 0)) != int(pending.source_actor_id)
+                ):
+                    if s.gameplay_presence_callback is not None:
+                        for _aid, _pos, _owner in tuple(s.gameplay_presence_callback(s, ("combat_targets",)) or ()):
+                            if int(_aid) == int(pending.source_actor_id):
+                                attacker_session = _owner
+                                break
+                if attacker_session is not None and getattr(attacker_session, "gameplay_character", None) is not None:
+                    attacker_stats = calculate_player_combat_stats(
+                        pending.combat.encounter.static_database_path,
+                        cache_owner=attacker_session,
+                        class_name=CLASS_NAMES.get(
+                            int(getattr(attacker_session.gameplay_character, "class_id", 0)), "mage"
+                        ),
+                        level=max(1, int(getattr(attacker_session.gameplay_character, "level", 1))),
+                        inventory=attacker_session.gameplay_inventory,
+                        modifier_sources=CharacterService._active_skill_modifier_sources(attacker_session),
+                    )
+                    att_phys_mult = CharacterService._pvp_damage_type_multiplier(attacker_stats, "Physical")
+                    att_block_chance = float(getattr(attacker_stats, "block_chance", 0.0))
+                    att_block_roll = deterministic_combat_roll(
+                        0x50565052, int(pending.server_tick), int(pending.target_actor_id), int(pending.source_actor_id), 1854
+                    )
+                    att_blocked = att_block_chance > 0.0 and att_block_roll < min(1.0, att_block_chance)
+                    att_block_reduction = float(getattr(attacker_stats, "block_damage_reduction", 0.0))
+                    att_block_multiplier = (1.0 - min(0.80, max(0.0, att_block_reduction if att_block_reduction > 0.0 else 0.50))) if att_blocked else 1.0
+                    att_raw_damage = damage * reflection_fraction * att_phys_mult * att_block_multiplier
+                    att_damage = int(math.ceil(att_raw_damage))
+                    if pvp_arena_rules.arena_active(s) and att_damage > 0:
+                        att_damage = max(1, math.ceil(att_damage * PVP_ARENA_DAMAGE_MULTIPLIER))
+
+                    att_current = 0
+                    att_actual_damage = 0
+                    att_killed = False
+                    with pending.combat.lock:
+                        att_health = pending.combat.player_health.get(int(pending.source_actor_id))
+                        if att_health is not None and att_health[0] > 0:
+                            att_prev = int(att_health[0])
+                            att_current = max(floor, att_prev - att_damage)
+                            att_actual_damage = att_prev - att_current
+                            att_health[0] = att_current
+                            att_killed = lethal_allowed and att_current <= 0
+                            if not att_killed and att_actual_damage > 0:
+                                att_death_saved = spare_player(attacker_session, pending.combat, int(pending.source_actor_id))
+                                if att_death_saved:
+                                    att_current, att_killed = int(att_health[0]), False
+                    if att_actual_damage > 0 or att_blocked:
+                        with attacker_session.flow_lock:
+                            if attacker_session.gameplay_inventory is not None:
+                                attacker_session.gameplay_inventory.health_points = float(att_current)
+                        att_resolution = DamageResolution(
+                            target_actor_id=int(pending.source_actor_id),
+                            attacker_actor_id=int(pending.target_actor_id),
+                            current_health=att_current,
+                            maximum_health=int(getattr(attacker_stats, "maximum_health", 1000)),
+                            damage=att_actual_damage,
+                            killed=att_killed,
+                            position=position,
+                            server_tick=int(pending.server_tick),
+                            hit_tags=(0,),
+                            skill_index=1854,
+                            victim_status_effects=(),
+                            source_actor_id=int(pending.target_actor_id),
+                            blocked=att_blocked,
+                            periodic_damage=True,
+                        )
+                        if s.gameplay_presence_callback is not None:
+                            s.gameplay_presence_callback(s, ("pvp_combat_resolution", att_resolution))
+                        dispatch_incoming_hit(attacker_session, att_resolution)
+                        if att_killed:
+                            if match_opponents and target.gameplay_match_callback is not None:
+                                target.gameplay_match_callback(target, ("match_kill", attacker_session))
+                            dispatch_talent_event(target, "killplayer", server_tick=int(pending.server_tick))
             dispatch_kill_talents(
                 s, (replace(resolution, target_marked=target_marked),),
             )
@@ -1618,7 +1718,7 @@ class PVPCombatService:
                 )
             )),
         )
-        if pvp_arena_rules.arena_active(s):
+        if pvp_arena_rules.arena_active(s) and requested_damage > 0:
             requested_damage = max(1, math.ceil(requested_damage * PVP_ARENA_DAMAGE_MULTIPLIER))
         match_opponents = not target_is_summon and CharacterService._pvp_match_opponents(s, target)
         lethal_allowed = target_is_summon or CharacterService._pvp_lethal_damage_allowed(s, target)
