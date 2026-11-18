@@ -173,7 +173,7 @@ class SummonPVPService:
 
         combat.resolve_due_player_summon_taunts(now=now)
         out_of_range_summons = combat.player_summons_outside_owner_range(
-            player_world_positions
+            player_world_positions, now=now,
         )
         summon_attacks = combat.maybe_start_player_summon_attacks(
             player_world_positions,
@@ -363,11 +363,14 @@ class SummonPVPService:
             return combat.accepted_monster_status_effects(actor_id, tuple(clamped), now=time.perf_counter())
 
     @staticmethod
-    def _record_pvp_summon_effects(combat, actor_id, definitions):
+    def _record_pvp_summon_effects(combat, actor_id, definitions, *, source_actor_id=None, now=None):
         # Keep controls in the existing actor-status evaluator. Periodic damage
         # belongs to the PvP timers, which revalidate hostility and round state.
-        now = time.perf_counter()
-        combat._record_monster_status_effects(actor_id, definitions, now=now)
+        current_time = time.perf_counter() if now is None else float(now)
+        combat._record_monster_status_effects(
+            actor_id, definitions, now=current_time,
+            source_actor_id=source_actor_id if source_actor_id is not None else 1,
+        )
         for effect in definitions:
             combat.monster_status_damage.pop((int(actor_id), effect.resource_id), None)
         combat._monster_action_lock_cache.pop(int(actor_id), None)

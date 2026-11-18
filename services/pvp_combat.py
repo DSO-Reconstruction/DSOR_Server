@@ -1359,7 +1359,10 @@ class PVPCombatService:
             if not target_is_summon:
                 pending.combat.note_player_attacked(pending.target_actor_id, now=time.perf_counter())
             if target_is_summon and not killed:
-                CharacterService._record_pvp_summon_effects(pending.combat, pending.target_actor_id, effects)
+                CharacterService._record_pvp_summon_effects(
+                    pending.combat, pending.target_actor_id, effects,
+                    source_actor_id=pending.source_actor_id,
+                )
             resolution = DamageResolution(
                 target_actor_id=pending.target_actor_id,
                 attacker_actor_id=pending.source_actor_id,

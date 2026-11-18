@@ -377,6 +377,139 @@ class BloodmageGuardianMindControlOpenPvPTests(unittest.TestCase):
         )
         self.assertTrue(has_summon)
 
+    def test_mind_controlled_guardian_attacks_and_damages_owner(self):
+        """When Mind Control is cast on a player's Guardian:
+        1. Guardian must not despawn even if the original owner is far away.
+        2. Guardian must advance toward and attack its original summoner.
+        3. Guardian must not heal its original summoner while mind-controlled.
+        4. Once mind control expires, it stops attacking owner and can heal owner again.
+        """
+        from dso_server.protocol.consumable_protocol import VictimStatusEffectDefinition
+        from dso_server.services.summon_pvp import CharacterService as SummonService
+
+        p1 = _session(52001, 101, "Player1Owner")
+        p2 = _session(52002, 202, "Player2Controller")
+        p1.gameplay_pvp_enabled = True
+        p2.gameplay_pvp_enabled = True
+        p1.gameplay_respawn_allowed = True
+        p2.gameplay_respawn_allowed = True
+        p1.gameplay_combat_state = self.combat
+        p2.gameplay_combat_state = self.combat
+        p1.gameplay_presence_callback = lambda s, ev: None
+        p2.gameplay_presence_callback = lambda s, ev: None
+
+        wire1 = self.encounter.coordinate_frame.world_to_wire((5.0, 0.0, 0.0))
+        wire2 = self.encounter.coordinate_frame.world_to_wire((25.0, 0.0, 0.0))
+        p1.gameplay_last_move = SimpleNamespace(relative_position=wire1, yaw=0.0)
+        p2.gameplay_last_move = SimpleNamespace(relative_position=wire2, yaw=0.0)
+
+        combat_targets = (
+            (101, wire1, p1),
+            (202, wire2, p2),
+        )
+
+        # Spawn Guardian for Player 1
+        definition = self.combat.player_summon_definition(1869)
+        self.assertIsNotNone(definition)
+        now = 1000.0
+        spawn = self.combat.spawn_player_summon(
+            definition,
+            owner_actor_id=101,
+            position=(0.0, 0.0, 0.0),
+            yaw=0.0,
+            level=50,
+            server_tick=100,
+            player_damage_range=(1000.0, 1000.0),
+            now=now,
+        )
+        summon = spawn.actors[0]
+        guardian_id = summon.actor_id
+
+        # Player 2 mind controls the Guardian
+        mc_effect = VictimStatusEffectDefinition(
+            resource_id="skill_mindcontrol_effect",
+            effect_hosts="Receiver",
+            aura_targets="",
+            exclusivity_type="Replace",
+            duration_ticks=250,
+            effect_id=5961,
+            chance=1.0,
+            values=(),
+            trigger="",
+        )
+        SummonService._record_pvp_summon_effects(
+            self.combat, guardian_id, (mc_effect,), source_actor_id=202, now=now,
+        )
+
+        # 1. Despawn check: far away original owner must NOT cause despawn while mind-controlled
+        far_positions = {101: (500.0, 0.0, 0.0), 202: (25.0, 0.0, 0.0)}
+        outside = self.combat.player_summons_outside_owner_range(far_positions, now=now)
+        self.assertNotIn(summon, outside)
+
+        # 2. Summon cycle context preparation: controller 202 must be an effective owner
+        ctx = SummonService._prepare_player_summon_cycle_context(
+            self.combat, combat_targets, now=now,
+        )
+        hostile_by_owner = ctx[0]
+        self.assertIn(202, hostile_by_owner)
+        self.assertIn(101, hostile_by_owner[202])
+
+        # 3. Advance summons: Guardian must advance toward Player 1 (the original summoner)
+        movements = self.combat.advance_player_summons(
+            elapsed_seconds=0.2,
+            server_tick=105,
+            now=now + 0.2,
+            player_positions={101: (5.0, 0.0, 0.0), 202: (25.0, 0.0, 0.0)},
+            hostile_player_actor_ids_by_owner=hostile_by_owner,
+        )
+
+        # 4. Attacks: Guardian attacks Player 1
+        attacks = self.combat.maybe_start_player_summon_attacks(
+            player_positions={101: (5.0, 0.0, 0.0), 202: (25.0, 0.0, 0.0)},
+            server_tick=110,
+            now=now + 1.0,
+            hostile_player_actor_ids_by_owner=hostile_by_owner,
+        )
+        self.assertTrue(len(attacks) > 0)
+        attack = attacks[0]
+        self.assertEqual(attack.target_actor_id, 101)
+
+        # 5. Resolve attack: produces PvP resolution against Player 1 with source_actor_id=202
+        resolutions, supports = self.combat.resolve_due_player_summon_attacks(
+            now=now + 5.0,
+            player_positions={101: (5.0, 0.0, 0.0), 202: (25.0, 0.0, 0.0)},
+            server_tick=120,
+            hostile_player_actor_ids_by_owner=hostile_by_owner,
+            player_damage_multipliers={101: 1.0, 202: 1.0},
+        )
+        pvp_res = [r for r in resolutions if r.target_actor_id == 101]
+        self.assertTrue(len(pvp_res) > 0)
+        self.assertEqual(pvp_res[0].source_actor_id, 202)
+        self.assertTrue(pvp_res[0].damage > 0)
+
+        # 6. Guardian must not heal Player 1 while mind-controlled
+        heals_p1 = [s for s in supports if s.target_actor_id == 101]
+        self.assertEqual(len(heals_p1), 0)
+
+        # 7. Fast forward past Mind Control expiration (10s duration -> at now + 15s)
+        now_expired = now + 15.0
+        self.assertFalse(self.combat._monster_is_mind_controlled(guardian_id, now=now_expired))
+        ctx_expired = SummonService._prepare_player_summon_cycle_context(
+            self.combat, combat_targets, now=now_expired,
+        )
+        hostile_by_owner_expired = ctx_expired[0]
+        # Player 1 is no longer attacked by Guardian
+        self.assertNotIn(101, hostile_by_owner_expired.get(101, ()))
+        attacks_expired = self.combat.maybe_start_player_summon_attacks(
+            player_positions={101: (5.0, 0.0, 0.0), 202: (25.0, 0.0, 0.0)},
+            server_tick=500,
+            now=now_expired,
+            hostile_player_actor_ids_by_owner=hostile_by_owner_expired,
+        )
+        # Guardian should now target Player 2 (enemy of Player 1)
+        if attacks_expired:
+            self.assertEqual(attacks_expired[0].target_actor_id, 202)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6000,6 +6000,8 @@ class LocalCombatState:
     def player_summons_outside_owner_range(
         self,
         player_positions: dict[int, tuple[float, float, float]],
+        *,
+        now: float | None = None,
     ) -> tuple[PlayerSummonActor, ...]:
         """Return constructions whose owner crossed the retail leash.
 
@@ -6011,8 +6013,11 @@ class LocalCombatState:
         cleanup own those cases.
         """
 
+        current_time = time.perf_counter() if now is None else float(now)
         outside = []
         for summon in self.player_summons.values():
+            if self._monster_is_mind_controlled(summon.actor_id, now=current_time):
+                continue
             owner_position = player_positions.get(summon.owner_actor_id)
             if owner_position is None:
                 continue
@@ -6079,17 +6084,20 @@ class LocalCombatState:
             ):
                 stop_if_moving(summon)
                 continue
-            owner = (player_positions or {}).get(summon.owner_actor_id)
+            controller_info = getattr(self, "monster_mind_control_sources", {}).get(int(actor_id))
+            is_mind_controlled = bool(controller_info and self._monster_is_mind_controlled(actor_id, now=current_time))
+            effective_owner = controller_info[0] if is_mind_controlled else summon.owner_actor_id
+            owner = (player_positions or {}).get(effective_owner)
             follows = bool(getattr(definition, "follows_owner", False))
             target_positions = self.monster_positions
             player_positions = player_positions or {}
             player_targets = tuple(
                 target_id
                 for target_id in (hostile_player_actor_ids_by_owner or {}).get(
-                    summon.owner_actor_id, ()
+                    effective_owner, ()
                 )
                 if target_id in player_positions
-                and self.player_health.get(target_id, [0])[0] > 0
+                and (target_id not in self.player_health or self.player_health[target_id][0] > 0)
             )
             if definition.monster_template_id in PLAYER_HUNTING_MINION_STRIKES:
                 target_positions = player_positions
@@ -13926,7 +13934,10 @@ class LocalCombatState:
                     ):
                         continue
                     health = self.player_health.get(target_actor_id)
-                    if health is None or int(health[0]) <= 0:
+                    if health is None:
+                        health = [100000, 100000]
+                        self.player_health[target_actor_id] = health
+                    if int(health[0]) <= 0:
                         continue
                     previous, maximum_health = health
                     base_damage = sum(pending.player_damage_range) * 0.5 * (
