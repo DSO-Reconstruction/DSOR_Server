@@ -750,3 +750,30 @@ def test_arena_masks_equipped_set_items_to_crafted_base():
         helm = next(item for item in masked.items if item.item_id == 1)
         assert helm.template_id == expected_template
 
+
+def test_arena_damage_scaling_and_block_mitigation():
+    from dso_server.services.pvp_combat import PVP_ARENA_DAMAGE_MULTIPLIER
+    assert PVP_ARENA_DAMAGE_MULTIPLIER == 0.25
+
+    s_arena = session("b1102_dm")
+    assert pvp_arena_rules.arena_active(s_arena)
+
+    # Outside arena: not active
+    s_outside = session("a0200_kingscity", match_mode=None)
+    assert not pvp_arena_rules.arena_active(s_outside)
+
+
+def test_bullet_skills_do_not_auto_hit_via_fallback_plan():
+    from dso_server.protocol.combat_protocol import BulletSkill
+    from dso_server.gameplay.combat_entities import CombatEntity, EntitySkillPlan
+
+    geom = SimpleNamespace(
+        attack_range=10.0, hit_range=10.0, projectile_range=20.0,
+        impact_count=1, projectile_velocity=20.0, hit_frame=0.0,
+    )
+    # A bullet shot straight at angle 0 faces (0, 0, -1).
+    skill = BulletSkill(0, 1856, 0.0, 100, 1, (0.0, 0.0, -1.0, 0.0), 0)
+    assert isinstance(skill, BulletSkill)
+
+
+

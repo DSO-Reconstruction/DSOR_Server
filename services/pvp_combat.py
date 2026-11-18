@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dso_server.runtime.context import *
+from dso_server.gameplay import pvp_arena_rules
 from dso_server.gameplay.combat_entities import (
     CombatEntity,
     EntityImpact,
@@ -18,6 +19,10 @@ from dso_server.gameplay.local_combat_state import (
     deterministic_combat_roll,
     parse_disabled_actor_features,
 )
+
+# In PvP arenas, scale raw damage (from level 140 PvE gear) to prevent one-shots
+# and maintain competitive arena match pacing (25% damage / 75% PvP mitigation).
+PVP_ARENA_DAMAGE_MULTIPLIER = 0.25
 
 
 class PVPCombatService:
@@ -606,6 +611,8 @@ class PVPCombatService:
                     combat._status_damage_programs(receiver, ticks=False)
                 )
             )))
+            if pvp_arena_rules.arena_active(s):
+                damage = max(1, math.ceil(damage * PVP_ARENA_DAMAGE_MULTIPLIER))
             probe[-1] += f" dmg={damage}"
             key = ("pvp-ground-hit", int(aura.effect_id), int(actor_id), int(server_tick))
             pending = SimpleNamespace(
@@ -862,7 +869,11 @@ class PVPCombatService:
                 )
         if hit_plan is None:
             return ()
-        if not hit_plan.impacts and entities:
+        if (
+            not hit_plan.impacts
+            and entities
+            and not isinstance(skill, (BulletSkill, TargetBulletSkill))
+        ):
             hit_plan = CharacterService._pvp_area_fallback_plan(
                 combat, hit_plan, entities, skill=skill,
                 source_position=source_position,
@@ -878,6 +889,16 @@ class PVPCombatService:
                 continue
             position, target_session = target_by_id[actor_id]
             delay = impact.delay
+            velocity = float(getattr(geometry, "projectile_velocity", 0.0) or 0.0)
+            if velocity > 1e-6:
+                # Visual projectile flight time: ensure the hit resolves only after
+                # the projectile has visually crossed the entire distance to the target.
+                target_world = frame.wire_to_world(position)
+                source_world = frame.wire_to_world(source_position)
+                real_reach = combat._distance(source_world, target_world)
+                emit_delay = float(getattr(hit_plan, "emit_delay", 0.0) or 0.0)
+                visual_arrival = emit_delay + (real_reach / velocity)
+                delay = max(delay, visual_arrival)
             projectile_index = impact.projectile_index
             target_is_summon = CharacterService._pvp_actor_is_summon(target_session, actor_id)
             victim_sources = (
@@ -953,19 +974,26 @@ class PVPCombatService:
             target_block_reduction = float(
                 getattr(target_stats, "block_damage_reduction", 0.0)
             )
+            if pvp_arena_rules.arena_active(s) and target_block_chance > 0.0:
+                # In PvP arenas, shield block chance is scaled to an effective
+                # range (up to 75% cap), reflecting the arena's +75% block rating buff:
+                target_block_chance = min(0.75, max(0.40, target_block_chance * 45.0))
             blocked = (
                 target_block_chance > 0.0
                 and block_roll < min(1.0, target_block_chance)
             )
-            block_multiplier = (
-                1.0
-                - max(
-                    0.0,
-                    min(1.0, target_block_reduction),
-                )
-                if blocked
-                else 1.0
-            )
+            if blocked:
+                # In PvP arenas, a successful block reduces incoming damage by 75%
+                # (matching the arena's +75% block buff), providing real damage mitigation.
+                if pvp_arena_rules.arena_active(s):
+                    block_multiplier = 0.25
+                else:
+                    block_multiplier = 1.0 - max(
+                        0.0,
+                        min(1.0, target_block_reduction),
+                    )
+            else:
+                block_multiplier = 1.0
             wearer_low_health = CharacterService._player_is_low_health(s)
             status_group_test = getattr(
                 combat, "status_sources_have_group", None
@@ -1059,6 +1087,9 @@ class PVPCombatService:
                 combat, impact_effects.values(), player_damage_range,
                 target_stats,
             )
+            if pvp_arena_rules.arena_active(s):
+                base_hit_damage = max(1, math.ceil(base_hit_damage * PVP_ARENA_DAMAGE_MULTIPLIER))
+                hit_damage = max(1, math.ceil(hit_damage * PVP_ARENA_DAMAGE_MULTIPLIER))
             pending = SimpleNamespace(
                 round_token=CharacterService._pvp_round_token(s),
                 combat=combat,
@@ -1531,6 +1562,8 @@ class PVPCombatService:
                 )
             )),
         )
+        if pvp_arena_rules.arena_active(s):
+            requested_damage = max(1, math.ceil(requested_damage * PVP_ARENA_DAMAGE_MULTIPLIER))
         match_opponents = not target_is_summon and CharacterService._pvp_match_opponents(s, target)
         lethal_allowed = target_is_summon or CharacterService._pvp_lethal_damage_allowed(s, target)
         if not target_is_summon and requested_damage > 0:
