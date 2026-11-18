@@ -1092,6 +1092,12 @@ class MonsterCombatService(
                         block_damage_reduction = (
                             target_stats.block_damage_reduction
                         )
+                        if (
+                            pvp_arena_rules.arena_active(target_session)
+                            and block_chance > 0.0
+                        ):
+                            block_chance = min(0.75, max(0.40, block_chance * 45.0))
+                            block_damage_reduction = 0.75
                     invulnerable = bool(getattr(
                         target_session, "gameplay_gm_invulnerable", False
                     ))
@@ -1192,6 +1198,8 @@ class MonsterCombatService(
                     hostile_player_actor_ids_by_owner=summon_context[0],
                     player_damage_multipliers=summon_context[1],
                     lethal_player_actor_ids_by_owner=summon_context[2],
+                    player_block_chances=summon_context[3] if len(summon_context) > 3 else None,
+                    player_block_reductions=summon_context[4] if len(summon_context) > 4 else None,
                 )
                 pvp_summon_resolutions = spare_lethal_hits(
                     combat, combat_targets, pvp_summon_resolutions

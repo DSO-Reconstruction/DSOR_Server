@@ -17,7 +17,7 @@ class SummonPVPKillTests(unittest.TestCase):
     move = fixtures.PVPPlayerEffectTests.move
     commands = fixtures.PVPPlayerEffectTests.commands
 
-    def spawn_attack(self, skill_resource="packofwolves"):
+    def spawn_attack(self, skill_resource="packofwolves", player_damage_range=(10000.0, 10000.0)):
         with connect(DEFAULT_STATIC_DB_PATH) as database:
             skill_index = int(database.execute(
                 "SELECT rowid - 1 FROM _Template_Skill WHERE Id = ?",
@@ -29,7 +29,7 @@ class SummonPVPKillTests(unittest.TestCase):
         spawn = self.combat.spawn_player_summon(
             definition, owner_actor_id=owner, position=(25.0, 0.0, 53.0),
             yaw=0.0, level=100, server_tick=100, now=100.0,
-            player_damage_range=(10000.0, 10000.0),
+            player_damage_range=player_damage_range,
         )
         summon_position = spawn.actors[0].position
         self.move(self.source, summon_position)
@@ -61,6 +61,8 @@ class SummonPVPKillTests(unittest.TestCase):
                 server_tick=200, hostile_player_actor_ids_by_owner=context[0],
                 player_damage_multipliers=context[1],
                 lethal_player_actor_ids_by_owner=context[2],
+                player_block_chances=context[3] if len(context) > 3 else None,
+                player_block_reductions=context[4] if len(context) > 4 else None,
             )
         return result[3]
 
@@ -156,6 +158,35 @@ class SummonPVPKillTests(unittest.TestCase):
         self.combat.player_health[self.target.gameplay_remote_actor_id][0] = 0
         self.assertFalse(self.resolve())
         self.assertEqual(self.combat.player_health[self.target.gameplay_remote_actor_id][0], 0)
+
+    def test_summon_attack_respects_player_block_and_triggers_hitblocked(self):
+        from types import SimpleNamespace
+        self.spawn_attack(player_damage_range=(100.0, 100.0))
+        self.combat.player_health[self.target.gameplay_remote_actor_id] = [500, 500]
+
+        mock_stats = SimpleNamespace(
+            block_chance=1.0,
+            block_damage_reduction=0.75,
+            incoming_damage_multiplier=lambda name: 1.0,
+            pvp_damage_permeability=1.0,
+            armor=0.0,
+            resistance=0.0,
+        )
+        with patch("dso_server.services.summon_pvp.calculate_player_combat_stats", return_value=mock_stats), \
+             patch("dso_server.services.talent_events.dispatch_talent_event") as dispatch_talent:
+            resolutions = self.resolve()
+            self.assertEqual(len(resolutions), 3)
+            for res in resolutions:
+                self.assertTrue(res.blocked)
+                # Base damage (100 * 0.4 wolf ratio = 40) mitigated by 75% block reduction = 10 damage
+                self.assertEqual(res.damage, 10)
+
+            self.assertEqual(resolutions[-1].current_health, 500 - 3 * 10)
+
+            self.dispatch(resolutions)
+            dispatch_talent.assert_any_call(
+                self.target, "hitblocked", server_tick=int(resolutions[0].server_tick)
+            )
 
 
 if __name__ == "__main__":

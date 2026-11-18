@@ -86,6 +86,8 @@ class SummonPVPService:
             )
 
         player_damage_multipliers = {}
+        player_block_chances = {}
+        player_block_reductions = {}
         target_stats_cache = {}
         for (owner_actor_id, target_actor_id), damage_type in (
             due_damage_types.items()
@@ -115,13 +117,37 @@ class SummonPVPService:
                     ),
                 )
                 target_stats_cache[target_actor_id] = target_stats
-            player_damage_multipliers[target_actor_id] = (
-                CharacterService._pvp_damage_type_multiplier(
-                    target_stats, damage_type
-                )
-            )
 
-        return hostile_by_owner, player_damage_multipliers, lethal_by_owner
+            from dso_server.gameplay import pvp_arena_rules
+            from dso_server.services.pvp_combat import PVP_ARENA_DAMAGE_MULTIPLIER
+            is_arena = (
+                pvp_arena_rules.arena_active(target_session)
+                or pvp_arena_rules.arena_active(getattr(combat.encounter, "map_id", None))
+            )
+            multiplier = CharacterService._pvp_damage_type_multiplier(
+                target_stats, damage_type
+            )
+            if is_arena:
+                multiplier *= PVP_ARENA_DAMAGE_MULTIPLIER
+            player_damage_multipliers[target_actor_id] = multiplier
+
+            target_block_chance = float(getattr(target_stats, "block_chance", 0.0))
+            target_block_reduction = float(getattr(target_stats, "block_damage_reduction", 0.0))
+            if is_arena and target_block_chance > 0.0:
+                target_block_chance = min(0.75, max(0.40, target_block_chance * 45.0))
+                block_reduction = 0.75
+            else:
+                block_reduction = max(0.0, min(1.0, target_block_reduction))
+            player_block_chances[target_actor_id] = target_block_chance
+            player_block_reductions[target_actor_id] = block_reduction
+
+        return (
+            hostile_by_owner,
+            player_damage_multipliers,
+            lethal_by_owner,
+            player_block_chances,
+            player_block_reductions,
+        )
 
     @staticmethod
     def _resolve_player_summon_cycle(
@@ -134,6 +160,8 @@ class SummonPVPService:
         hostile_player_actor_ids_by_owner,
         player_damage_multipliers,
         lethal_player_actor_ids_by_owner=None,
+        player_block_chances=None,
+        player_block_reductions=None,
     ):
         sessions_by_actor = {
             int(actor_id): target_session
@@ -160,6 +188,8 @@ class SummonPVPService:
                 hostile_player_actor_ids_by_owner=hostile_by_owner,
                 player_damage_multipliers=player_damage_multipliers,
                 lethal_player_actor_ids_by_owner=lethal_player_actor_ids_by_owner,
+                player_block_chances=player_block_chances,
+                player_block_reductions=player_block_reductions,
             )
         )
         pvp_resolutions = tuple(
@@ -245,6 +275,13 @@ class SummonPVPService:
                     server_tick=int(resolution.server_tick),
                 )
                 continue
+            if bool(getattr(resolution, "blocked", False)):
+                from dso_server.services.talent_events import dispatch_talent_event
+                dispatch_talent_event(
+                    target_session,
+                    "hitblocked",
+                    server_tick=int(resolution.server_tick),
+                )
             from dso_server.services.talent_events import dispatch_incoming_hit
             dispatch_incoming_hit(target_session, resolution)
             CharacterService._schedule_pvp_status_damage(

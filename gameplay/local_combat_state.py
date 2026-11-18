@@ -13734,6 +13734,8 @@ class LocalCombatState:
         lethal_player_actor_ids_by_owner: (
             dict[int, frozenset[int] | set[int]] | None
         ) = None,
+        player_block_chances: dict[int, float] | None = None,
+        player_block_reductions: dict[int, float] | None = None,
     ) -> tuple[
         tuple[DamageResolution, ...],
         tuple[PlayerSupportApplication, ...],
@@ -13873,13 +13875,50 @@ class LocalCombatState:
                             )),
                         )
                     )))
+
+                    # Perform block roll for player victim
+                    target_block_chance = float(
+                        player_block_chances.get(target_actor_id, 0.0)
+                        if player_block_chances is not None
+                        else 0.0
+                    )
+                    target_block_reduction = float(
+                        player_block_reductions.get(target_actor_id, 0.0)
+                        if player_block_reductions is not None
+                        else 0.0
+                    )
+                    self._player_block_roll_sequence = (
+                        self._player_block_roll_sequence + 1
+                    ) & _COMBAT_ROLL_MASK
+                    block_roll = deterministic_combat_roll(
+                        0x50565042,  # "PVPB" domain separator
+                        self._player_block_roll_sequence,
+                        int(attack.impact_tick),
+                        int(actor_id),
+                        int(target_actor_id),
+                        int(attack.skill_index),
+                    )
+                    blocked = (
+                        target_block_chance > 0.0
+                        and block_roll < max(0.0, min(1.0, target_block_chance))
+                    )
+                    if blocked:
+                        damage = max(
+                            0,
+                            int(round(
+                                damage * (
+                                    1.0 - max(0.0, min(1.0, target_block_reduction))
+                                )
+                            )),
+                        )
+
                     lethal_allowed = target_actor_id in lethal_by_owner.get(
                         summon.owner_actor_id, ()
                     )
                     current = max(0 if lethal_allowed else 1, int(previous) - damage)
                     killed = lethal_allowed and current == 0
                     damage = int(previous) - current
-                    if damage <= 0:
+                    if damage <= 0 and not blocked:
                         continue
                     health[0] = current
                     if expired is None:
@@ -13916,6 +13955,7 @@ class LocalCombatState:
                         skill_index=attack.skill_index,
                         victim_status_effects=effects,
                         source_actor_id=summon.owner_actor_id,
+                        blocked=blocked,
                     ))
                     continue
                 if (
