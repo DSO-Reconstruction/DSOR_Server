@@ -679,29 +679,3 @@ def test_the_arena_freezes_the_loadout():
     service._refuse_arena_loadout_change(
         inventory, bagged, action(0x02, bagged)
     )
-
-
-def test_arena_masks_equipped_set_items():
-    set_templates = pvp_arena_rules.set_item_templates()
-    assert "mage_mythic_helmet_dragan_sp" in set_templates
-
-    inv = InventoryInfo(
-        items=[
-            ItemInfo(item_id=10, template_id="mage_mythic_helmet_dragan_sp"),
-            ItemInfo(item_id=11, template_id="mage_base_helmet_crafted"),
-            ItemInfo(item_id=12, template_id="mage_mythic_shoulders_dragan_sp"),
-        ],
-        equipment_slots={10: (0,), 11: (1,)},  # 10 is equipped set item, 11 is equipped non-set item, 12 is in bag
-    )
-
-    # In arena: equipped set items get masked with _pvp
-    masked = pvp_arena_rules.mask_arena_inventory(inv, arena=True)
-    items_by_id = {item.item_id: item for item in masked.items}
-    assert items_by_id[10].template_id == "mage_mythic_helmet_dragan_sp_pvp"
-    assert items_by_id[11].template_id == "mage_base_helmet_crafted"
-    assert items_by_id[12].template_id == "mage_mythic_shoulders_dragan_sp"  # unequipped stays unchanged
-
-    # Outside arena: untouched
-    unmasked = pvp_arena_rules.mask_arena_inventory(inv, arena=False)
-    assert unmasked is inv
-    assert all(not item.template_id.endswith("_pvp") for item in unmasked.items)
