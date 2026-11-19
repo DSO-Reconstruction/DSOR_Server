@@ -52,6 +52,8 @@ from dso_server.runtime.transport import (
 )
 
 from dso_server.persistence.account_registry import AccountRegistry
+from dso_server.runtime.udp_dispatcher import UdpDispatcher
+from dso_server.runtime.instance_manager import InstanceManager
 
 
 def _environment_flag(name: str, default: bool) -> bool:
@@ -277,6 +279,24 @@ class ServerApplication:
             )
         self.require_login = bool(require_login) and self.account_registry is not None
 
+        self.multiprocess_instances = _environment_flag(
+            "DSO_MULTIPROCESS_INSTANCES", False
+        )
+        self.dispatcher: UdpDispatcher | None = None
+        self.instance_manager: InstanceManager | None = None
+
+        character_host = host
+        character_port = 2192
+        if self.multiprocess_instances:
+            character_host = "127.0.0.1"
+            character_port = 21920
+            self.dispatcher = UdpDispatcher(
+                public_host=host,
+                public_port=2192,
+                default_worker_port=character_port,
+            )
+            self.instance_manager = InstanceManager(self.dispatcher)
+
         self.gateway = GatewayLoginServer(host, self.login_address)
         self.login = LoginGameServer(
             host,
@@ -286,11 +306,16 @@ class ServerApplication:
             social_store=self.social_store,
         )
         self.characters = CharacterServer(
-            host,
+            character_host,
+            port=character_port,
             gameplay_router=self.login,
             account_store=self.account_store,
             social_store=self.social_store,
         )
+        if self.dispatcher is not None:
+            self.characters.client_address_resolver = self.dispatcher.get_real_client_addr
+        if self.instance_manager is not None:
+            self.characters.instance_manager = self.instance_manager
         # The legacy direct-map route on 2190 shares the production roster.
         self.login.character_selection = self.characters.character_selection
         self.login.player_template_rows = self.characters.player_template_rows
@@ -436,6 +461,8 @@ class ServerApplication:
             for service in self.services:
                 service.start()
                 started.append(service)
+            if self.dispatcher is not None:
+                self.dispatcher.start()
             if self.accounts is not None:
                 self.accounts.start()
             if self.admin is not None:
@@ -444,6 +471,10 @@ class ServerApplication:
             self.stall_watchdog.start()
             self.garbage_collector.install()
         except Exception:
+            if self.instance_manager is not None:
+                self.instance_manager.terminate_all()
+            if self.dispatcher is not None:
+                self.dispatcher.stop()
             if self.admin is not None:
                 self.admin.stop()
             self.autosaver.stop()
@@ -489,6 +520,10 @@ class ServerApplication:
         self.autosaver.stop()
         if self.accounts is not None:
             self.accounts.stop()
+        if self.instance_manager is not None:
+            self.instance_manager.terminate_all()
+        if self.dispatcher is not None:
+            self.dispatcher.stop()
         for service in reversed(self.services):
             service.stop()
         close_errors = []
@@ -557,6 +592,8 @@ class ServerApplication:
             f"(selection: {len(self.characters.character_selection_payload)}B "
             "serialized)"
         )
+        if self.multiprocess_instances:
+            print("          [Multi-Process Worker Architecture: ACTIVE (Zero-Port UDP Dispatcher)]")
         if self.accounts is not None:
             print(
                 f"  {self.accounts.port:<4} -> login/register HTTP service on "

@@ -97,6 +97,33 @@ from dso_server.gameplay.ocp_store import (
     FULL_MOON_ATTIRE_PRODUCT_KEY,
     LEGACY_FULL_MOON_ATTIRE_PRODUCT_ITEMS,
     NEW_MOON_ATTIRE_PRODUCT_KEY,
+    BLACK_FRIDAY_REALM_PATH_PACKAGE_PRODUCT_KEY,
+    BLACK_FRIDAY_ANDERMANT_PACKAGE_PRODUCT_KEY,
+    BLACK_FRIDAY_JEWEL_PACKAGE_1_PRODUCT_KEY,
+    BLACK_FRIDAY_DELUXE_PACKAGE_1_PRODUCT_KEY,
+    BLACK_FRIDAY_GEM_PACKAGE_PRODUCT_KEY,
+    BLACK_FRIDAY_JEWEL_PACKAGE_2_PRODUCT_KEY,
+    BLACK_FRIDAY_RUNE_PACKAGE_PRODUCT_KEY,
+    BLACK_FRIDAY_DELUXE_PACKAGE_2_PRODUCT_KEY,
+    EARLY_BIRD_CHEST_1_PRODUCT_KEY,
+    EARLY_BIRD_CHEST_2_PRODUCT_KEY,
+    EARLY_BIRD_CHEST_3_PRODUCT_KEY,
+    EARLY_BIRD_CHEST_4_PRODUCT_KEY,
+    EARLY_BIRD_CHEST_5_PRODUCT_KEY,
+    QUEEN_CHEST_1_PRODUCT_KEY,
+    QUEEN_CHEST_2_PRODUCT_KEY,
+    QUEEN_CHEST_3_PRODUCT_KEY,
+    QUEEN_CHEST_4_PRODUCT_KEY,
+    QUEEN_CHEST_5_PRODUCT_KEY,
+    QUEEN_CHEST_6_PRODUCT_KEY,
+    QUEEN_CHEST_7_PRODUCT_KEY,
+    QUEEN_CHEST_8_PRODUCT_KEY,
+    QUEEN_CHEST_9_PRODUCT_KEY,
+    QUEEN_CHEST_10_PRODUCT_KEY,
+    QUEEN_CHEST_11_PRODUCT_KEY,
+    QUEEN_CHEST_12_PRODUCT_KEY,
+    QUEEN_CHEST_13_PRODUCT_KEY,
+    QUEEN_CHEST_14_PRODUCT_KEY,
 )
 from dso_server.protocol.command_ids import command_id
 from dataclasses import dataclass
@@ -130,6 +157,12 @@ OCP_PENDING_PREFIX = 'ocp-pending:'
 OCP_COMPLETED_PREFIX = 'ocp-completed:'
 REDEEM_VOUCHER_COMMAND = command_id("Commands::RedeemVoucherCommand", 0x0110)
 REDEEM_VOUCHER_RESPONSE_COMMAND = command_id("Commands::RedeemVoucherResponseCommand", 0x0111)
+GET_BLACK_FRIDAY_TRANSACTIONS_INFO_COMMAND = command_id(
+    "Commands::GetBlackFridayTransactionsInfoCommand", 0x0177
+)
+GET_BLACK_FRIDAY_TRANSACTIONS_INFO_RESULT_COMMAND = command_id(
+    "Commands::GetBlackFridayTransactionsInfoResultCommand", 0x0178
+)
 # ShopWidget 0x140531dec clears the code box on 0 and shows its own localized
 # general error on -1 or 500. Every other status only shows the message, so
 # the remaining values are this server's.
@@ -309,6 +342,51 @@ def decode_redeem_voucher_response(
     return response
 
 
+def encode_get_black_friday_transactions_info_result(
+    transactions: tuple[str, ...] | list[str], *, actor_id: int = 0
+) -> tuple[bytes, int]:
+    """Serialize a standalone GetBlackFridayTransactionsInfoResultCommand (0x0178)."""
+
+    writer = BitWriter()
+    writer.write_uint8(0x84)
+    writer.write_bytes(
+        GET_BLACK_FRIDAY_TRANSACTIONS_INFO_RESULT_COMMAND.to_bytes(2, "little")
+    )
+    writer.write_uint32_le(len(transactions))
+    for tx in transactions:
+        writer.write_string(str(tx))
+    writer.write_uint32_le(actor_id)
+    return writer.finish()
+
+
+def decode_get_black_friday_transactions_info_result(
+    payload: bytes, bit_length: int | None = None
+) -> tuple[tuple[str, ...], int]:
+    reader = BitReader(
+        payload, len(payload) * 8 if bit_length is None else bit_length
+    )
+    if reader.read_uint8() != 0x84:
+        raise ValueError(
+            "GetBlackFridayTransactionsInfoResult is not a server application message"
+        )
+    cmd_id = int.from_bytes(reader.read_bytes(2), "little")
+    if cmd_id != GET_BLACK_FRIDAY_TRANSACTIONS_INFO_RESULT_COMMAND:
+        raise ValueError(
+            f"expected GetBlackFridayTransactionsInfoResultCommand "
+            f"0x{GET_BLACK_FRIDAY_TRANSACTIONS_INFO_RESULT_COMMAND:04x}, got 0x{cmd_id:04x}"
+        )
+    count = reader.read_uint32_le()
+    transactions = tuple(reader.read_string() for _ in range(count))
+    actor_id = reader.read_uint32_le()
+    if 0 < reader.remaining < 8:
+        reader.read_bits(reader.remaining)
+    if reader.remaining:
+        raise ValueError(
+            "GetBlackFridayTransactionsInfoResult has unaccounted trailing bits"
+        )
+    return transactions, actor_id
+
+
 def resolve_ocp_booking_reward(
     offer_id: str,
     payment_method: str,
@@ -478,6 +556,21 @@ def resolve_ocp_booking_reward(
                 bundle_items=((attire_item_id, 1), (skin_item_id, 1)),
             )
         return OCPBookingReward(offer_id, attire_item_id, 1)
+    if offer_id == EARLY_BIRD_CHEST_1_PRODUCT_KEY:
+        class_name = CLASS_NAMES.get(int(class_id), '').casefold() if class_id is not None else 'mage'
+        cloak_white = f"thanksgiving_cloak_white_2023_{class_name}"
+        cloak_purple = f"thanksgiving_cloak_pruple_2023_{class_name}"
+        return OCPBookingReward(
+            offer_id,
+            "mount_common_horse_01",
+            1,
+            bundle_items=(
+                ("mount_common_horse_01", 1),
+                (cloak_white, 1),
+                (cloak_purple, 1),
+                ("difficulty_key_common", 200),
+            ),
+        )
     bundle_reward = DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS.get(offer_id)
     if bundle_reward is not None:
         item_id, amount = bundle_reward[0]
@@ -1184,6 +1277,36 @@ LOCAL_OCP_OFFERS = (
     OCPOffer(180_294, 9.90, False, "€", "6_deluxe_1.0000_3_MONTHS", "", ""),
     OCPOffer(180_295, 9.90, False, "€", "6_deluxe_1.0000_6_MONTHS", "", ""),
     OCPOffer(180_296, 9.90, False, "€", "6_deluxe_1.0000_12_MONTHS", "", ""),
+    # Black Friday promo packages
+    OCPOffer(180_297, 9.90, False, "€", BLACK_FRIDAY_REALM_PATH_PACKAGE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_298, 9.90, False, "€", BLACK_FRIDAY_ANDERMANT_PACKAGE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_299, 9.90, False, "€", BLACK_FRIDAY_JEWEL_PACKAGE_1_PRODUCT_KEY, "", ""),
+    OCPOffer(180_300, 9.90, False, "€", BLACK_FRIDAY_DELUXE_PACKAGE_1_PRODUCT_KEY, "", ""),
+    OCPOffer(180_301, 9.90, False, "€", BLACK_FRIDAY_GEM_PACKAGE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_302, 9.90, False, "€", BLACK_FRIDAY_JEWEL_PACKAGE_2_PRODUCT_KEY, "", ""),
+    OCPOffer(180_303, 9.90, False, "€", BLACK_FRIDAY_RUNE_PACKAGE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_304, 9.90, False, "€", BLACK_FRIDAY_DELUXE_PACKAGE_2_PRODUCT_KEY, "", ""),
+    # PreSaleDiscount / Early Bird offers
+    OCPOffer(180_305, 1.99, False, "€", EARLY_BIRD_CHEST_1_PRODUCT_KEY, "", ""),
+    OCPOffer(180_306, 4.99, False, "€", EARLY_BIRD_CHEST_2_PRODUCT_KEY, "", ""),
+    OCPOffer(180_307, 9.99, False, "€", EARLY_BIRD_CHEST_3_PRODUCT_KEY, "", ""),
+    OCPOffer(180_308, 24.99, False, "€", EARLY_BIRD_CHEST_4_PRODUCT_KEY, "", ""),
+    OCPOffer(180_309, 49.99, False, "€", EARLY_BIRD_CHEST_5_PRODUCT_KEY, "", ""),
+    # PreSaleDiscountSpecial / Queen Chests (Happy Time)
+    OCPOffer(180_310, 9.99, False, "€", QUEEN_CHEST_1_PRODUCT_KEY, "", ""),
+    OCPOffer(180_311, 14.99, False, "€", QUEEN_CHEST_2_PRODUCT_KEY, "", ""),
+    OCPOffer(180_312, 19.99, False, "€", QUEEN_CHEST_3_PRODUCT_KEY, "", ""),
+    OCPOffer(180_313, 19.99, False, "€", QUEEN_CHEST_4_PRODUCT_KEY, "", ""),
+    OCPOffer(180_314, 14.99, False, "€", QUEEN_CHEST_5_PRODUCT_KEY, "", ""),
+    OCPOffer(180_315, 24.99, False, "€", QUEEN_CHEST_6_PRODUCT_KEY, "", ""),
+    OCPOffer(180_316, 29.99, False, "€", QUEEN_CHEST_7_PRODUCT_KEY, "", ""),
+    OCPOffer(180_317, 49.99, False, "€", QUEEN_CHEST_8_PRODUCT_KEY, "", ""),
+    OCPOffer(180_318, 29.99, False, "€", QUEEN_CHEST_9_PRODUCT_KEY, "", ""),
+    OCPOffer(180_319, 49.99, False, "€", QUEEN_CHEST_10_PRODUCT_KEY, "", ""),
+    OCPOffer(180_320, 39.99, False, "€", QUEEN_CHEST_11_PRODUCT_KEY, "", ""),
+    OCPOffer(180_321, 19.99, False, "€", QUEEN_CHEST_12_PRODUCT_KEY, "", ""),
+    OCPOffer(180_322, 14.99, False, "€", QUEEN_CHEST_13_PRODUCT_KEY, "", ""),
+    OCPOffer(180_323, 19.99, False, "€", QUEEN_CHEST_14_PRODUCT_KEY, "", ""),
 )
 
 CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"

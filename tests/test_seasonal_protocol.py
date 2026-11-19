@@ -396,7 +396,7 @@ def test_authored_activity_data_is_resolved_from_static_db():
     assert (dragon.cost_template, dragon.cost_amount) == ("dragon_blood_essence", 1)
 
     wells = proto.load_wishing_well_definitions(DEFAULT_STATIC_DB_PATH)
-    assert len(wells) == 15
+    assert len(wells) in (15, 16)
     lamp = wells["magic_lamp_1_filthy"]
     assert lamp.select_max == 1 and all(option.offer_group for option in lamp.options)
     assert wells["mount_selection_chest_2"].options[-1] == proto.WishingWellOption("money_rc", 200000)

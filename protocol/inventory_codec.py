@@ -323,6 +323,7 @@ class InventoryInfo:
     extra_storage_size: int = 0
     health_points: float = 3459715.25
     secondary_resource: float = 100.0
+    tertiary_resource: float = 0.0
     field_1e0: bool = False         # gates ClientInventoryManager::PrepareNewItem handling
     actor_id: int = 1
     # Server-only records, deliberately excluded from wire items/allocations.
@@ -521,6 +522,7 @@ def write_inventory_info_body(writer: BitWriter, info: InventoryInfo) -> None:
         writer.write_uint32_le(value)
     writer.write_float(info.health_points)
     writer.write_float(info.secondary_resource)
+    writer.write_float(getattr(info, "tertiary_resource", 0.0))
     writer.write_bool(info.field_1e0)
 
 
@@ -565,6 +567,7 @@ def read_inventory_info_body(reader: BitReader) -> InventoryInfo:
         extra_storage_size=capacities[5],
         health_points=reader.read_float(),
         secondary_resource=reader.read_float(),
+        tertiary_resource=reader.read_float(),
         field_1e0=reader.read_bool(),
         actor_id=0,
     )

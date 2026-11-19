@@ -2008,6 +2008,13 @@ def _load_monster(
             * difficulty_damage,
         ),
         MonsterStat(
+            13,
+            float(max_damage)
+            * damage_curve
+            * max_factor
+            * difficulty_damage,
+        ),
+        MonsterStat(
             20,
             float(armor)
             * resistance_curve
@@ -2048,6 +2055,17 @@ def _load_monster(
             * resistance_curve
             * resistance_factor
             * difficulty_defense,
+        ),
+        MonsterStat(
+            26,
+            resistances.get("NetherMagic", resistances["DarkMagic"])
+            * resistance_curve
+            * resistance_factor
+            * difficulty_defense,
+        ),
+        MonsterStat(
+            27,
+            0.0,
         ),
     )
     integer_health = round(health)

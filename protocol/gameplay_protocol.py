@@ -330,9 +330,10 @@ def encode_message(value: Message, *, actor_id: int) -> tuple[bytes, int]:
 class ActorStatsUpdate:
     # Names retained for API compatibility. Client reverse engineering and
     # fresh retail captures prove these are live actor vitals: uint64 current
-    # health followed by float current class resource.
+    # health followed by float current class resource, and tertiary resource (release 261_219).
     stat_id: int
     value: float
+    tertiary_resource: float = 0.0
 
     @property
     def health_points(self) -> int:
@@ -353,6 +354,7 @@ def encode_actor_stats_update(
     writer.write_bytes(ACTOR_STATS_UPDATE_COMMAND.to_bytes(2, "little"))
     writer.write_bytes(int(value.stat_id).to_bytes(8, "little"))
     writer.write_float(value.value)
+    writer.write_float(getattr(value, "tertiary_resource", 0.0))
     writer.write_uint32_le(actor_id)
     return writer.finish()
 
@@ -3075,10 +3077,15 @@ def decode_monster_vicinity_batch(
 def _write_actor_stats_body(writer: BitWriter, value: ActorStatsUpdate) -> None:
     writer.write_uint64_le(value.stat_id)
     writer.write_float(value.value)
+    writer.write_float(getattr(value, "tertiary_resource", 0.0))
 
 
 def _read_actor_stats_body(reader: BitReader) -> ActorStatsUpdate:
-    return ActorStatsUpdate(reader.read_uint64_le(), reader.read_float())
+    return ActorStatsUpdate(
+        reader.read_uint64_le(),
+        reader.read_float(),
+        reader.read_float(),
+    )
 
 
 def encode_actors_enter_vicinity_batch(

@@ -313,6 +313,62 @@ KINGSHILL_SEWERS_RAMPAGING_HURRICANE_PRODUCT_KEY = (
     "101_sewers_event_full_blitz_1.0000_0_NONE"
 )
 
+BLACK_FRIDAY_REALM_PATH_PACKAGE_PRODUCT_KEY = (
+    "101_blackfriday_package_1_1.0000_0_NONE"
+)
+BLACK_FRIDAY_ANDERMANT_PACKAGE_PRODUCT_KEY = (
+    "101_blackfriday_package_2_1.0000_0_NONE"
+)
+BLACK_FRIDAY_JEWEL_PACKAGE_1_PRODUCT_KEY = (
+    "101_blackfriday_package_3_1.0000_0_NONE"
+)
+BLACK_FRIDAY_DELUXE_PACKAGE_1_PRODUCT_KEY = (
+    "101_blackfriday_package_4_1.0000_0_NONE"
+)
+BLACK_FRIDAY_GEM_PACKAGE_PRODUCT_KEY = (
+    "101_blackfriday_package_5_1.0000_0_NONE"
+)
+BLACK_FRIDAY_JEWEL_PACKAGE_2_PRODUCT_KEY = (
+    "101_blackfriday_package_6_1.0000_0_NONE"
+)
+BLACK_FRIDAY_RUNE_PACKAGE_PRODUCT_KEY = (
+    "101_blackfriday_package_7_1.0000_0_NONE"
+)
+BLACK_FRIDAY_DELUXE_PACKAGE_2_PRODUCT_KEY = (
+    "101_blackfriday_package_8_1.0000_0_NONE"
+)
+
+EARLY_BIRD_CHEST_1_PRODUCT_KEY = (
+    "101_early_bird_chest_1_1.0000_0_NONE"
+)
+EARLY_BIRD_CHEST_2_PRODUCT_KEY = (
+    "101_early_bird_chest_2_1.0000_0_NONE"
+)
+EARLY_BIRD_CHEST_3_PRODUCT_KEY = (
+    "101_early_bird_chest_3_1.0000_0_NONE"
+)
+EARLY_BIRD_CHEST_4_PRODUCT_KEY = (
+    "101_early_bird_chest_4_1.0000_0_NONE"
+)
+EARLY_BIRD_CHEST_5_PRODUCT_KEY = (
+    "101_early_bird_chest_5_1.0000_0_NONE"
+)
+
+QUEEN_CHEST_1_PRODUCT_KEY = "101_queen_chest_1_1.0000_0_NONE"
+QUEEN_CHEST_2_PRODUCT_KEY = "101_queen_chest_2_1.0000_0_NONE"
+QUEEN_CHEST_3_PRODUCT_KEY = "101_queen_chest_3_1.0000_0_NONE"
+QUEEN_CHEST_4_PRODUCT_KEY = "101_queen_chest_4_1.0000_0_NONE"
+QUEEN_CHEST_5_PRODUCT_KEY = "101_queen_chest_5_1.0000_0_NONE"
+QUEEN_CHEST_6_PRODUCT_KEY = "101_queen_chest_6_1.0000_0_NONE"
+QUEEN_CHEST_7_PRODUCT_KEY = "101_queen_chest_7_1.0000_0_NONE"
+QUEEN_CHEST_8_PRODUCT_KEY = "101_queen_chest_8_1.0000_0_NONE"
+QUEEN_CHEST_9_PRODUCT_KEY = "101_queen_chest_9_1.0000_0_NONE"
+QUEEN_CHEST_10_PRODUCT_KEY = "101_queen_chest_10_1.0000_0_NONE"
+QUEEN_CHEST_11_PRODUCT_KEY = "101_queen_chest_11_1.0000_0_NONE"
+QUEEN_CHEST_12_PRODUCT_KEY = "101_queen_chest_12_1.0000_0_NONE"
+QUEEN_CHEST_13_PRODUCT_KEY = "101_queen_chest_13_1.0000_0_NONE"
+QUEEN_CHEST_14_PRODUCT_KEY = "101_queen_chest_14_1.0000_0_NONE"
+
 # Every Defeat the Undefeatable purchase is only offered during its global
 # event, including the event-pass attire and the two lava packages whose
 # native PaymentPackages rows already carry this event id.
@@ -429,6 +485,190 @@ EVENT_OCP_PRODUCT_EVENT_IDS = {
     KINGSHILL_SEWERS_RAMPAGING_HURRICANE_PRODUCT_KEY:
         "e_ks_01_blitz_payment_offer_silent",
     DESERT_OF_ESSENCES_ATTIRE_PRODUCT_KEY: "desert_of_essences_02",
+    BLACK_FRIDAY_REALM_PATH_PACKAGE_PRODUCT_KEY: (
+        "event_sell_blackfriday_package_silent",
+        "black_friday_event",
+        "BlackFridayEvent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    BLACK_FRIDAY_ANDERMANT_PACKAGE_PRODUCT_KEY: (
+        "event_sell_blackfriday_package_silent",
+        "black_friday_event",
+        "BlackFridayEvent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    BLACK_FRIDAY_JEWEL_PACKAGE_1_PRODUCT_KEY: (
+        "event_sell_blackfriday_package_silent",
+        "black_friday_event",
+        "BlackFridayEvent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    BLACK_FRIDAY_DELUXE_PACKAGE_1_PRODUCT_KEY: (
+        "event_sell_blackfriday_package_silent",
+        "black_friday_event",
+        "BlackFridayEvent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    BLACK_FRIDAY_GEM_PACKAGE_PRODUCT_KEY: (
+        "event_sell_blackfriday_package_silent",
+        "black_friday_event",
+        "BlackFridayEvent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    BLACK_FRIDAY_JEWEL_PACKAGE_2_PRODUCT_KEY: (
+        "event_sell_blackfriday_package_silent",
+        "black_friday_event",
+        "BlackFridayEvent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    BLACK_FRIDAY_RUNE_PACKAGE_PRODUCT_KEY: (
+        "event_sell_blackfriday_package_silent",
+        "black_friday_event",
+        "BlackFridayEvent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    BLACK_FRIDAY_DELUXE_PACKAGE_2_PRODUCT_KEY: (
+        "event_sell_blackfriday_package_silent",
+        "black_friday_event",
+        "BlackFridayEvent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    EARLY_BIRD_CHEST_1_PRODUCT_KEY: (
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+        "black_friday_event",
+        "BlackFridayEvent",
+    ),
+    EARLY_BIRD_CHEST_2_PRODUCT_KEY: (
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+        "black_friday_event",
+        "BlackFridayEvent",
+    ),
+    EARLY_BIRD_CHEST_3_PRODUCT_KEY: (
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+        "black_friday_event",
+        "BlackFridayEvent",
+    ),
+    EARLY_BIRD_CHEST_4_PRODUCT_KEY: (
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+        "black_friday_event",
+        "BlackFridayEvent",
+    ),
+    EARLY_BIRD_CHEST_5_PRODUCT_KEY: (
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+        "black_friday_event",
+        "BlackFridayEvent",
+    ),
+    QUEEN_CHEST_1_PRODUCT_KEY: (
+        "black_friday_event",
+        "BlackFridayEvent",
+        "event_sell_blackfriday_package_silent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    QUEEN_CHEST_2_PRODUCT_KEY: (
+        "black_friday_event",
+        "BlackFridayEvent",
+        "event_sell_blackfriday_package_silent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    QUEEN_CHEST_3_PRODUCT_KEY: (
+        "black_friday_event",
+        "BlackFridayEvent",
+        "event_sell_blackfriday_package_silent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    QUEEN_CHEST_4_PRODUCT_KEY: (
+        "black_friday_event",
+        "BlackFridayEvent",
+        "event_sell_blackfriday_package_silent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    QUEEN_CHEST_5_PRODUCT_KEY: (
+        "black_friday_event",
+        "BlackFridayEvent",
+        "event_sell_blackfriday_package_silent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    QUEEN_CHEST_6_PRODUCT_KEY: (
+        "black_friday_event",
+        "BlackFridayEvent",
+        "event_sell_blackfriday_package_silent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    QUEEN_CHEST_7_PRODUCT_KEY: (
+        "black_friday_event",
+        "BlackFridayEvent",
+        "event_sell_blackfriday_package_silent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    QUEEN_CHEST_8_PRODUCT_KEY: (
+        "black_friday_event",
+        "BlackFridayEvent",
+        "event_sell_blackfriday_package_silent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    QUEEN_CHEST_9_PRODUCT_KEY: (
+        "black_friday_event",
+        "BlackFridayEvent",
+        "event_sell_blackfriday_package_silent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    QUEEN_CHEST_10_PRODUCT_KEY: (
+        "black_friday_event",
+        "BlackFridayEvent",
+        "event_sell_blackfriday_package_silent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    QUEEN_CHEST_11_PRODUCT_KEY: (
+        "black_friday_event",
+        "BlackFridayEvent",
+        "event_sell_blackfriday_package_silent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    QUEEN_CHEST_12_PRODUCT_KEY: (
+        "black_friday_event",
+        "BlackFridayEvent",
+        "event_sell_blackfriday_package_silent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    QUEEN_CHEST_13_PRODUCT_KEY: (
+        "black_friday_event",
+        "BlackFridayEvent",
+        "event_sell_blackfriday_package_silent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
+    QUEEN_CHEST_14_PRODUCT_KEY: (
+        "black_friday_event",
+        "BlackFridayEvent",
+        "event_sell_blackfriday_package_silent",
+        "black_friday_early_event",
+        "BlackFridayEarlyEvent",
+    ),
 }
 
 EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
@@ -805,6 +1045,99 @@ DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS = {
         ("triangles_of_courage", 3),
         ("e_sar_chest_key", 5),
     ),
+    BLACK_FRIDAY_REALM_PATH_PACKAGE_PRODUCT_KEY: (
+        ("black_friday_realm_path_package", 1),
+    ),
+    BLACK_FRIDAY_ANDERMANT_PACKAGE_PRODUCT_KEY: (
+        ("black_friday_andermant_package", 1),
+    ),
+    BLACK_FRIDAY_JEWEL_PACKAGE_1_PRODUCT_KEY: (
+        ("black_friday_jewel_package_1", 1),
+    ),
+    BLACK_FRIDAY_DELUXE_PACKAGE_1_PRODUCT_KEY: (
+        ("black_friday_deluxe_package_1", 1),
+    ),
+    BLACK_FRIDAY_GEM_PACKAGE_PRODUCT_KEY: (
+        ("black_friday_gem_package", 1),
+    ),
+    BLACK_FRIDAY_JEWEL_PACKAGE_2_PRODUCT_KEY: (
+        ("black_friday_jewel_package_2", 1),
+    ),
+    BLACK_FRIDAY_RUNE_PACKAGE_PRODUCT_KEY: (
+        ("black_friday_rune_package", 1),
+    ),
+    BLACK_FRIDAY_DELUXE_PACKAGE_2_PRODUCT_KEY: (
+        ("black_friday_deluxe_package_2", 1),
+    ),
+    EARLY_BIRD_CHEST_2_PRODUCT_KEY: (
+        ("trails_selection_chest", 1),
+        ("community_coins", 200),
+    ),
+    EARLY_BIRD_CHEST_3_PRODUCT_KEY: (
+        ("jewel_selection_chest", 1),
+        ("gem_combined_dismantle_tool", 1),
+        ("ruined_amphora", 1),
+        ("season_coin", 1000),
+    ),
+    EARLY_BIRD_CHEST_4_PRODUCT_KEY: (
+        ("pet_selection_chest", 1),
+        ("money_rc", 80000),
+    ),
+    EARLY_BIRD_CHEST_5_PRODUCT_KEY: (
+        ("mount_selection_chest_2", 1),
+        ("money_rc", 120000),
+    ),
+    QUEEN_CHEST_1_PRODUCT_KEY: (("surprise_lottery_bag", 70),),
+    QUEEN_CHEST_2_PRODUCT_KEY: (("item_lootbox_lucky_bag_2025", 120),),
+    QUEEN_CHEST_3_PRODUCT_KEY: (
+        ("trinket_ancient_flawless_s06_unique", 1),
+        ("spar_buff_drop_diamond_epic", 1),
+        ("spar_buff_enemy_skill_speed_down_epic", 1),
+        ("spar_buff_speed_resource_rare", 1),
+        ("spar_buff_speed_damage_rare", 1),
+        ("dragon_crystal_box", 10),
+    ),
+    QUEEN_CHEST_4_PRODUCT_KEY: (
+        ("immortal_blessing_potion", 3),
+        ("varnok_erminator_package", 5),
+        ("blessing_star_seeker_package", 5),
+        ("nefaraya_blessing_chest", 10),
+    ),
+    QUEEN_CHEST_5_PRODUCT_KEY: (("item_lootbox_lucky_bag_2024", 90),),
+    QUEEN_CHEST_6_PRODUCT_KEY: (
+        ("effect_aura_selection_chest", 1),
+        ("scaling_dungeon_boss_key_01", 100),
+        ("lockpick", 100),
+        ("crafting_stateobject_key", 50),
+        ("e_ful_01_teleport_01", 20),
+        ("e_new_01_teleport_01", 20),
+    ),
+    QUEEN_CHEST_7_PRODUCT_KEY: (
+        ("super_selection_chest", 1),
+        ("gem_crafting", 1),
+        ("unique_gem_crafting", 1),
+        ("immortal_blessing_potion", 3),
+    ),
+    QUEEN_CHEST_8_PRODUCT_KEY: (("money_rc", 120000),),
+    QUEEN_CHEST_9_PRODUCT_KEY: (
+        ("mount_selection_chest_1", 1),
+        ("lootbox_level_rallye_jewels_random", 5),
+        ("dragon_bones", 4000),
+    ),
+    QUEEN_CHEST_10_PRODUCT_KEY: (
+        ("deluxe_teaser_one_year", 1),
+        ("money_rc", 40000),
+    ),
+    QUEEN_CHEST_11_PRODUCT_KEY: (
+        ("seasons_runes_selection_chest", 1),
+        ("money_rc", 40000),
+    ),
+    QUEEN_CHEST_12_PRODUCT_KEY: (
+        ("magic_dragon_egg_fossil", 3),
+        ("dragon_blood_essence", 60),
+    ),
+    QUEEN_CHEST_13_PRODUCT_KEY: (("item_lootbox_lucky_bag_2026", 70),),
+    QUEEN_CHEST_14_PRODUCT_KEY: (("item_shinty_dust_chest", 60),),
 }
 
 # Older server versions advertised one synthetic key per class. Keep their

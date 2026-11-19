@@ -380,6 +380,7 @@ class CharacterSelection:
     character_slots: int = 4
     header_flag: bool = False
     header_field_d: int = 0
+    header_field_e: int | None = 0
     locale: str = "EN"
     characters: list[CharacterRecord] = field(default_factory=list)
     equipment: list[EquipmentRecord] = field(default_factory=list)
@@ -403,6 +404,8 @@ class CharacterSelection:
             ("header_field_d", self.header_field_d),
         ):
             _unsigned(value, 32, label)
+        if self.header_field_e is not None:
+            _unsigned(self.header_field_e, 32, "header_field_e")
         if len(self.characters) > 100:
             raise CharacterSelectionError("client accepts at most 100 characters")
         ids = [character.character_id for character in self.characters]
@@ -441,6 +444,7 @@ def decode_character_selection(
     *,
     progression_bits: int = CAPTURED_PROGRESSION_BITS,
     equipment_strings: int = CAPTURED_EQUIPMENT_STRINGS,
+    header_extra_u32: bool | None = None,
 ) -> CharacterSelection:
     """Parse a CharacterSelectionCommand packet.
 
@@ -470,6 +474,23 @@ def decode_character_selection(
     character_slots = reader.read_uint32_le()
     header_flag = reader.read_bool()
     header_field_d = reader.read_uint32_le()
+    if header_extra_u32 is None:
+        saved_pos = reader.position
+        header_extra_u32 = False
+        try:
+            extra = reader.read_uint32_le()
+            candidate_locale = reader.read_string()
+            candidate_count = reader.read_uint32_le()
+            if candidate_count <= 100 and (
+                len(candidate_locale) == 0
+                or (candidate_locale.isascii() and candidate_locale.isprintable())
+            ):
+                header_extra_u32 = True
+        except Exception:
+            pass
+        reader.position = saved_pos
+
+    header_field_e = reader.read_uint32_le() if header_extra_u32 else None
     locale = reader.read_string()
 
     character_count = reader.read_uint32_le()
@@ -545,6 +566,7 @@ def decode_character_selection(
         character_slots=character_slots,
         header_flag=header_flag,
         header_field_d=header_field_d,
+        header_field_e=header_field_e,
         locale=locale,
         characters=characters,
         equipment=equipment,
@@ -563,6 +585,8 @@ def encode_character_selection(model: CharacterSelection) -> tuple[bytes, int]:
     writer.write_uint32_le(model.character_slots)
     writer.write_bool(model.header_flag)
     writer.write_uint32_le(model.header_field_d)
+    if model.header_field_e is not None:
+        writer.write_uint32_le(model.header_field_e)
     writer.write_string(model.locale)
     writer.write_uint32_le(len(model.characters))
 

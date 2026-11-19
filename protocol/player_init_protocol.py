@@ -137,6 +137,9 @@ USER_HATCH_EGGS_INFO_COMMAND = command_id("Commands::UserHatchEggsInfoCommand", 
 SEASON_PASS_REWARDS_INFO_RESULT_COMMAND = command_id("Commands::GetSeasonPassRewardsInfoResultCommand", 0x015F)
 SEASON_PASS_MISSIONS_INFO_RESULT_COMMAND = command_id("Commands::GetSeasonPassMissionsInfoResultCommand", 0x0163)
 GET_SECOND_DAY_SIGNED_AWARD_COMMAND = command_id("Commands::GetSecondDaySignedAwardCommand", 0x016C)
+GET_BLACK_FRIDAY_TRANSACTIONS_INFO_RESULT_COMMAND = command_id(
+    "Commands::GetBlackFridayTransactionsInfoResultCommand", 0x0178
+)
 OBSTACLE_UPDATE_COMMAND = command_id("Commands::ObstacleUpdateCommand", 0x0072)
 COMMAND_0173 = 0x0173
 
@@ -2069,6 +2072,14 @@ def _write_second_day_signed_award_body(
         writer.write_uint32_le(number)
 
 
+def _write_black_friday_transactions_info_result_body(
+    writer: BitWriter, value: tuple[str, ...] | list[str]
+) -> None:
+    writer.write_uint32_le(len(value))
+    for entry in value:
+        writer.write_string(str(entry))
+
+
 def _read_obstacle_update_body(reader: BitReader) -> ObstacleUpdate:
     return ObstacleUpdate(
         tuple(
@@ -2195,6 +2206,8 @@ _BODY_WRITERS = {
     SEASON_PASS_MISSIONS_INFO_RESULT_COMMAND:
         _write_season_pass_missions_info_result_body,
     GET_SECOND_DAY_SIGNED_AWARD_COMMAND: _write_second_day_signed_award_body,
+    GET_BLACK_FRIDAY_TRANSACTIONS_INFO_RESULT_COMMAND:
+        _write_black_friday_transactions_info_result_body,
     OBSTACLE_UPDATE_COMMAND: _write_obstacle_update_body,
     PLAYER_READY_COMMAND: _write_fieldless_body,
     NEW_NPC_COMMAND: _write_new_npc_body,

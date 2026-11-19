@@ -5222,8 +5222,10 @@
       "amount": 1,
       "chance_percent": null,
       "mode": "guaranteed",
-      "candidates": [],
-      "match": "none",
+      "candidates": [
+       "deluxe_teaser_one_month"
+      ],
+      "match": "exact",
       "ambiguous": false
      },
      {
@@ -5267,8 +5269,10 @@
       "amount": 1,
       "chance_percent": null,
       "mode": "guaranteed",
-      "candidates": [],
-      "match": "none",
+      "candidates": [
+       "deluxe_teaser_one_year"
+      ],
+      "match": "exact",
       "ambiguous": false
      },
      {

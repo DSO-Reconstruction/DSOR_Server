@@ -54,7 +54,8 @@ data/quests.pbxml
 data/client_unpacked/
 
 # Local event runtime data and analysis artifacts; keep them out of commits.
-/data/events.json
 /data/loot_rates.json
 /data/static.db4
 /scratch/
+.commandcode/
+data/base.db

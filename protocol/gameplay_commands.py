@@ -85,6 +85,7 @@ def decode_inventory_info_actor(payload: bytes, bit_length: int) -> int:
             reader.read_uint32_le()
         reader.read_float()
         reader.read_float()
+        reader.read_float()
         reader.read_bool()
 
     return decode_command_actor(
@@ -250,14 +251,15 @@ def encode_new_player(
     writer.write_string("")                    # +0xe8
     writer.write_uint64_le(0)                   # +0xf0
     writer.write_uint32_le(int(getattr(character, "level", 1)))  # +0xf8
-    # +0xfc is copied verbatim to GamePlayer::armamentState (+0x3f8).
+    writer.write_uint32_le(0)                   # +0xfc
+    # +0x100 is armament_state (uint8), checked by client 0x140a51dfc: byte + 1 <= 6.
     # Sending the class id here put Dwarfs in one-hand state 3 even when the
     # InventoryInfo that followed contained a two-handed weapon.
     if int(armament_state) not in {0, 3, 4, 5}:
         raise ValueError(f"invalid player armament state {armament_state}")
-    writer.write_uint8(int(armament_state))                       # +0xfc
+    writer.write_uint8(int(armament_state))                       # +0x100
 
-    # +0x100: ActorPlacement / faction identity. NewPlayer's handler copies
+    # +0x104: ActorPlacement / faction identity. NewPlayer's handler copies
     # these five fields directly to GamePlayer +0xb0. The live b1201 player is
     # faction 0x10002, actor type 0, and marked as a player-owned faction
     # member. Monsters use faction 0x10001 and actor type 2, allowing the
@@ -443,8 +445,9 @@ def decode_new_player_actor_id(payload: bytes, bit_length: int | None = None) ->
     reader.read_string()                  # +0xe8
     reader.read_uint64_le()               # +0xf0
     skip_uint32(1)                        # +0xf8 level
-    reader.read_uint8()                   # +0xfc
-    skip_uint32(2)                        # +0x100 substruct
+    skip_uint32(1)                        # +0xfc
+    reader.read_uint8()                   # +0x100 armament_state
+    skip_uint32(2)                        # +0x104 substruct
     reader.read_uint8()
     reader.read_bool()
     reader.read_bool()
@@ -537,6 +540,7 @@ def encode_inventory_info(
     extra_storage_size: int = 0,
     health_points: float = 1000.0,
     secondary_resource: float = 100.0,
+    tertiary_resource: float = 0.0,
     actor_id: int = LOCAL_PLAYER_ACTOR_ID,
     force_ui_rebuild: bool = False,
 ) -> tuple[bytes, int]:
@@ -572,8 +576,8 @@ def encode_inventory_info(
 
     writer.write_float(health_points)       # +0x1d8
     writer.write_float(secondary_resource)   # +0x1dc
-    # +0x1e0 is the final serialized boolean in the generated command.  The
-    # known-good live InventoryInfo carries false here.
+    writer.write_float(tertiary_resource)    # +0x1e0
+    # +0x1e4 is the final serialized boolean in the generated command.
     writer.write_bool(force_ui_rebuild)
     _write_command_actor(writer, actor_id)
     return writer.finish()

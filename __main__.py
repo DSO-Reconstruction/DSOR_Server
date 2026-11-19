@@ -8,6 +8,26 @@ import sys
 os.environ.setdefault("DSO_REQUIRE_LOGIN", "1")
 os.environ.setdefault("DSO_DEBUG_VENDOR", "0")
 
+
+def _load_env_file() -> None:
+    from pathlib import Path
+    env_path = Path(__file__).resolve().parent / ".env"
+    if env_path.exists():
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                name, value = line.split("=", 1)
+                name, value = name.strip(), value.strip()
+                if name and name not in os.environ:
+                    os.environ[name] = value
+        except Exception:
+            pass
+
+
+_load_env_file()
+
 from dso_server.app import main
 from dso_server.runtime.log_stream import install as install_timestamped_logging
 
