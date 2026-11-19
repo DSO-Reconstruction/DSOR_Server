@@ -1,5 +1,63 @@
 # Recovering the client's command id table
 
+## Server default: `release261_220`
+
+The server uses [`command_ids_rel261_220.json`](command_ids_rel261_220.json)
+by default, matching the R261_220 client. Set `DSO_COMMAND_IDS` to
+`docs/command_ids_rel261_219.json`, `docs/command_ids_rel261_1024.json`,
+`docs/command_ids_rel261_203.json`, or `docs/command_ids_rel261_192.json` to
+select an older client table. `DSO_COMMAND_IDS=builtin` selects the original
+patch5 literals.
+
+This analysis recovers registered command names, IDs, and actor scoping flags.
+The existing `DSO_SKILL_HIT_MARKER_BITS=3` setting is retained as verified from
+the HitCommand decoder. For `dro_client64-patch5` or the DSOR client, set
+`DSO_COMMAND_IDS=builtin` and `DSO_SKILL_HIT_MARKER_BITS=0`.
+
+## R261_220 update analysis
+
+The executable analyzed was
+`%LOCALAPPDATA%\Temp\DSOClient\dlcache\dro_client64.exe`. Its embedded
+revision marker is `261_220` (Nov 19 2026 10:55:48); SHA-256:
+`913ac46f93bfb56c1dbb3f7dab07d41c4f6cfde4d8b1f4da4a6d98ffc0f1aeed`.
+The recovered table is [`command_ids_rel261_220.json`](command_ids_rel261_220.json).
+
+The scan recovered all 371 command classes with 371 distinct IDs spanning 1–381,
+with zero duplicate IDs. Compared with R261_219:
+- Command classes: 371 (100% identical, 0 additions, 0 deletions)
+- Command IDs: Exactly identical across all 371 classes
+- Actor scoping: 299 classes actor-scoped, 72 unscoped (0 difference)
+- Wire layouts: Verified identical for `HitCommand`, `NewPlayerCommand`, `GetBlackFridayTransactionsInfoResultCommand`.
+
+## Server default: `release261_219`
+
+The server supports [`command_ids_rel261_219.json`](command_ids_rel261_219.json).
+
+This analysis recovers registered command names, IDs, and actor scoping flags.
+The existing `DSO_SKILL_HIT_MARKER_BITS=3` setting is retained as verified from
+the HitCommand decoder. For `dro_client64-patch5` or the DSOR client, set
+`DSO_COMMAND_IDS=builtin` and `DSO_SKILL_HIT_MARKER_BITS=0`.
+
+## R261_219 update analysis
+
+The executable analyzed was
+`%LOCALAPPDATA%\Temp\DSOClient\dlcache\dro_client64.exe`. Its embedded
+revision marker is `261_219`; SHA-256:
+`91f4343480a889a3c5740e7f179388a965a72f299588271facd9dd5a465197ee`.
+The recovered table is [`command_ids_rel261_219.json`](command_ids_rel261_219.json).
+
+The scan recovered all 371 command classes with 371 distinct IDs spanning 1–381,
+with zero duplicate IDs. Compared with R261_1024, the two duplicate ID collisions
+in R261_1024 were reverted to their distinct rel261_203 assignments:
+
+| command class | R261_1024 | R261_219 | note |
+| --- | ---: | ---: | --- |
+| `Commands::PaymentForceLogoutCommand` | `0x10` (16) | `0x10A` (266) | Resolves collision with `PlayerDeletedCommand` (0x10) |
+| `Commands::ResumeMasterServerCommand` | `0x13F` (319) | `0x0A` (10) | Resolves collision with `RevenueRecognitionCommand` (0x13F) |
+
+Actor scoping matches rel261_203 exactly: 299 classes are actor-scoped, 72 are
+unscoped.
+
 ## Server default: `release261_1024`
 
 The server uses [`command_ids_rel261_1024.json`](command_ids_rel261_1024.json)
@@ -305,12 +363,18 @@ vtable:
 |      5 | `Decode`                                  |
 | 13, 14 | outer server-command actor accessors      |
 
-`Decode` is a flat sequence of `call <reader>` with `lea rdx, [this + offset]`,  
-so the field order and each field's width read straight off the disassembly.  
-The readers are shared and identifiable by size: 45 bytes is a `uint32`, 188 a  
-string, 53 a *validated* enum, and 230 the `uint32 count` + element array used  
-by `PlayerQueryResultCommand`, `GroupStatusCommand`, and  
-`GroupMemberQueryResultCommand` alike — which is how those three were confirmed  
+`Decode` is a flat sequence of `call <reader>` with `lea rdx, [this + offset]`,
+  
+so the field order and each field's width read straight off the disassembly.
+  
+The readers are shared and identifiable by size: 45 bytes is a `uint32`, 188 a
+  
+string, 53 a *validated* enum, and 230 the `uint32 count` + element array used
+  
+by `PlayerQueryResultCommand`, `GroupStatusCommand`, and
+  
+`GroupMemberQueryResultCommand` alike — which is how those three were confirmed
+  
 to share one `PlayerSummary` record.
 
 

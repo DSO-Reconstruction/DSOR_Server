@@ -48,7 +48,8 @@ class NewPlayerWire:
     field_f0: int
     field_f8: int
     field_fc: int
-    field_100: ActorPlacement
+    field_100: int
+    field_104: ActorPlacement
     fields_110: tuple[int, ...]
     field_130: tuple[int, ...]
     field_150: tuple[str, ...]
@@ -122,8 +123,9 @@ def read_new_player_body(reader: BitReader) -> NewPlayerWire:
     field_e8 = reader.read_string()
     field_f0 = reader.read_uint64_le()
     field_f8 = reader.read_uint32_le()
-    field_fc = reader.read_uint8()
-    field_100 = _read_actor_placement(reader)
+    field_fc = reader.read_uint32_le()
+    field_100 = reader.read_uint8()
+    field_104 = _read_actor_placement(reader)
     fields_110 = _read_u32s(reader, 8)
     field_130 = _read_u32s(reader, reader.read_uint32_le())
     field_150 = tuple(
@@ -185,6 +187,7 @@ def read_new_player_body(reader: BitReader) -> NewPlayerWire:
         field_f8,
         field_fc,
         field_100,
+        field_104,
         fields_110,
         field_130,
         field_150,
@@ -233,8 +236,9 @@ def write_new_player_body(writer: BitWriter, value: NewPlayerWire) -> None:
     writer.write_string(value.field_e8)
     writer.write_uint64_le(value.field_f0)
     writer.write_uint32_le(value.field_f8)
-    writer.write_uint8(value.field_fc)
-    _write_actor_placement(writer, value.field_100)
+    writer.write_uint32_le(value.field_fc)
+    writer.write_uint8(value.field_100)
+    _write_actor_placement(writer, value.field_104)
     _write_u32s(writer, value.fields_110, 8, "fields_110")
     writer.write_uint32_le(len(value.field_130))
     for entry in value.field_130:

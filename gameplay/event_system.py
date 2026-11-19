@@ -740,6 +740,12 @@ class EventTemplateDefinition:
 # point of view. Keep these as aliases of the parent schedule so they follow
 # its activation and deactivation without requiring separate CMS entries.
 SCHEDULED_EVENT_FLAG_ALIASES: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "black_friday_event": (
+        "event_sell_blackfriday_package_silent",
+    ),
+    "black_friday_early_event": (
+        "event_sell_blackfriday_package_silent",
+    ),
     "anniversary_event": (
         "e_anniversary_challenge_silent_duria",
         "e_anniversary_challenge_silent_ellonidos",

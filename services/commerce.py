@@ -387,6 +387,8 @@ class CommerceService:
             character = s.gameplay_character
         active_events = set(
             CharacterService._event_catalog(self).active_template_ids()
+        ) | set(
+            CharacterService._event_catalog(self).active_event_flags()
         )
         class_name = (
             CLASS_NAMES.get(int(character.class_id), "").casefold()
@@ -963,7 +965,15 @@ class CommerceService:
                     f"{action.payload.get('templateId')!r})"
                 )
                 return
-            raise ValueError("unsupported notification action")
+            CharacterService._accept_gameplay_state_command(
+                s, CLIENT_NOTIFICATION_COMMAND
+            )
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] notification action accepted: "
+                f"guid={action.instance_guid.hex()} kind={action.kind} "
+                f"subtype={action.subtype} payload={action.payload!r}"
+            )
+            return
         if not DAILY_LOGIN_REWARDS_ENABLED:
             CharacterService._accept_gameplay_state_command(
                 s, CLIENT_NOTIFICATION_COMMAND
@@ -1795,3 +1805,77 @@ class CommerceService:
             _achievement_on_purchased_dragon_bones(
                 self, s, item_id, amount,
             )
+
+    def _handle_get_black_friday_transactions_info(
+        self, s: Session, payload: bytes
+    ) -> None:
+        CharacterService._accept_gameplay_state_command(
+            s, GET_BLACK_FRIDAY_TRANSACTIONS_INFO_COMMAND
+        )
+        with s.flow_lock:
+            purchases = dict(getattr(s, "gameplay_timed_offer_purchases", {}))
+            actor_id = getattr(s, "gameplay_remote_actor_id", 0) or 1001
+        bf_transactions = tuple(
+            str(k) for k in purchases
+            if "blackfriday" in str(k).lower()
+            or "early_bird" in str(k).lower()
+            or "queen_chest" in str(k).lower()
+        )
+        packet, packet_bits = encode_get_black_friday_transactions_info_result(
+            bf_transactions, actor_id=actor_id
+        )
+        s.send_reliable_ordered_split(
+            packet,
+            total_bit_length=packet_bits,
+            track=True,
+            label_prefix="black-friday-transactions-info",
+        )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] sent Black Friday transactions info: "
+            f"{len(bf_transactions)} transaction(s) to actor {actor_id}"
+        )
+
+    def _trigger_in_game_purchase(
+        self, s: Session, product_key: str
+    ) -> None:
+        """Trigger an instant in-game OCP purchase for Early Bird or Queen chests."""
+        with s.flow_lock:
+            character = s.gameplay_character
+        class_id = int(character.class_id) if character is not None else None
+        reward = resolve_ocp_booking_reward(
+            product_key, "in_game", class_id=class_id
+        )
+        instance_guid = uuid.uuid4().bytes
+        pending_key = ocp_booking_pending_key(instance_guid, reward.offer_id)
+        with s.flow_lock:
+            claims = dict(getattr(s, "gameplay_timed_offer_purchases", {}))
+            claims[pending_key] = 1
+            claims[reward.offer_id] = claims.get(reward.offer_id, 0) + 1
+            s.gameplay_timed_offer_purchases = claims
+        CharacterService._request_account_save(
+            s, "OCP booking created", flush=True
+        )
+        self._send_ocp_booking_notification(s, instance_guid, reward)
+        self._settle_ocp_booking(s, pending_key, reward)
+
+        with s.flow_lock:
+            purchases = dict(getattr(s, "gameplay_timed_offer_purchases", {}))
+            actor_id = getattr(s, "gameplay_remote_actor_id", 0) or 1001
+        bf_transactions = tuple(
+            str(k) for k in purchases
+            if "blackfriday" in str(k).lower()
+            or "early_bird" in str(k).lower()
+            or "queen_chest" in str(k).lower()
+        )
+        packet, packet_bits = encode_get_black_friday_transactions_info_result(
+            bf_transactions, actor_id=actor_id
+        )
+        s.send_reliable_ordered_split(
+            packet,
+            total_bit_length=packet_bits,
+            track=True,
+            label_prefix="black-friday-transactions-info",
+        )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] in-game purchase completed for {product_key}"
+        )

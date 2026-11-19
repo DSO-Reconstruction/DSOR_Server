@@ -345,6 +345,8 @@ def decode_skill(
     reader = _read_client_header(payload, SKILL_COMMAND, bit_length)
     base = _read_skill_cast_body(reader)
     value = SkillCast(*base, _read_optional_derived_flag(reader))
+    if 0 < reader.remaining < 8:
+        reader.read_bits(reader.remaining)
     if reader.remaining:
         raise ValueError("SkillCommand has unread bits")
     return value
@@ -356,13 +358,16 @@ def decode_target_skill(
     reader = _read_client_header(payload, TARGET_SKILL_COMMAND, bit_length)
     base = _read_skill_cast_body(reader)
     derived_flag = _read_optional_derived_flag(reader)
+    target_actor_id = reader.read_uint32_le()
     value = TargetSkillCast(
         *base,
-        reader.read_uint32_le(),
+        target_actor_id,
         derived_flag,
     )
     # Zero is the client's no-target sentinel. Preserve it so gameplay can
     # ignore the cast without classifying a complete packet as malformed.
+    if 0 < reader.remaining < 8:
+        reader.read_bits(reader.remaining)
     if reader.remaining:
         raise ValueError("TargetSkillCommand has unread bits")
     return value
@@ -388,6 +393,8 @@ def decode_shifted_skill(
         positions[1:],
         derived_flag,
     )
+    if 0 < reader.remaining < 8:
+        reader.read_bits(reader.remaining)
     if reader.remaining:
         raise ValueError("ShiftedSkillCommand has unread bits")
     return value
@@ -403,6 +410,10 @@ def decode_target_point_bullet_skill(
     derived_flag = _read_optional_derived_flag(reader)
     direction = tuple(reader.read_float() for _ in range(4))
     variant = reader.read_uint8()
+    if reader.remaining >= 16:
+        size = struct.unpack("<H", reader.read_bytes(2))[0]
+        if size > 0 and reader.remaining >= size * 8:
+            reader.read_bytes(size)
     # An early reconstructed fixture omitted the generated array count.
     # Accept it read-only, while every native current command uses the count.
     if reader.remaining == 96:
@@ -417,6 +428,8 @@ def decode_target_point_bullet_skill(
             tuple(reader.read_float() for _ in range(3))
             for _ in range(position_count)
         )
+    if 0 < reader.remaining < 8:
+        reader.read_bits(reader.remaining)
     value = TargetPointBulletSkill(
         *base,
         direction,
@@ -446,10 +459,25 @@ def decode_bullet_skill(
         )
     base = _read_skill_cast_body(reader)
     derived_flag = _read_optional_derived_flag(reader)
+    direction = tuple(reader.read_float() for _ in range(4))
+    variant = reader.read_uint8()
+    if reader.remaining >= 16:
+        size = struct.unpack("<H", reader.read_bytes(2))[0]
+        if size > 0 and reader.remaining >= size * 8:
+            reader.read_bytes(size)
+    if derived_flag and reader.remaining >= 32:
+        reader.read_uint32_le()
+        if reader.remaining >= 8:
+            pos_count = reader.read_uint8()
+            for _ in range(pos_count):
+                if reader.remaining >= 96:
+                    reader.read_bytes(12)
+    if 0 < reader.remaining < 8:
+        reader.read_bits(reader.remaining)
     value = BulletSkill(
         *base,
-        direction=tuple(reader.read_float() for _ in range(4)),
-        variant=reader.read_uint8(),
+        direction=direction,
+        variant=variant,
         derived_flag=derived_flag,
     )
     if reader.remaining:
@@ -483,23 +511,23 @@ def decode_target_bullet_skill(
     derived_flag = _read_optional_derived_flag(reader)
     direction = tuple(reader.read_float() for _ in range(4))
     variant = reader.read_uint8()
-    target_actor_id = reader.read_uint32_le()
+    if reader.remaining >= 16:
+        size = struct.unpack("<H", reader.read_bytes(2))[0]
+        if size > 0 and reader.remaining >= size * 8:
+            reader.read_bytes(size)
+    target_actor_id = reader.read_uint32_le() if reader.remaining >= 32 else 0
     additional = tuple(
         reader.read_uint32_le()
         for _ in range(reader.read_uint8())
-    )
+    ) if reader.remaining >= 8 else ()
     positions = tuple(
         tuple(reader.read_float() for _ in range(3))
         for _ in range(reader.read_uint8())
-    )
-    if target_actor_id == 0:
-        raise ValueError(
-            "TargetBulletSkill has an invalid primary target actor"
-        )
-    if not positions:
-        raise ValueError(
-            "TargetBulletSkill requires at least one target position"
-        )
+    ) if reader.remaining >= 8 else ()
+    if target_actor_id == 0 and not positions:
+        target_actor_id = 0
+    if 0 < reader.remaining < 8:
+        reader.read_bits(reader.remaining)
     if reader.remaining:
         raise ValueError("TargetBulletSkill has unread bits")
     return TargetBulletSkill(

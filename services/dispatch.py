@@ -717,6 +717,8 @@ class DispatchService:
                 0x00EA, CLIENT_CURRENT_POSITION_FRAME_INFO_COMMAND,
             }:
                 self._handle_simple_gameplay_command(s, payload, command_id)
+            elif command_id == GET_BLACK_FRIDAY_TRANSACTIONS_INFO_COMMAND:
+                self._handle_get_black_friday_transactions_info(s, payload)
             else:
                 print(
                     f"[{GAMEPLAY_SERVICE_NAME}] ERROR: unimplemented gameplay "
