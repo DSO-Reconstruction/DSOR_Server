@@ -1,34 +1,5 @@
 {
   "events": [
-    {
-      "event_id": 65538,
-      "template_id": "event_sell_blackfriday_package_silent",
-      "state": "active",
-      "starts_at": "2026-11-01T00:00:00.000000+00:00",
-      "ends_at": "2026-12-31T23:59:59.000000+00:00",
-      "participation_default": true,
-      "collectible_drop_chance": 0.35,
-      "collectible_amount": 1
-    },
-    {
-      "event_id": 65540,
-      "template_id": "black_friday_event",
-      "state": "active",
-      "starts_at": "2026-11-01T00:00:00.000000+00:00",
-      "ends_at": "2026-12-31T23:59:59.000000+00:00",
-      "participation_default": true,
-      "collectible_drop_chance": 0.35,
-      "collectible_amount": 1
-    },
-    {
-      "event_id": 65541,
-      "template_id": "black_friday_early_event",
-      "state": "active",
-      "starts_at": "2026-11-01T00:00:00.000000+00:00",
-      "ends_at": "2026-12-31T23:59:59.000000+00:00",
-      "participation_default": true,
-      "collectible_drop_chance": 0.35,
-      "collectible_amount": 1
-    }
+    
   ]
 }
