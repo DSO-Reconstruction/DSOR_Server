@@ -191,6 +191,7 @@ from dso_server.protocol.world_loot_protocol import (
 from dso_server.gameplay.prop_loot import (
     CHEST_DROP_SPACING,
     chest_drop_positions,
+    chest_drop_positions_forward,
     load_prop_loot_catalog,
     roll_prop_loot,
 )
@@ -6910,14 +6911,76 @@ class MapEventService:
                 )
                 specifications = []
         elif loot_list_id == _BLOOD_CHEST_LOOT_LIST:
-            specifications = [
-                ("money_rc", 10),
-            ]
-            gem_count = random.SystemRandom().randint(4, 5)
-            specifications.extend(
-                (random.SystemRandom().choice(_BLOOD_CHEST_GEM_TEMPLATES), 1)
-                for _ in range(gem_count)
+            rng = random.SystemRandom()
+            specifications = []
+            from dso_server.protocol.chest_loot_protocol import roll_chest_contents
+
+            loot_cache = prime_world_loot_cache(self.static_database_path)
+            for _ in range(rng.randint(3, 7)):
+                rarity = rng.choice(("magic", "rare", "epic"))
+                equipment = roll_chest_contents(
+                    self.static_database_path,
+                    f"all_class_all_equip_{rarity}_01",
+                    player_level=player_level,
+                    class_name=class_name,
+                    rng=rng,
+                )
+                for reward in equipment.rewards:
+                    template_id = reward.definition.template_id
+                    specifications.append((template_id, int(reward.amount)))
+                    equipment_rewards_by_template.setdefault(
+                        template_id, [],
+                    ).append(reward)
+
+            gem_ranks = tuple(
+                rank for rank in "defghi"
+                if loot_cache.standard_gems_by_rank.get(rank)
             )
+            gem_candidates = tuple(
+                item.template_id
+                for rank in gem_ranks
+                for item in loot_cache.gems_for_rank(rank)
+            )
+            if not gem_candidates:
+                raise ValueError("Blood Chest has no rank d-i gem templates")
+            specifications.extend(
+                (rng.choice(gem_candidates), 1)
+                for _ in range(rng.randint(3, 7))
+            )
+
+            # Gnob's standard Common pet offers (the same alternatives used
+            # by the Dragon Blood Box) are a rare one-of bonus. These base
+            # template IDs intentionally exclude uncommon/rare/epic variants.
+            if rng.random() < 0.10:
+                specifications.append((rng.choice((
+                    "pet_fat_demon", "pet_raptor_01", "pet_rooster",
+                    "pet_fennec",
+                )), 1))
+
+            gold_copper = rng.randint(3 * 10_000, 10 * 10_000)
+            silver, copper = divmod(gold_copper, 100)
+            if silver:
+                specifications.append(("money_vc_silver", silver))
+            if copper:
+                specifications.append(("money_vc_copper", copper))
+
+            # The guaranteed 50 is independent. Roll exactly one additional
+            # payout band; the rare overrides run first because the listed
+            # percentages together exceed 100% when combined with the base
+            # table.
+            specifications.append(("money_rc", 50))
+            bonus_roll = rng.random()
+            if bonus_roll < 0.0003:
+                bonus_andermant = 100_000
+            elif bonus_roll < 0.0103:
+                bonus_andermant = 10_000
+            else:
+                bonus_andermant = rng.choices(
+                    (250, 500, 1_000, 2_000, 5_000),
+                    weights=(55, 25, 10, 8, 2),
+                    k=1,
+                )[0]
+            specifications.append(("money_rc", bonus_andermant))
         elif loot_list_id in {
             "chest_lootlist_magic", "chest_lootlist_rare",
             "chest_lootlist_epic",
@@ -7495,20 +7558,43 @@ class MapEventService:
                 equipment_difficulty,
                 int(getattr(s, "gameplay_map_difficulty", 0) or 0),
             )
+        is_blood_chest = (
+            loot_list_id == _BLOOD_CHEST_LOOT_LIST
+            and not is_bgh_mythic_chest
+        )
+        if is_blood_chest:
+            # Put currency in the closest forward slots so its AutoPickUp=All
+            # drops remain within pickup range when the chest is opened.
+            currency_templates = {
+                "money_rc", "money_vc_gold", "money_vc_silver",
+                "money_vc_copper",
+            }
+            specifications.sort(
+                key=lambda reward: (
+                    0 if reward[0].casefold() in currency_templates else 1
+                ),
+            )
         origin = tuple(float(value) for value in definition.position)
         if encounter is not None and last_move is not None:
             origin = encounter.coordinate_frame.wire_to_world(
                 last_move.relative_position
             )
-        positions = chest_drop_positions(
-            origin,
-            len(specifications),
-            spacing=(
-                0.9
-                if is_bgh_mythic_chest or is_new_year_worldboss_pile
-                else CHEST_DROP_SPACING
-            ),
-        )
+        if is_blood_chest:
+            origin = tuple(float(value) for value in definition.position)
+            positions = chest_drop_positions_forward(
+                origin, float(definition.rotation), len(specifications),
+                spacing=1.2,
+            )
+        else:
+            positions = chest_drop_positions(
+                origin,
+                len(specifications),
+                spacing=(
+                    0.9
+                    if is_bgh_mythic_chest or is_new_year_worldboss_pile
+                    else CHEST_DROP_SPACING
+                ),
+            )
         try:
             item_rows = prime_world_loot_cache(self.static_database_path).items_by_id
             drops = []
@@ -7592,8 +7678,23 @@ class MapEventService:
                 # static.db4, which the server's proximity collector does not
                 # treat as an unconditional pickup. A Mighty Threat chest keys
                 # should go straight into the bag once the chest is opened.
+                blood_chest_currency = (
+                    is_blood_chest
+                    and template_id.casefold() in {
+                        "money_rc", "money_vc_gold", "money_vc_silver",
+                        "money_vc_copper",
+                    }
+                )
                 auto_pick_up = (
                     "All"
+                    if (
+                        blood_chest_currency
+                    )
+                    else "None"
+                    if (
+                        is_blood_chest
+                    )
+                    else "All"
                     if template_id.casefold() == "scaling_dungeon_boss_key_01"
                     or (
                         is_kingshill_waste_box

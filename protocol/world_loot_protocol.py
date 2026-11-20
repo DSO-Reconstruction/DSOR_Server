@@ -66,12 +66,20 @@ MESSAGE_COMMAND = command_id("Commands::MessageCommand", 0x0089)
 LOOT_RECEIVED_MESSAGE = 0x19
 
 GOLD_ITEM_TEMPLATES = frozenset((
-    "money_vc", "money_vc_gold", "money_vc_silver",
+    "money_vc", "money_vc_copper", "money_vc_silver", "money_vc_gold",
 ))
+GOLD_CURRENCY_VALUE_BY_TEMPLATE = {
+    "money_vc": 1,
+    "money_vc_copper": 1,
+    "money_vc_silver": 100,
+    "money_vc_gold": 10_000,
+}
 ANDERMANT_ITEM_TEMPLATE = "money_rc"
 WISDOM_ITEM_TEMPLATE = "money_gc"
 REALM_FRAGMENT_ITEM_TEMPLATE = "e_item_teleport_change_01"
 ANDERMANT_BASE_DROP_MULTIPLIER = 50
+ALL_MOBS_ANDERMANT_BY_DIFFICULTY = (25, 50, 75, 100, 125, 125, 150, 150, 200, 200)
+ROYAL_GEM_RANK = "n"
 
 # Map difficulty tiers: 0: Normal, 1: Painful, 2: Excruciating, 3: Fatal,
 # 4: Infernal, 5: PW Infernal, 6: Merciless, 7: PW Merciless, 8: Bloodshed, 9: PW Bloodshed
@@ -150,6 +158,9 @@ SPECIAL_MOB_REALM_FRAGMENTS_BY_DIFFICULTY = (
 ALL_MOBS_REALM_FRAGMENT_CHANCE = 0.0005
 # 0.015% (%0.015) chance to drop 1x or 3x Ancient Wisdom
 ALL_MOBS_WISDOM_CHANCE = 0.00015
+PARALLEL_WORLD_MATERI_CHANCE = 0.01
+PARALLEL_WORLD_MATERI_BY_DIFFICULTY = (13, 25, 38, 50, 63, 75, 88, 100, 125, 125)
+MATERI_FRAGMENT_ITEM_TEMPLATE = "materi_fragment_01"
 # The Happy Hour travel-item descriptions promise these guaranteed totals for
 # the corresponding Andermant Golem boss tiers. Static data names each row's
 # loot as SPECIAL_*, a server-owned list that is not exposed as ordinary
@@ -1791,14 +1802,21 @@ def _monster_gem_rank(
     ranks = sorted(database.standard_gems_by_rank)
     if not ranks:
         return "a"
-    best = max(0, len(ranks) - 1 - MONSTER_GEM_RANK_REDUCTION)
+    royal_index = next(
+        (index for index, rank in enumerate(ranks) if rank > ROYAL_GEM_RANK),
+        len(ranks),
+    )
+    eligible = ranks[:royal_index]
+    if not eligible:
+        return ranks[0]
+    best = max(0, len(eligible) - 1 - MONSTER_GEM_RANK_REDUCTION)
     if (
         int(map_difficulty) in TOP_MAP_DIFFICULTIES
         and rng.random() < BEST_MONSTER_GEM_CHANCE
     ):
-        return ranks[best]
+        return eligible[best]
     band = (max(1, int(monster_level)) - 1) // 10 - MONSTER_GEM_RANK_REDUCTION
-    return ranks[max(0, min(band, best - 1))]
+    return eligible[max(0, min(band, best - 1))]
 
 
 def roll_equipment_reward(
@@ -3119,20 +3137,16 @@ def generate_monster_loot(
                     0,
                 ))
         elif force_drops or generator.random() <= andermant_drop_chance:
-            factor = _currency_factor(
-                database, profile.monster_level, int(player_level)
-            )
-            amount = (
-                max(
-                    1,
-                    round(
-                        factor
-                        * max(1.0, profile.monster_level / 30.0)
-                    ),
-                )
-                * ANDERMANT_BASE_DROP_MULTIPLIER
-            )
-            for _ in range(_boss_currency_instance_count(profile)):
+            amount = ALL_MOBS_ANDERMANT_BY_DIFFICULTY[max(
+                0,
+                min(
+                    len(ALL_MOBS_ANDERMANT_BY_DIFFICULTY) - 1,
+                    int(map_difficulty),
+                ),
+            )]
+            stack_count = _boss_currency_instance_count(profile)
+            base_amount, remainder = divmod(amount, stack_count)
+            for stack_index in range(stack_count):
                 specifications.append(
                     (
                         LootItemDefinition(
@@ -3143,7 +3157,7 @@ def generate_monster_loot(
                             "0",
                             "",
                         ),
-                        amount,
+                        base_amount + (1 if stack_index < remainder else 0),
                         1,
                         "",
                         0,
@@ -3241,7 +3255,8 @@ def generate_monster_loot(
             fortune_gem_ranks = tuple(
                 rank
                 for rank in BOSS_GEM_RANKS_BY_DIFFICULTY[difficulty_tier]
-                if database.standard_gems_by_rank.get(rank)
+                if rank <= ROYAL_GEM_RANK
+                and database.standard_gems_by_rank.get(rank)
             )
             for _ in range(max(0, int(extra_boss_gems))):
                 if not fortune_gem_ranks:
@@ -3496,7 +3511,8 @@ def generate_monster_loot(
             available_gem_ranks = tuple(
                 rank
                 for rank in BOSS_GEM_RANKS_BY_DIFFICULTY[difficulty_tier]
-                if database.standard_gems_by_rank.get(rank)
+                if rank <= ROYAL_GEM_RANK
+                and database.standard_gems_by_rank.get(rank)
             )
             gem_count = min(
                 generator.randint(1, 3), len(available_gem_ranks),
@@ -3545,6 +3561,8 @@ def generate_monster_loot(
                 if (
                     definition.template_id
                     not in difficulty_unscaled_drop_templates
+                    and definition.template_id != ANDERMANT_ITEM_TEMPLATE
+                    and definition.template_id != MATERI_FRAGMENT_ITEM_TEMPLATE
                     and definition.template_id.casefold()
                     not in EXPLICIT_DIFFICULTY_SIZED_EVENT_PROGRESS_ITEMS
                     and (
@@ -3628,6 +3646,36 @@ def generate_monster_loot(
         if generator.random() <= ALL_MOBS_WISDOM_CHANCE:
             mob_wisdom = generator.choice((1, 3))
             specifications.append((wisdom_definition, mob_wisdom, 1, "", 0))
+
+        access_key = str(map_access_id).casefold()
+        if (
+            (
+                access_key.startswith(("pw_", "parallel_world_", "e_pw_"))
+                or int(map_difficulty) in {5, 7, 9}
+            )
+            and generator.random() <= PARALLEL_WORLD_MATERI_CHANCE
+        ):
+            materi_tier = max(
+                0,
+                min(
+                    len(PARALLEL_WORLD_MATERI_BY_DIFFICULTY) - 1,
+                    int(map_difficulty),
+                ),
+            )
+            specifications.append((
+                LootItemDefinition(
+                    MATERI_FRAGMENT_ITEM_TEMPLATE,
+                    "ItemCurrency",
+                    "All",
+                    "0",
+                    "0",
+                    "",
+                ),
+                PARALLEL_WORLD_MATERI_BY_DIFFICULTY[materi_tier],
+                1,
+                "",
+                0,
+            ))
 
         positions = _scatter_positions(
             position,
@@ -4132,7 +4180,9 @@ def credit_currency_drop(
         # Keep wallet_base so the shared account wallet commits the delta.
         return replace(state, currency_type=value, notify=True)
     if drop.item.template_id in GOLD_ITEM_TEMPLATES:
-        value = int(state.amount) + amount
+        value = int(state.amount) + amount * GOLD_CURRENCY_VALUE_BY_TEMPLATE[
+            drop.item.template_id
+        ]
         if value > 0xFFFFFFFFFFFFFFFF:
             raise ValueError("gold balance overflows uint64")
         return replace(state, amount=value, notify=True)
