@@ -38,6 +38,7 @@ from dso_server.protocol.inventory_codec import (
     BOOTSTRAP_ITEM_ID,
     BOOTSTRAP_ITEM_TEMPLATE,
     BOOTSTRAP_SECOND_RUNE_ID,
+    convert_class_incompatible_items,
     owned_inventory_items,
 )
 from dso_server.gameplay.map_unlocks import (
@@ -568,6 +569,19 @@ class PlayerInitializationStateService:
                     "starter item(s) wait in overflow until a slot frees up: "
                     f"{overflowed_starter_ids}"
                 )
+        class_name = CLASS_NAMES[int(character.class_id)]
+        converted, unconverted = convert_class_incompatible_items(
+            inventory,
+            static_database_path=self.static_database_path,
+            class_name=class_name,
+        )
+        if converted or unconverted:
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] character {character.character_id}: "
+                f"converted {converted} class-specific item(s) for {class_name}; "
+                f"{len(unconverted)} template(s) had no safe variant and were moved "
+                f"out of equipment: {unconverted}"
+            )
         inventory, relocated_essences = repair_ammunition_slot_allocations(
             inventory
         )
@@ -577,7 +591,6 @@ class PlayerInitializationStateService:
                 "essence(s) out of retired equipment slot 34: "
                 f"{relocated_essences}"
             )
-        class_name = CLASS_NAMES[int(character.class_id)]
         loot_cache = prime_world_loot_cache(self.static_database_path)
         mercenary_equipment_categories = {
             "MercenaryJewelry",

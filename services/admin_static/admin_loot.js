@@ -12,7 +12,7 @@ const categories = [
 
 function percentInput(name, value, placeholder = "") {
   const shown = value == null ? "" : value;
-  return `<input name="${esc(name)}" type="number" min="0" max="100" step="0.1" value="${esc(shown)}" placeholder="${esc(placeholder)}" ${placeholder ? "" : "required"}>`;
+  return `<input name="${esc(name)}" type="number" min="0" max="100" step="0.01" value="${esc(shown)}" placeholder="${esc(placeholder)}" ${placeholder ? "" : "required"}>`;
 }
 
 function mapResults(data) {
@@ -34,7 +34,7 @@ function renderContent(data) {
   ]);
   const selected = data.selected;
   const overrides = categories.map(([key, label]) => [
-    `<label>${esc(label)}<small>Blank uses the global default (${Number(data.defaults[key]).toFixed(1)}%)</small>${percentInput(`override-${key}`, data.selected_overrides[key] ?? "", "Inherit")}</label>`,
+    `<label>${esc(label)}<small>Blank uses the global default (${Number(data.defaults[key]).toFixed(2)}%)</small>${percentInput(`override-${key}`, data.selected_overrides[key] ?? "", "Inherit")}</label>`,
   ]);
   const selectedLabel = selected
     ? `${selected.map_id || selected.access_group} · Difficulty ${selected.difficulty} · ${selected.access_id}`

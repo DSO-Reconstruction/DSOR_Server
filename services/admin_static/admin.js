@@ -13,7 +13,7 @@ import { bonusCodesPage, bonusCodePage, newBonusCodePage } from "./admin_bonus_c
 import { starterGrantsPage } from "./admin_starter_grants.js";
 import { settingsPage, serverControlPage } from "./admin_control.js";
 
-let generation = 0, shownPath = null;
+let generation = 0, shownPath = null, loginInProgress = false, initialSession = null;
 function applyInterface(accountId) {
   const mode = readInterfacePreference(accountId);
   const classic = mode === "legacy";
@@ -103,6 +103,7 @@ async function render() {
     else if (name === "events") result = id === "new" ? await newEventPage(route) : id ? await eventPage(route) : await eventsPage(route);
     else if (name === "season-pass") result = await seasonPassPage(route);
     else if (name === "loot-rates") result = await lootRatesPage(route);
+    else if (name === "cash-shop") result = await npcShopPage(route, {cashShop: true});
     else if (name === "dungeon-elites") result = await dungeonElitesPage(route);
     else if (name === "mystic-cube") result = await mysticCubePage(route);
     else if (name === "bonus-codes") result = id === "new" ? await newBonusCodePage(route) : id ? await bonusCodePage(route) : await bonusCodesPage(route);
@@ -158,6 +159,7 @@ $("#content").addEventListener("change", event => {
 $("#login-form").addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.target, button = form.querySelector("button");
+  loginInProgress = true;
   button.disabled = true; $("#login-error").textContent = "";
   try {
     const formData = new FormData(form);
@@ -169,7 +171,11 @@ $("#login-form").addEventListener("submit", async event => {
     form.reset(); signedIn(data);
   }
   catch (error) { $("#login-error").textContent = error.message; }
-  finally { button.disabled = false; }
+  finally {
+    loginInProgress = false;
+    button.disabled = false;
+    if (initialSession && !hasSession()) signedIn(initialSession);
+  }
 });
 $("#logout").addEventListener("click", async () => {
   try { await api("/api/logout", {}); signedOut(); } catch (error) { notice(error.message, true); }
@@ -178,7 +184,13 @@ $("#refresh").addEventListener("click", render);
 window.addEventListener("hashchange", () => { if (routeInfo().path !== shownPath) window.scrollTo(0, 0); render(); });
 window.addEventListener("signed-out", signedOut);
 window.addEventListener("reload-page", render);
-api("/api/me").then(signedIn).catch(signedOut).finally(() => {
-  $("#login-form button").disabled = false;
+api("/api/me").then(data => {
+  initialSession = data;
+  if (!loginInProgress) signedIn(data);
+}).catch(() => {
+  initialSession = null;
+  if (!loginInProgress) signedOut();
+}).finally(() => {
+  if (!loginInProgress) $("#login-form button").disabled = false;
   document.documentElement.dataset.ready = "true";
 });

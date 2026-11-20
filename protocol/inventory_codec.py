@@ -12,11 +12,15 @@ from __future__ import annotations
 
 from dso_server.protocol.command_ids import command_id
 import copy
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
+import re
+import sqlite3
 from typing import Iterable
 
-from dso_server.protocol.character_selection import BitReader, BitWriter
+from dso_server.protocol.character_selection import BitReader, BitWriter, CLASS_NAMES
 
 
 INVENTORY_INFO_COMMAND = command_id("Commands::InventoryInfoCommand", 0x0054)
@@ -402,6 +406,170 @@ def owned_inventory_items(info: InventoryInfo):
     yield from info.items
     yield from info.premium_inventory_overflow
     yield from info.premium_storage_overflow
+
+
+def convert_class_incompatible_items(
+    info: InventoryInfo,
+    *,
+    static_database_path,
+    class_name: str,
+    source_class: str = "",
+) -> tuple[int, tuple[str, ...]]:
+    """Convert class-locked items to matching target-class templates.
+
+    Exact class-token variants are preferred. Where weapon names differ by
+    class (staff to sword, orb to shield), match the same item family, rarity,
+    and equipment slot. If no compatible equivalent exists, preserve the item
+    in owned storage instead of letting the client equip an invalid template.
+    """
+    class_name = str(class_name or "").casefold()
+    if not class_name:
+        return 0, ()
+    items = tuple(owned_inventory_items(info))
+    template_ids = tuple(dict.fromkeys(
+        str(item.template_id) for item in items if item.template_id
+    ))
+    if not template_ids:
+        return 0, ()
+
+    rows_by_id = {}
+    uri = Path(static_database_path).resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True)) as database:
+        for offset in range(0, len(template_ids), 800):
+            batch = template_ids[offset:offset + 800]
+            marks = ",".join("?" for _ in batch)
+            rows = database.execute(
+                f'SELECT Id, CharClass, DefaultRarity, SlotType, ItemCategory, '
+                f'TemplateCollection FROM "_Template_Item" WHERE Id IN ({marks})',
+                batch,
+            ).fetchall()
+            rows_by_id.update({str(row[0]): row for row in rows})
+
+        target_rows = database.execute(
+            'SELECT Id, CharClass, DefaultRarity, SlotType, ItemCategory, '
+            'TemplateCollection FROM "_Template_Item" '
+            'WHERE lower(CharClass)=?', (class_name,),
+        ).fetchall()
+
+    class_tokens = {
+        str(value).casefold() for value in CLASS_NAMES.values()
+    } | {"necro"}
+    source_class = str(source_class or "").casefold()
+
+    def item_signature(template_id, slot):
+        value = str(template_id).casefold()
+        for token in class_tokens:
+            value = re.sub(
+                rf"(^|_){re.escape(token)}(?=_|$)",
+                lambda match: match.group(1) + "class",
+                value,
+            )
+        archetypes = (
+            "shortbow", "longbow", "defensequiver", "offensequiver",
+            "offenseshield", "defenseshield", "absorber", "staff",
+            "sword", "shield", "quiver", "rifle", "pistol", "mace",
+            "bow", "orb", "axe", "wrench",
+        )
+        replacement = "weapon" if slot == "RightHandSlot" else "offhand"
+        for token in archetypes:
+            value = re.sub(
+                rf"(^|_){re.escape(token)}(?=_|$)",
+                lambda match: match.group(1) + replacement,
+                value,
+            )
+        return value
+
+    def collection_signature(collection):
+        value = str(collection or "").casefold()
+        for token in class_tokens:
+            value = re.sub(
+                rf"(^|_){re.escape(token)}(?=_|$)",
+                lambda match: match.group(1) + "class",
+                value,
+            )
+        return value
+
+    target_by_id = {str(row[0]): row for row in target_rows}
+    target_by_family = {}
+    for row in target_rows:
+        key = (str(row[2] or "").casefold(), str(row[3] or ""),
+               collection_signature(row[5]), item_signature(row[0], str(row[3] or "")))
+        target_by_family.setdefault(key, []).append(row)
+
+    converted = 0
+    missing = set()
+    for item in items:
+        item_id = int(item.item_id)
+        source = rows_by_id.get(str(item.template_id))
+        if source is None:
+            continue
+        allowed = {
+            value.strip().casefold()
+            for value in str(source[1] or "").replace(",", ";").split(";")
+            if value.strip()
+        }
+        if not allowed or "all" in allowed or class_name in allowed:
+            continue
+        target = None
+        # Same-template variants retain the exact set/unique identity.
+        source_tokens = [
+            token for token in allowed
+            if token in class_tokens and re.search(
+                rf"(?i)(^|_){re.escape(token)}(?=_|$)",
+                str(item.template_id),
+            )
+        ]
+        if source_class in source_tokens:
+            source_tokens.remove(source_class)
+            source_tokens.insert(0, source_class)
+        for token in source_tokens:
+            candidate_id = re.sub(
+                rf"(?i)(^|_){re.escape(token)}(?=_|$)",
+                lambda match: match.group(1) + class_name,
+                str(item.template_id),
+            )
+            candidate = target_by_id.get(candidate_id)
+            if (candidate is not None
+                    and str(candidate[3] or "") == str(source[3] or "")
+                    and str(candidate[2] or "").casefold() == str(source[2] or "").casefold()):
+                target = candidate
+                break
+        # Some classes use different weapon and offhand names for the same
+        # authored worlddrop family. Match those by slot, rarity and ID shape.
+        if target is None:
+            family_key = (
+                str(source[2] or "").casefold(),
+                str(source[3] or ""),
+                collection_signature(source[5]),
+                item_signature(item.template_id, str(source[3] or "")),
+            )
+            equivalents = target_by_family.get(family_key, ())
+            if equivalents:
+                target = sorted(equivalents, key=lambda row: str(row[0]))[0]
+
+        if target is not None:
+            item.template_id = str(target[0])
+            converted += 1
+            continue
+
+        missing.add(str(item.template_id))
+        if item_id not in info.equipment_slots:
+            continue
+        info.equipment_slots.pop(int(item_id), None)
+        for storage_name in (
+            "storage_slots", "extra_storage_slots",
+            "bank_storage_slots", "extra_bank_storage_slots",
+        ):
+            getattr(info, storage_name).pop(int(item_id), None)
+        location = free_inventory_location(info)
+        if location is not None:
+            storage_name, slot = location
+            getattr(info, storage_name)[int(item_id)] = slot
+        elif item in info.items:
+            info.items.remove(item)
+            if item not in info.premium_inventory_overflow:
+                info.premium_inventory_overflow.append(item)
+    return converted, tuple(sorted(missing))
 
 
 def free_inventory_location(info: InventoryInfo) -> tuple[str, int] | None:

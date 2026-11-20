@@ -63,6 +63,8 @@ CMS roles do not change in-game character powers or name colors.
 | Events | Search global event templates, start new runs, deactivate or reactivate retained runs, inspect settings and audit history |
 | Season Pass | Start, reschedule, end or resume seasons; edit each level's experience and free/gold/red rewards; write rewards into client databases; list missions |
 | Mystic cubes | Tune the member-only cube drop chance per difficulty and the contents weights, with optional per-tier overrides |
+| Loot rates | Set Possible Rewards rates globally or per map difficulty with 0.01% precision |
+| Cash Shop | Manage the global Andermant shop by section; add item templates with prices and remove or restore offers |
 | Item catalog | Search actual static database templates and start item bookings |
 | Sessions | Inspect issued game sessions and revoke all login sessions for an account |
 | Audit log | Search durable actor, action, target, reason and change history |

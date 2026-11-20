@@ -72,6 +72,7 @@ class NpcShopOverrideStore:
                     price_uc INTEGER NOT NULL DEFAULT 0,
                     price_arena INTEGER NOT NULL DEFAULT 0,
                     price_ic INTEGER NOT NULL DEFAULT 0,
+                    is_recommended INTEGER NOT NULL DEFAULT 0,
                     actor TEXT NOT NULL,
                     reason TEXT NOT NULL,
                     created_at REAL NOT NULL DEFAULT (unixepoch())
@@ -93,8 +94,19 @@ class NpcShopOverrideStore:
                     updated_at REAL NOT NULL DEFAULT (unixepoch()),
                     PRIMARY KEY(shop_id, offer_id)
                 );
+                CREATE TABLE IF NOT EXISTS npc_shop_offer_removals (
+                    shop_id TEXT NOT NULL,
+                    offer_id TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    removed_at REAL NOT NULL DEFAULT (unixepoch()),
+                    PRIMARY KEY(shop_id, offer_id)
+                );
                 """
             )
+            columns = {str(row[1]) for row in db.execute("PRAGMA table_info(npc_shop_offers)")}
+            if "is_recommended" not in columns:
+                db.execute("ALTER TABLE npc_shop_offers ADD COLUMN is_recommended INTEGER NOT NULL DEFAULT 0")
 
     def _shop_row(self, db, shop_id):
         row = db.execute(
@@ -106,7 +118,7 @@ class NpcShopOverrideStore:
             "SELECT Id,Profession,ShopLocaId FROM _Template_NPC "
             "WHERE ShopId=? ORDER BY Id", (shop_id,)
         ).fetchall()
-        if not npcs:
+        if not npcs and str(shop_id) != "global_rc_trader":
             raise ValueError("shop is not assigned to an NPC")
         return row, npcs
 
@@ -209,6 +221,13 @@ class NpcShopOverrideStore:
                     (shop_id,),
                 )
             }
+            removed = {
+                str(row["offer_id"])
+                for row in overlay.execute(
+                    "SELECT offer_id FROM npc_shop_offer_removals WHERE shop_id=?",
+                    (shop_id,),
+                )
+            }
             base_used = set()
             offers = []
             for row in base_rows:
@@ -235,6 +254,8 @@ class NpcShopOverrideStore:
                     "prices": prices,
                     "custom": False,
                     "price_overridden": bool(override),
+                    "removed": offer_id in removed,
+                    "is_recommended": bool(row["IsRecommended"]),
                 })
             for row in custom_rows:
                 category_id = int(row["category_id"])
@@ -257,6 +278,8 @@ class NpcShopOverrideStore:
                     "prices": {key: int(row[key]) for key in PRICE_COLUMNS},
                     "custom": True,
                     "price_overridden": True,
+                    "removed": False,
+                    "is_recommended": bool(row["is_recommended"]),
                 })
             if shop_id == "jewelry_hub_all":
                 special_category = category_ids.get("ItemGemCe55", -1)
@@ -324,7 +347,9 @@ class NpcShopOverrideStore:
                 if value not in used_category_ids:
                     available.append({"category_id": value, "category_name": name})
             # Names can alias one tab, so offers are grouped by category id.
-            offer_counts = Counter(offer["category_id"] for offer in offers)
+            offer_counts = Counter(
+                offer["category_id"] for offer in offers if not offer["removed"]
+            )
             for item in categories:
                 item["offer_count"] = offer_counts[item["category_id"]]
             query = str(search or "").casefold()
@@ -371,7 +396,14 @@ class NpcShopOverrideStore:
                     (shop_id,),
                 )
             }
-        return {"categories": categories, "offers": offers, "prices": prices}
+            removed = {
+                str(row["offer_id"])
+                for row in db.execute(
+                    "SELECT offer_id FROM npc_shop_offer_removals WHERE shop_id=?",
+                    (shop_id,),
+                )
+            }
+        return {"categories": categories, "offers": offers, "prices": prices, "removed": removed}
 
     def create_category(self, shop_id, category_id, category_name, actor, reason):
         with closing(self._static()) as static:
@@ -417,7 +449,7 @@ class NpcShopOverrideStore:
             raise ValueError("an offer must have a non-zero price")
         return result
 
-    def add_offer(self, shop_id, category_id, category_name, item_id, amount, prices, actor, reason):
+    def add_offer(self, shop_id, category_id, category_name, item_id, amount, prices, actor, reason, is_recommended=False):
         from dso_server.protocol.shop_protocol import OFFER_CATEGORY_IDS
         prices = self._checked_prices(prices)
         category_id, amount = int(category_id), int(amount)
@@ -429,42 +461,87 @@ class NpcShopOverrideStore:
             self._shop_row(static, shop_id)
             if static.execute("SELECT 1 FROM _Template_Item WHERE Id=?", (item_id,)).fetchone() is None:
                 raise ValueError("item template was not found")
+            if static.execute(
+                "SELECT 1 FROM _Template_Offer WHERE Item=? LIMIT 1", (item_id,)
+            ).fetchone() is None:
+                raise ValueError("the client has no shop-offer template for this item")
         current = self.detail(shop_id, limit=1_000_000, category_ids=OFFER_CATEGORY_IDS)
-        if category_id not in {row["category_id"] for row in current["categories"]}:
+        if (shop_id != "global_rc_trader"
+                and category_id not in {row["category_id"] for row in current["categories"]}):
             raise ValueError("create this NPC category before adding an offer")
         offer_id = "cms_" + uuid.uuid4().hex
         columns = ",".join(PRICE_COLUMNS)
-        placeholders = ",".join("?" for _ in range(15))
+        placeholders = ",".join("?" for _ in range(16))
         with closing(self._connect()) as db, _LOCK:
             db.execute(
                 "INSERT OR IGNORE INTO npc_shop_categories(shop_id,category_id,category_name,actor,reason) "
                 "VALUES(?,?,?,?,?)", (shop_id, category_id, category_name, actor, reason),
             )
             db.execute(
-                f"INSERT INTO npc_shop_offers(offer_id,shop_id,category_id,category_name,item_id,amount,{columns},actor,reason) "
+                f"INSERT INTO npc_shop_offers(offer_id,shop_id,category_id,category_name,item_id,amount,{columns},is_recommended,actor,reason) "
                 f"VALUES({placeholders})",
                 (offer_id, shop_id, category_id, category_name, item_id, amount,
-                 *(prices[key] for key in PRICE_COLUMNS), actor, reason),
+                 *(prices[key] for key in PRICE_COLUMNS), int(bool(is_recommended)), actor, reason),
             )
             db.commit()
         return offer_id
 
-    def delete_offer(self, shop_id, offer_id):
+    def delete_offer(self, shop_id, offer_id, actor="", reason=""):
         with closing(self._static()) as static, closing(self._connect()) as db, _LOCK:
-            self._shop_row(static, shop_id)
+            shop, _ = self._shop_row(static, shop_id)
             row = db.execute(
                 "SELECT offer_id,item_id,category_id,category_name,amount "
                 "FROM npc_shop_offers WHERE shop_id=? AND offer_id=?",
                 (shop_id, offer_id),
             ).fetchone()
-            if row is None:
-                raise ValueError("only CMS-created offers can be deleted")
-            db.execute(
-                "DELETE FROM npc_shop_offers WHERE shop_id=? AND offer_id=?",
-                (shop_id, offer_id),
-            )
+            if row is not None:
+                db.execute(
+                    "DELETE FROM npc_shop_offers WHERE shop_id=? AND offer_id=?",
+                    (shop_id, offer_id),
+                )
+                result = dict(row)
+            elif offer_id in self._offer_ids(shop):
+                if shop_id != "global_rc_trader":
+                    raise ValueError("only CMS-created NPC shop offers can be deleted")
+                base = static.execute(
+                    "SELECT Id,Item,OfferCategory,Amount FROM _Template_Offer WHERE Id=?",
+                    (offer_id,),
+                ).fetchone()
+                if base is None:
+                    raise ValueError("offer was not found in this shop")
+                from dso_server.protocol.shop_protocol import OFFER_CATEGORY_IDS
+                category_name = str(base["OfferCategory"] or "Misc")
+                result = {
+                    "offer_id": str(base["Id"]), "item_id": str(base["Item"] or ""),
+                    "category_id": OFFER_CATEGORY_IDS.get(category_name, OFFER_CATEGORY_IDS["Misc"]),
+                    "category_name": category_name, "amount": int(base["Amount"] or 1),
+                }
+                db.execute(
+                    "INSERT INTO npc_shop_offer_removals(shop_id,offer_id,actor,reason) "
+                    "VALUES(?,?,?,?) ON CONFLICT(shop_id,offer_id) DO UPDATE SET "
+                    "actor=excluded.actor,reason=excluded.reason,removed_at=unixepoch()",
+                    (shop_id, offer_id, actor, reason),
+                )
+            else:
+                raise ValueError("offer was not found in this shop")
             db.commit()
-            return dict(row)
+            return result
+
+    def restore_offer(self, shop_id, offer_id):
+        with closing(self._static()) as static, closing(self._connect()) as db, _LOCK:
+            shop, _ = self._shop_row(static, shop_id)
+            if offer_id not in self._offer_ids(shop) or static.execute(
+                "SELECT 1 FROM _Template_Offer WHERE Id=?", (offer_id,)
+            ).fetchone() is None:
+                raise ValueError("only a removed client offer can be restored")
+            deleted = db.execute(
+                "DELETE FROM npc_shop_offer_removals WHERE shop_id=? AND offer_id=?",
+                (shop_id, offer_id),
+            ).rowcount
+            if not deleted:
+                raise ValueError("offer is not removed")
+            db.commit()
+            return {"offer_id": str(offer_id)}
 
     def update_prices(self, shop_id, offer_id, prices, actor, reason):
         prices = self._checked_prices(prices)
