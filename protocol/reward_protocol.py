@@ -300,6 +300,37 @@ def decode_ocp_booking_request(payload: bytes) -> OCPBookingRequest:
     return request
 
 
+def encode_ocp_booking_request(
+    offer_id: str, payment_method: str = "in_game"
+) -> bytes:
+    """Encode an OCPBookingCommand (0x010f) from client."""
+    writer = BitWriter()
+    writer.write_uint8(0x8B)
+    writer.write_bytes(OCP_BOOKING_COMMAND.to_bytes(2, "little"))
+    writer.write_string(str(offer_id))
+    writer.write_string(str(payment_method))
+    packet, _ = writer.finish()
+    return packet
+
+
+def encode_notification_action(action: NotificationAction) -> bytes:
+    """Encode a NotificationCommand (0x0088) action branch from client."""
+    writer = BitWriter()
+    writer.write_uint8(0x8B)
+    writer.write_bytes(NOTIFICATION_COMMAND.to_bytes(2, "little"))
+    writer.write_uint8(int(action.notification_type))
+    writer.write_uint8(int(action.subtype))
+    writer.write_uint8(int(action.kind))
+    writer.write_bytes(len(action.instance_guid).to_bytes(2, "little"))
+    writer.write_bytes(action.instance_guid)
+    for v in action.values:
+        writer.write_uint32_le(int(v))
+    writer.write_string(json.dumps(action.payload))
+    writer.write_string(str(action.timestamp))
+    packet, _ = writer.finish()
+    return packet
+
+
 def decode_redeem_voucher_request(payload: bytes) -> str:
     reader = _client_reader(payload, REDEEM_VOUCHER_COMMAND)
     code = reader.read_string()
@@ -387,6 +418,26 @@ def decode_get_black_friday_transactions_info_result(
     return transactions, actor_id
 
 
+def normalize_ocp_offer_id(offer_id: str) -> str:
+    """Normalize offer id aliases (with or without '101_' prefix and '_1.0000_0_NONE' suffix)."""
+    offer_id = str(offer_id)
+    current_offer_keys = {
+        offer.product_key for offer in LOCAL_OCP_OFFERS
+    }
+    if offer_id in current_offer_keys:
+        return offer_id
+    candidate = f"{offer_id}_1.0000_0_NONE"
+    if candidate in current_offer_keys:
+        return candidate
+    candidate_101 = f"101_{offer_id}_1.0000_0_NONE"
+    if candidate_101 in current_offer_keys:
+        return candidate_101
+    candidate_pref = f"101_{offer_id}"
+    if candidate_pref in current_offer_keys:
+        return candidate_pref
+    return offer_id
+
+
 def resolve_ocp_booking_reward(
     offer_id: str,
     payment_method: str,
@@ -394,9 +445,12 @@ def resolve_ocp_booking_reward(
     class_id: int | None = None,
     allow_legacy: bool = False,
 ) -> OCPBookingReward:
-    offer_id = str(offer_id)
+    offer_id = normalize_ocp_offer_id(str(offer_id))
     payment_method = str(payment_method)
-    if payment_method not in {method.name for method in LOCAL_OCP_METHODS}:
+    allowed_methods = {method.name for method in LOCAL_OCP_METHODS} | {
+        "external", "in_game", "ingame", "andermant", "",
+    }
+    if payment_method not in allowed_methods:
         raise ValueError(f'unsupported OCP payment method {payment_method!r}')
     current_offer_keys = {
         offer.product_key for offer in LOCAL_OCP_OFFERS
@@ -1313,4 +1367,8 @@ CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"
 
 LOCAL_OCP_METHODS = (
     OCPMethod("external", "Local development payment provider", 0.0, 0.0),
+    OCPMethod("in_game", "In-game purchase provider", 0.0, 0.0),
+    OCPMethod("ingame", "In-game purchase provider", 0.0, 0.0),
+    OCPMethod("andermant", "Andermant purchase provider", 0.0, 0.0),
+    OCPMethod("", "Default in-game purchase provider", 0.0, 0.0),
 )

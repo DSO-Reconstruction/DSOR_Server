@@ -220,6 +220,7 @@ class AccountRequestHandler(BaseHTTPRequestHandler):
             "/api/validate": self._validate,
             "/api/content/static-db": self._static_database,
             "/api/content/maps": self._map_databases,
+            "/api/in_game_purchase": self._in_game_purchase,
         }
         handler = handlers.get(path)
         if handler is None:
@@ -440,6 +441,66 @@ class AccountRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _in_game_purchase(self, payload: dict) -> None:
+        gameplay_server = getattr(self.service, "gameplay_server", None)
+        if gameplay_server is None:
+            self._fail(
+                HTTPStatus.SERVICE_UNAVAILABLE, "gameplay server is not attached"
+            )
+            return
+        product_key = str(payload.get("product_key", "")).strip()
+        if not product_key:
+            self._fail(HTTPStatus.BAD_REQUEST, "missing product_key")
+            return
+
+        account_id = payload.get("account_id")
+        session_id = payload.get("session_id")
+        username = payload.get("username")
+
+        target_session = None
+        sessions = getattr(gameplay_server, "sessions", None)
+        if sessions is not None:
+            session_list = (
+                list(sessions.values())
+                if hasattr(sessions, "values")
+                else list(sessions)
+            )
+            for s in session_list:
+                if session_id and getattr(s, "login_session_id", None) == session_id:
+                    target_session = s
+                    break
+                if account_id is not None and getattr(s, "account_id", None) == int(account_id):
+                    target_session = s
+                    break
+                if username and getattr(s, "account_username", None) == str(username):
+                    target_session = s
+                    break
+
+        if target_session is None:
+            self._fail(
+                HTTPStatus.NOT_FOUND, "no active gameplay session found for account"
+            )
+            return
+
+        if getattr(target_session, "gameplay_character", None) is None:
+            self._fail(HTTPStatus.CONFLICT, "character is not in-game")
+            return
+
+        try:
+            gameplay_server._trigger_in_game_purchase(target_session, product_key)
+        except Exception as exc:
+            print(f"[AccountService] in_game_purchase failed for {product_key}: {exc}")
+            self._fail(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            return
+
+        print(
+            f"[AccountService] in_game_purchase delivered {product_key} to "
+            f"account {getattr(target_session, 'account_id', None)}"
+        )
+        self._respond(
+            HTTPStatus.OK, {"success": True, "product_key": product_key}
+        )
+
 
 # Internet scanners and abandoned launchers reset or drop the socket before
 # or during a request. socketserver's default handle_error prints a banner
@@ -490,6 +551,7 @@ class AccountService:
         static_database_path: str | os.PathLike[str] | None = None,
         publish_static_database: bool | None = None,
         publish_maps: bool | None = None,
+        gameplay_server=None,
     ) -> None:
         self.host = host
         self.port = int(port)
@@ -499,6 +561,7 @@ class AccountService:
         )
         self._owns_registry = registry is None
         self.character_selection = character_selection
+        self.gameplay_server = gameplay_server
         self.public_host = public_host or os.getenv("DSO_PUBLIC_HOST") or ""
         # The client's primary endpoint (``-ip``/``-port``) is the auth
         # gateway; the chat endpoint (``-bica``/``-bicp``) shares its host.

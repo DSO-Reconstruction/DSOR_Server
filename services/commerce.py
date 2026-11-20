@@ -465,13 +465,46 @@ class CommerceService:
             f'{instance_guid.hex()} ({reward.item_id})'
         )
 
+    def _send_black_friday_transactions_info(self, s: Session) -> None:
+        with s.flow_lock:
+            purchases = dict(getattr(s, "gameplay_timed_offer_purchases", {}))
+            actor_id = getattr(s, "gameplay_remote_actor_id", 0) or 1001
+        bf_transactions = self._clean_black_friday_transactions(purchases)
+        packet, packet_bits = encode_get_black_friday_transactions_info_result(
+            bf_transactions, actor_id=actor_id
+        )
+        s.send_reliable_ordered_split(
+            packet,
+            total_bit_length=packet_bits,
+            track=True,
+            label_prefix="black-friday-transactions-info",
+        )
+
+    def _payment_package_limit(self, product_key: str) -> int:
+        """Retail ``PackageLimit`` of a PaymentPackages key; 0 = unlimited."""
+
+        with sqlite3.connect(
+            self.static_database_path.resolve().as_uri() + "?mode=ro", uri=True
+        ) as database:
+            row = database.execute(
+                "SELECT PackageLimit FROM _Template_PaymentPackages WHERE Id=?",
+                (product_key,),
+            ).fetchone()
+        return max(0, int(row[0])) if row is not None else 0
+
     def _handle_ocp_booking(self, s: Session, payload: bytes) -> None:
         request = decode_ocp_booking_request(payload)
+        offer_id = normalize_ocp_offer_id(request.offer_id)
+        active_events = set(
+            CharacterService._event_catalog(self).active_template_ids()
+        ) | set(
+            CharacterService._event_catalog(self).active_event_flags()
+        )
         if (
-            request.offer_id in EVENT_OCP_PRODUCT_EVENT_IDS
+            offer_id in EVENT_OCP_PRODUCT_EVENT_IDS
             and not ocp_product_event_is_active(
-                request.offer_id,
-                CharacterService._event_catalog(self).active_template_ids(),
+                offer_id,
+                active_events,
             )
         ):
             raise ValueError(
@@ -480,12 +513,33 @@ class CommerceService:
         with s.flow_lock:
             character = s.gameplay_character
         reward = resolve_ocp_booking_reward(
-            request.offer_id,
+            offer_id,
             request.payment_method,
             class_id=(
                 int(character.class_id) if character is not None else None
             ),
         )
+        limit = self._payment_package_limit(reward.offer_id)
+        if limit > 0:
+            with s.flow_lock:
+                purchased = int(
+                    getattr(s, "gameplay_timed_offer_purchases", {}).get(
+                        reward.offer_id, 0
+                    )
+                )
+            if purchased >= limit:
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] rejected OCP booking for "
+                    f"{reward.offer_id}: package limit {limit} reached "
+                    f"({purchased} previously purchased)"
+                )
+                # Refresh the purchase state so the client re-disables the
+                # Buy button without a settlement.
+                self._send_black_friday_transactions_info(s)
+                CharacterService._accept_gameplay_state_command(
+                    s, OCP_BOOKING_COMMAND
+                )
+                return
         instance_guid = uuid.uuid4().bytes
         pending_key = ocp_booking_pending_key(
             instance_guid, reward.offer_id
@@ -496,22 +550,26 @@ class CommerceService:
             # and character selection changes before OCP confirmation arrives.
             claims[pending_key] = (
                 int(character.class_id) + 1
-                if request.offer_id in EVENT_ATTIRE_PRODUCT_KEYS
+                if reward.offer_id in EVENT_ATTIRE_PRODUCT_KEYS
                 and character is not None
                 else 1
             )
+            claims[reward.offer_id] = claims.get(reward.offer_id, 0) + 1
             s.gameplay_timed_offer_purchases = claims
         CharacterService._request_account_save(
             s, 'OCP booking created', flush=True
         )
         self._send_ocp_booking_notification(s, instance_guid, reward)
+        self._settle_ocp_booking(s, pending_key, reward)
         CharacterService._accept_gameplay_state_command(
             s, OCP_BOOKING_COMMAND
         )
+        if any(w in reward.offer_id.lower() for w in ("blackfriday", "early_bird", "queen_chest")):
+            self._send_black_friday_transactions_info(s)
         print(
-            f'[{GAMEPLAY_SERVICE_NAME}] created pending OCP booking '
+            f'[{GAMEPLAY_SERVICE_NAME}] completed OCP booking '
             f'{instance_guid.hex()} for {reward.amount}x '
-            f'{reward.item_id}; awaiting notification confirmation'
+            f'{reward.item_id}'
         )
 
     @staticmethod
@@ -943,6 +1001,29 @@ class CommerceService:
             # The echoed payload is client-controlled; social invitations are
             # only completed through the social store's invitation ledger.
             CharacterService._handle_social_notification_action(self, s, action)
+            return
+        PRESALE_DISCOUNT_NOTIFICATION_KIND = 33
+        if action.kind == PRESALE_DISCOUNT_NOTIFICATION_KIND:
+            # Opening the event shop or clicking an offer tile fires this with
+            # an empty payload, which names no product; picking one for the
+            # player here delivered packages nobody bought. Only an action
+            # that names the offer can settle a purchase.
+            CharacterService._accept_gameplay_state_command(
+                s, CLIENT_NOTIFICATION_COMMAND
+            )
+            product_key = (
+                action.payload.get("productKey")
+                or action.payload.get("offerId")
+                or action.payload.get("package")
+            )
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] presale discount notification action: "
+                f"guid={action.instance_guid.hex()} subtype={action.subtype} "
+                f"values={action.values} payload={action.payload!r} "
+                f"purchase={product_key!r}"
+            )
+            if product_key:
+                self._trigger_in_game_purchase(s, str(product_key))
             return
         if "dailyLoginCount" not in action.payload:
             if (
@@ -1806,6 +1887,25 @@ class CommerceService:
                 self, s, item_id, amount,
             )
 
+    def _clean_black_friday_transactions(self, purchases: dict) -> tuple[str, ...]:
+        clean = set()
+        for k in purchases:
+            k_str = str(k)
+            if k_str.startswith("ocp-booking:"):
+                continue
+            lower = k_str.lower()
+            if (
+                "blackfriday" in lower
+                or "early_bird" in lower
+                or "queen_chest" in lower
+            ):
+                clean.add(k_str)
+                if "_1.0000_0_NONE" in k_str:
+                    clean.add(k_str.replace("_1.0000_0_NONE", ""))
+                else:
+                    clean.add(f"{k_str}_1.0000_0_NONE")
+        return tuple(sorted(clean))
+
     def _handle_get_black_friday_transactions_info(
         self, s: Session, payload: bytes
     ) -> None:
@@ -1815,12 +1915,7 @@ class CommerceService:
         with s.flow_lock:
             purchases = dict(getattr(s, "gameplay_timed_offer_purchases", {}))
             actor_id = getattr(s, "gameplay_remote_actor_id", 0) or 1001
-        bf_transactions = tuple(
-            str(k) for k in purchases
-            if "blackfriday" in str(k).lower()
-            or "early_bird" in str(k).lower()
-            or "queen_chest" in str(k).lower()
-        )
+        bf_transactions = self._clean_black_friday_transactions(purchases)
         packet, packet_bits = encode_get_black_friday_transactions_info_result(
             bf_transactions, actor_id=actor_id
         )
@@ -1838,7 +1933,8 @@ class CommerceService:
     def _trigger_in_game_purchase(
         self, s: Session, product_key: str
     ) -> None:
-        """Trigger an instant in-game OCP purchase for Early Bird or Queen chests."""
+        """Trigger an instant in-game OCP purchase for Black Friday packages, Early Bird or Queen chests."""
+        product_key = normalize_ocp_offer_id(product_key)
         with s.flow_lock:
             character = s.gameplay_character
         class_id = int(character.class_id) if character is not None else None
@@ -1847,10 +1943,13 @@ class CommerceService:
         )
         instance_guid = uuid.uuid4().bytes
         pending_key = ocp_booking_pending_key(instance_guid, reward.offer_id)
+        short_key = reward.offer_id.replace("_1.0000_0_NONE", "")
         with s.flow_lock:
             claims = dict(getattr(s, "gameplay_timed_offer_purchases", {}))
             claims[pending_key] = 1
             claims[reward.offer_id] = claims.get(reward.offer_id, 0) + 1
+            claims[short_key] = claims.get(short_key, 0) + 1
+            claims[product_key] = claims.get(product_key, 0) + 1
             s.gameplay_timed_offer_purchases = claims
         CharacterService._request_account_save(
             s, "OCP booking created", flush=True
@@ -1861,12 +1960,7 @@ class CommerceService:
         with s.flow_lock:
             purchases = dict(getattr(s, "gameplay_timed_offer_purchases", {}))
             actor_id = getattr(s, "gameplay_remote_actor_id", 0) or 1001
-        bf_transactions = tuple(
-            str(k) for k in purchases
-            if "blackfriday" in str(k).lower()
-            or "early_bird" in str(k).lower()
-            or "queen_chest" in str(k).lower()
-        )
+        bf_transactions = self._clean_black_friday_transactions(purchases)
         packet, packet_bits = encode_get_black_friday_transactions_info_result(
             bf_transactions, actor_id=actor_id
         )
@@ -1876,6 +1970,10 @@ class CommerceService:
             track=True,
             label_prefix="black-friday-transactions-info",
         )
+        CharacterService._persist_gameplay_session(
+            self, s, reason="in-game package purchase"
+        )
         print(
-            f"[{GAMEPLAY_SERVICE_NAME}] in-game purchase completed for {product_key}"
+            f"[{GAMEPLAY_SERVICE_NAME}] in-game purchase completed for {product_key}: "
+            f"delivered {reward.item_id} (amount={reward.amount})"
         )

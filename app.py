@@ -364,7 +364,10 @@ class ServerApplication:
                 # The database the game services loaded, for dsor clients to
                 # copy (services/content.py).
                 static_database_path=self.characters.static_database_path,
+                gameplay_server=self.characters,
             )
+        if self.accounts is not None:
+            self.accounts.gameplay_server = self.characters
         # Every service resolves the hello's session GUID, so the
         # character list and creation can be scoped to one account.
         for service in self.services:

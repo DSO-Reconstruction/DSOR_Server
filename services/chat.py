@@ -199,6 +199,7 @@ class ChatServer(RakNetServer):
             self._send_system_message(
                 s,
                 "Admin commands: !help | !item <templateId> [amount] | "
+                "!buy <productKey> | "
                 "!map <mapId> [difficulty] | !where | !speed [character name] | "
                 "!unlockmaps [character name] | !immortal [character name] | "
                 "!killmobs | !stress <amount> [templateId] | "
@@ -332,6 +333,19 @@ class ChatServer(RakNetServer):
             )
             self._send_system_message(
                 s, f"Granted {amount}x {arguments[1]}."
+            )
+            return
+        if command in {"!buy", "!bf", "!chest"}:
+            if len(arguments) != 2:
+                raise ValueError("usage: !buy <product_key> (e.g. !bf 1, !chest 1, !buy 101_blackfriday_package_1)")
+            key = arguments[1].strip()
+            if command == "!bf" and key.isdigit():
+                key = f"101_blackfriday_package_{key}"
+            elif command == "!chest" and key.isdigit():
+                key = f"101_queen_chest_{key}"
+            gameplay_server._trigger_in_game_purchase(gameplay, key)
+            self._send_system_message(
+                s, f"Purchased and delivered package {key}."
             )
             return
         if command == "!map":

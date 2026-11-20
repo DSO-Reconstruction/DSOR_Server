@@ -485,62 +485,26 @@ EVENT_OCP_PRODUCT_EVENT_IDS = {
     KINGSHILL_SEWERS_RAMPAGING_HURRICANE_PRODUCT_KEY:
         "e_ks_01_blitz_payment_offer_silent",
     DESERT_OF_ESSENCES_ATTIRE_PRODUCT_KEY: "desert_of_essences_02",
-    BLACK_FRIDAY_REALM_PATH_PACKAGE_PRODUCT_KEY: (
+    # Legacy Black Friday packages stay with the dedicated silent sales event
+    # only. The current Black Friday rotation (Early Bird chests and the
+    # Queen's Chests) no longer advertises them, and their delivered loot bag
+    # duplicates its own contents when opened.
+    BLACK_FRIDAY_REALM_PATH_PACKAGE_PRODUCT_KEY:
         "event_sell_blackfriday_package_silent",
-        "black_friday_event",
-        "BlackFridayEvent",
-        "black_friday_early_event",
-        "BlackFridayEarlyEvent",
-    ),
-    BLACK_FRIDAY_ANDERMANT_PACKAGE_PRODUCT_KEY: (
+    BLACK_FRIDAY_ANDERMANT_PACKAGE_PRODUCT_KEY:
         "event_sell_blackfriday_package_silent",
-        "black_friday_event",
-        "BlackFridayEvent",
-        "black_friday_early_event",
-        "BlackFridayEarlyEvent",
-    ),
-    BLACK_FRIDAY_JEWEL_PACKAGE_1_PRODUCT_KEY: (
+    BLACK_FRIDAY_JEWEL_PACKAGE_1_PRODUCT_KEY:
         "event_sell_blackfriday_package_silent",
-        "black_friday_event",
-        "BlackFridayEvent",
-        "black_friday_early_event",
-        "BlackFridayEarlyEvent",
-    ),
-    BLACK_FRIDAY_DELUXE_PACKAGE_1_PRODUCT_KEY: (
+    BLACK_FRIDAY_DELUXE_PACKAGE_1_PRODUCT_KEY:
         "event_sell_blackfriday_package_silent",
-        "black_friday_event",
-        "BlackFridayEvent",
-        "black_friday_early_event",
-        "BlackFridayEarlyEvent",
-    ),
-    BLACK_FRIDAY_GEM_PACKAGE_PRODUCT_KEY: (
+    BLACK_FRIDAY_GEM_PACKAGE_PRODUCT_KEY:
         "event_sell_blackfriday_package_silent",
-        "black_friday_event",
-        "BlackFridayEvent",
-        "black_friday_early_event",
-        "BlackFridayEarlyEvent",
-    ),
-    BLACK_FRIDAY_JEWEL_PACKAGE_2_PRODUCT_KEY: (
+    BLACK_FRIDAY_JEWEL_PACKAGE_2_PRODUCT_KEY:
         "event_sell_blackfriday_package_silent",
-        "black_friday_event",
-        "BlackFridayEvent",
-        "black_friday_early_event",
-        "BlackFridayEarlyEvent",
-    ),
-    BLACK_FRIDAY_RUNE_PACKAGE_PRODUCT_KEY: (
+    BLACK_FRIDAY_RUNE_PACKAGE_PRODUCT_KEY:
         "event_sell_blackfriday_package_silent",
-        "black_friday_event",
-        "BlackFridayEvent",
-        "black_friday_early_event",
-        "BlackFridayEarlyEvent",
-    ),
-    BLACK_FRIDAY_DELUXE_PACKAGE_2_PRODUCT_KEY: (
+    BLACK_FRIDAY_DELUXE_PACKAGE_2_PRODUCT_KEY:
         "event_sell_blackfriday_package_silent",
-        "black_friday_event",
-        "BlackFridayEvent",
-        "black_friday_early_event",
-        "BlackFridayEarlyEvent",
-    ),
     EARLY_BIRD_CHEST_1_PRODUCT_KEY: (
         "black_friday_early_event",
         "BlackFridayEarlyEvent",
@@ -1047,27 +1011,60 @@ DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS = {
     ),
     BLACK_FRIDAY_REALM_PATH_PACKAGE_PRODUCT_KEY: (
         ("black_friday_realm_path_package", 1),
+        ("lockpick", 100),
+        ("scaling_dungeon_boss_key_01", 50),
+        ("misc_resurrect_partymember_01", 10),
+        ("e_ful_01_teleport_01", 5),
+        ("e_new_01_teleport_01", 5),
+        ("crafting_stateobject_key", 5),
     ),
     BLACK_FRIDAY_ANDERMANT_PACKAGE_PRODUCT_KEY: (
         ("black_friday_andermant_package", 1),
+        ("money_rc", 30000),
     ),
     BLACK_FRIDAY_JEWEL_PACKAGE_1_PRODUCT_KEY: (
         ("black_friday_jewel_package_1", 1),
+        ("lootbox_level_rallye_jewels_random", 1),
+        ("difficulty_key_common", 10),
+        ("scaling_dungeon_boss_key_01", 20),
+        ("lockpick", 100),
+        ("money_vc_gold_no_auto_use", 200),
+        ("money_rc", 1000),
     ),
     BLACK_FRIDAY_DELUXE_PACKAGE_1_PRODUCT_KEY: (
         ("black_friday_deluxe_package_1", 1),
+        ("deluxe_teaser_one_month", 1),
+        ("money_rc", 6000),
     ),
     BLACK_FRIDAY_GEM_PACKAGE_PRODUCT_KEY: (
         ("black_friday_gem_package", 1),
+        ("gem_ruby_e", 6),
+        ("gem_ruby_f", 4),
+        ("gem_ruby_g", 2),
+        ("gem_block_e", 6),
+        ("gem_block_f", 4),
+        ("gem_block_g", 2),
     ),
     BLACK_FRIDAY_JEWEL_PACKAGE_2_PRODUCT_KEY: (
         ("black_friday_jewel_package_2", 1),
+        ("jewel_skill_cooldown_common", 1),
+        ("jewel_boss_gem_drop_common", 1),
+        ("jewel_ingredient_find_common", 1),
+        ("money_rc", 300),
     ),
     BLACK_FRIDAY_RUNE_PACKAGE_PRODUCT_KEY: (
         ("black_friday_rune_package", 1),
+        ("ingredient_rune_resistance_ice_critical_hitpoints", 1),
+        ("ce_darkforce_key", 5),
+        ("mortis_key", 5),
+        ("crafting_stateobject_key_broken", 10),
+        ("lockpick", 100),
+        ("ingredient_rune_dust", 2000),
     ),
     BLACK_FRIDAY_DELUXE_PACKAGE_2_PRODUCT_KEY: (
         ("black_friday_deluxe_package_2", 1),
+        ("deluxe_teaser_one_year", 1),
+        ("money_rc", 30000),
     ),
     EARLY_BIRD_CHEST_2_PRODUCT_KEY: (
         ("trails_selection_chest", 1),
