@@ -36,12 +36,6 @@ from dso_server.services.admin_items import _display_name, item_language_directo
 _SCHEDULE_LOCK = threading.RLock()
 
 LINKED_SILENT_EVENTS: Mapping[str, tuple[str, ...]] = MappingProxyType({
-    "black_friday_event": (
-        "event_sell_blackfriday_package_silent",
-    ),
-    "black_friday_early_event": (
-        "event_sell_blackfriday_package_silent",
-    ),
     "christmas_2012": (
         "christmas_2012_silent",
         "e_chr_calendar_map_silent",
