@@ -72,7 +72,7 @@ def recover_command_ids(exe_path: Path) -> dict[str, dict]:
     ]
 
     candidate_targets = [
-        (0x140CF114C, 0x140CF1184),  # release261_220+
+        (0x140CF114C, 0x140CF1184),  # release261_220/221
         (0x140CF100C, 0x140CF1044),  # release261_219
     ]
 
@@ -262,7 +262,7 @@ def main() -> int:
     parser.add_argument(
         "--json",
         type=Path,
-        default=Path("docs") / "command_ids_rel261_220.json",
+        default=Path("docs") / "command_ids_rel261_221.json",
         help="Output JSON file path",
     )
     parser.add_argument(

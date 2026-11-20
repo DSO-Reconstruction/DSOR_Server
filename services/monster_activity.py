@@ -590,6 +590,13 @@ class MonsterActivityService:
                                 cast_id=attack.cast_id,
                                 direction=attack.direction,
                                 variant=attack.variant,
+                                bullet_id=str(
+                                    getattr(attack, "bullet_id", "")
+                                    or getattr(
+                                        attack.definition, "bullet_id", ""
+                                    )
+                                    or ""
+                                ),
                             ),
                             attack.attacker_actor_id,
                             context,
@@ -622,6 +629,11 @@ class MonsterActivityService:
                                 additional_target_positions=(
                                     target_position,
                                 ) * (bullet_count - 1),
+                                bullet_id=str(
+                                    getattr(attack, "bullet_id", "")
+                                    or getattr(definition, "bullet_id", "")
+                                    or ""
+                                ),
                             ),
                             attack.attacker_actor_id,
                             context,
@@ -662,6 +674,13 @@ class MonsterActivityService:
                                 additional_target_actor_ids=additional_targets,
                                 target_positions=(target_position,)
                                 * bullet_count,
+                                bullet_id=str(
+                                    getattr(attack, "bullet_id", "")
+                                    or getattr(
+                                        attack.definition, "bullet_id", ""
+                                    )
+                                    or ""
+                                ),
                             ),
                             attack.attacker_actor_id,
                             context,

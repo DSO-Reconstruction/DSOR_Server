@@ -1183,6 +1183,9 @@ class MonsterAttackDefinition:
     end_width: float = 0.0
     angle_degrees: float = 0.0
     movement_skill: bool = False
+    # _Template_Skill.SkillBulletId: the client's BulletSkillCommand carries
+    # this string so the projectile visual matches the authored bullet.
+    bullet_id: str = ""
 
     @property
     def support(self) -> bool:
@@ -2786,6 +2789,7 @@ def _load_runtime_template(
                         end_width=max(0.0, float(skill_row[33] or 0.0)),
                         angle_degrees=max(0.0, float(skill_row[34] or 0.0)),
                         movement_skill=mortis_charge,
+                        bullet_id=skill_bullet_id,
                     ),
                 )
             )

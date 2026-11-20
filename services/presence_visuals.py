@@ -652,6 +652,7 @@ class PresenceVisualService:
                         skill.direction,
                         skill.variant,
                         skill.derived_flag,
+                        skill.bullet_id,
                     ),
                     int(source_actor_id),
                     context,
