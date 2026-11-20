@@ -44,22 +44,25 @@ function bindPrivileges(p, id) {
   });
 }
 
-function identitySection(p, range) {
+function identitySection(p, range, online) {
   const level = range ? `<label>Level<input name="level" type="number" min="${range[0]}" max="${range[1]}" step="1" value="${p.level}"><small>This class can be between level ${range[0]} and ${range[1]}. Experience is set to the start of the new level.</small></label>`
     : `<label>Level<input name="level" type="number" value="${p.level}" disabled><small>This class has no authored levels to choose from.</small></label>`;
-  return section("Name, level and gender", `<form id="identity-form" class="form-page">
+  const characterClass = `<label>Class<select name="class_id" ${online ? "disabled" : ""}>${classes.map((name, id) =>
+    `<option value="${id}" ${p.class_id === id ? "selected" : ""} ${id === 4 && p.class_id !== 4 ? "disabled" : ""}>${esc(id === 4 && p.class_id !== 4 ? `${name} (unavailable)` : name)}</option>`).join("")}</select><small>${online ? "Class can only be changed while the character is offline." : p.class_id === 4 ? "Niwalk has no compatible equipment templates in this server build. Select a playable class to restore the character." : "Niwalk is unavailable until compatible equipment templates are added. Other class-specific item variants are converted when an equivalent exists."}</small></label>`;
+  return section("Character identity", `<form id="identity-form" class="form-page">
     <fieldset class="form-section"><legend>Identity</legend><div class="form-grid">
       <label>Name<input name="name" type="text" maxlength="32" value="${esc(p.name)}" autocomplete="off" spellcheck="false" dir="auto"><small>Up to 32 characters, no leading or trailing spaces. No other character may already use it.</small></label>
       ${level}
       <label>Gender<select name="gender"><option value="0" ${p.gender === 0 ? "selected" : ""}>Male</option><option value="1" ${p.gender === 1 ? "selected" : ""}>Female</option></select></label>
+      ${characterClass}
     </div>
-      <p class="help">Works while the character is offline. Change only what you want to edit; the other fields are left alone. Renaming updates the roster and chat. A gender change updates the character appearance when they next enter a map. Moving to a different level resets experience to that level's authored starting value and does not grant talents or recompute gear.</p>
+      <p class="help">Name, level, and gender can be changed independently. Renaming updates the roster and chat. A gender change updates the character appearance when they next enter a map. Moving to a different level resets experience to that level's authored starting value and does not grant talents or recompute gear.</p>
     </fieldset>
     <p id="identity-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button type="submit">Save character identity</button></div></form>`);
 }
 
-function bindIdentity(p, id, range) {
+function bindIdentity(p, id, range, online) {
   $("#identity-form").addEventListener("submit", async event => {
     event.preventDefault();
     const form = event.target, button = form.querySelector("button[type=submit]");
@@ -70,6 +73,12 @@ function bindIdentity(p, id, range) {
       if (name !== p.name) changes.name = name;
       const gender = Number(values.get("gender"));
       if (gender !== p.gender) changes.gender = gender;
+      if (!online) {
+        const classId = Number(values.get("class_id"));
+        if (!Number.isInteger(classId) || (classId !== p.class_id && (classId < 0 || classId > 3)))
+          throw new Error("Choose a playable character class.");
+        if (classId !== p.class_id) changes.class_id = classId;
+      }
       if (range) {
         const level = Number(values.get("level"));
         if (!Number.isInteger(level) || level < range[0] || level > range[1])
@@ -79,11 +88,17 @@ function bindIdentity(p, id, range) {
       if (!Object.keys(changes).length) throw new Error("No changes to save.");
       const summary = ["name" in changes ? `renamed to ${changes.name}` : "",
         "gender" in changes ? `gender changed to ${changes.gender === 1 ? "female" : "male"}` : "",
-        "level" in changes ? `now level ${changes.level}` : ""].filter(Boolean).join(", ");
+        "level" in changes ? `now level ${changes.level}` : "",
+        "class_id" in changes ? `class changed to ${classes[changes.class_id]}` : ""].filter(Boolean).join(", ");
       const reason = await confirmAction("Save character identity?", `${p.name}: ${summary}.`, "Save identity");
       if (reason === null) return;
-      await api(`/api/characters/${id}/identity`, {changes, reason});
-      notice(`Saved: ${summary}.`);
+      const result = await api(`/api/characters/${id}/identity`, {changes, reason});
+      const itemSummary = "class_id" in changes
+        ? ` ${result.items_converted || 0} class-specific item${result.items_converted === 1 ? "" : "s"} converted.` +
+          (result.item_templates_without_class_variant?.length
+            ? ` ${result.item_templates_without_class_variant.length} template${result.item_templates_without_class_variant.length === 1 ? "" : "s"} had no safe variant; any equipped copies were moved to storage or overflow.` : "")
+        : "";
+      notice(`Saved: ${summary}.${itemSummary}`);
       window.dispatchEvent(new Event("reload-page"));
     } catch (error) {
       const target = $("#identity-error");
@@ -434,13 +449,13 @@ export async function characterPage(route) {
       ["Honor points", esc(s?.honor_points ?? 0)], ["Wins / losses", `${s?.pvp_matches_won ?? 0} / ${s?.pvp_matches_lost ?? 0}`],
       ["Kills / deaths", `${s?.pvp_kills ?? 0} / ${s?.pvp_deaths ?? 0}`], ["Title", esc(s?.achievement_title || "None")]
     ]));
-    let tools = identitySection(p, data.level_range) + privilegeSection(p);
+    let tools = identitySection(p, data.level_range, data.online) + privilegeSection(p);
     let snapshot = "";
-    result.mount = () => { bindIdentity(p, id, data.level_range); bindPrivileges(p, id); };
+    result.mount = () => { bindIdentity(p, id, data.level_range, data.online); bindPrivileges(p, id); };
     if (s) {
       tools += wisdomSection(data.wisdom);
       tools += honorSection(s.honor_points ?? 0);
-      result.mount = () => { bindIdentity(p, id, data.level_range); bindWisdom(data.wisdom, id); bindHonor(s.honor_points ?? 0, id); bindPrivileges(p, id); };
+      result.mount = () => { bindIdentity(p, id, data.level_range, data.online); bindWisdom(data.wisdom, id); bindHonor(s.honor_points ?? 0, id); bindPrivileges(p, id); };
       const balances = {...s.currencies}; delete balances.game;
       snapshot = '<div class="columns">' + section("Currencies", table(["Currency", "Balance"], Object.entries(balances).map(([k, v]) => [esc(human(k)), esc(v)]))) +
         section("Additional currencies", table(["Currency", "Balance"], Object.entries(s.currencies.game || {}).map(([k, v]) => [esc(human(k)), esc(v)]))) + '</div>';

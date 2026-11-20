@@ -41,11 +41,14 @@ from dso_server.protocol.currency_protocol import (
 )
 from dso_server.protocol.inventory_codec import (
     INVENTORY_INFO_COMMAND, clone_inventory_info, clone_item_info,
-    free_inventory_location, owned_inventory_items,
+    convert_class_incompatible_items, free_inventory_location,
+    owned_inventory_items,
 )
 from dso_server.protocol.player_init_protocol import (
-    CHAPTER_PROGRESS_COMMAND, ServerCommand, encode_server_command_batch,
+    CHAPTER_PROGRESS_COMMAND, ServerCommand, TalentCategorySelection,
+    encode_server_command_batch,
 )
+from dso_server.protocol.talent_protocol import ACTIVE_SKILL_TALENT_PRESELECTION
 from dso_server.protocol.quest_protocol import QUEST_UPDATE_COMMAND, QuestUpdate
 from dso_server.runtime.admin_commands import call_admin_command
 from dso_server.services.accounts import FailureThrottle
@@ -79,7 +82,7 @@ ADMIN_SESSION_SECONDS = 4 * 3600
 ADMIN_REMEMBER_SECONDS = 30 * 24 * 3600
 # The NewPlayer administrator flags stored on a character profile.
 GAME_PRIVILEGES = frozenset({"admin_privileges", "admin_name_color"})
-IDENTITY_FIELDS = frozenset({"name", "level", "gender"})
+IDENTITY_FIELDS = frozenset({"name", "level", "gender", "class_id"})
 # CharacterGeneration rejects exactly these names, so a CMS rename must not
 # produce one the client would refuse the next time the character is created.
 CHARACTER_NAME_MAX_BYTES = 32
@@ -916,7 +919,7 @@ class AdminService:
                 "gameplay_sessions": int(target is not None)}
 
     def set_identity(self, cid, changes, account, reason):
-        """Rename a character or move it to another level.
+        """Update a character's identity, including an offline class change.
 
         The roster record is what every account save rebuilds the profile from,
         and an online session holds its own copy whose level is carried back
@@ -924,14 +927,42 @@ class AdminService:
         the live copies all have to change together.
         """
         if not isinstance(changes, dict) or not changes or set(changes) - IDENTITY_FIELDS:
-            raise ValueError("choose a new name, level, or gender")
+            raise ValueError("choose a new name, level, gender, or class")
         profile = self.store.get_profile(cid)
-        class_name = CLASS_NAMES.get(profile.class_id, "")
+        owner = self.registry.character_owner(cid)
+        if profile is None or owner is None:
+            raise ValueError("character must exist and belong to an account")
+        class_id = profile.class_id
+        class_name = CLASS_NAMES.get(class_id, "")
         values = {}
+        class_change = False
         if "name" in changes:
             values["name"] = character_name(changes["name"])
+        if "class_id" in changes:
+            target_class_id = changes["class_id"]
+            if type(target_class_id) is not int:
+                raise ValueError("class must be a playable character class")
+            class_change = target_class_id != profile.class_id
+            if class_change and target_class_id not in (0, 1, 2, 3):
+                raise ValueError(
+                    "Niwalk cannot be selected because this server has no compatible equipment templates; "
+                    "choose Dragonknight, Spellweaver, Ranger, or Steam Mechanicus"
+                )
+            if class_change:
+                if cid in self.online_characters():
+                    raise ValueError("class can only be changed while the character is offline")
+                target_name = CLASS_NAMES[target_class_id]
+                bounds = self.level_range(target_class_id)
+                if bounds is None or not bounds[0] <= profile.level <= bounds[1]:
+                    raise ValueError(
+                        f"current level {profile.level} is not available for {target_name}; "
+                        "change the level first"
+                    )
+                class_id = target_class_id
+                class_name = target_name
+                values["class_id"] = target_class_id
         if "level" in changes:
-            bounds = self.level_range(profile.class_id)
+            bounds = self.level_range(class_id)
             if type(changes["level"]) is not int:
                 raise ValueError("level must be a whole number")
             if bounds is None:
@@ -945,9 +976,36 @@ class AdminService:
                 raise ValueError("gender must be 0 or 1")
             values["gender"] = changes["gender"]
         saved = dict(values)
-        if "level" in values:
+        if "level" in values or class_change:
+            target_level = values.get("level", profile.level)
             saved["progression_u32"] = player_level_xp(self.static_database_path,
-                                                       class_name, values["level"])[0]
+                                                       class_name, target_level)[0]
+        state = self.store.get(cid) if class_change else None
+        converted_items = 0
+        unconverted_items = ()
+        if state is not None:
+            inventory = clone_inventory_info(state.inventory)
+            converted_items, unconverted_items = self._convert_class_items(
+                inventory, CLASS_NAMES.get(profile.class_id, ""), class_name,
+            )
+            saved_state = replace(
+                state,
+                inventory=inventory,
+                talent_categories=(
+                    TalentCategorySelection(
+                        ACTIVE_SKILL_TALENT_PRESELECTION, (), ()
+                    ),
+                    TalentCategorySelection(0, (), ()),
+                    TalentCategorySelection(0, (), ()),
+                    TalentCategorySelection(0, (), ()),
+                ),
+                skill_talent_presets={},
+                category_talent_presets={},
+            )
+        else:
+            saved_state = None
+        if class_change:
+            saved["quickbar_skill_slots"] = None
         application, roster, chat_sessions, gameplay_sessions = self.application, False, 0, 0
         if "name" in values and any(other.character_id != cid
                                     and other.name.casefold() == values["name"].casefold()
@@ -967,12 +1025,20 @@ class AdminService:
                     roster = True
                     for key, value in values.items():
                         setattr(character, key, value)
-                    if "level" in values:
+                    if class_change:
+                        character.quickbar_skill_slots = None
+                    if "level" in values or class_change:
                         character.progression_u32 = saved["progression_u32"]
                     service.character_roster_revision += 1
             if roster:
                 service._reencode_character_selection()
-        self.store.put_profile(replace(profile, **saved), flush=True)
+            elif class_change:
+                raise ValueError("character is not in the loaded roster; refresh the CMS and try again")
+        updated_profile = replace(profile, **saved)
+        if saved_state is not None:
+            self.store.put(saved_state, profile=updated_profile, flush=True)
+        else:
+            self.store.put_profile(updated_profile, flush=True)
         if application is not None:
             chat = getattr(application, "chat", None)
             if chat is not None:
@@ -990,9 +1056,26 @@ class AdminService:
                 self.live.refresh_progress(cid, previous_level=profile.level)
         details = {**values, "reason": reason, "experience": saved.get("progression_u32"),
                    "roster": roster, "chat_sessions": chat_sessions,
-                   "gameplay_sessions": gameplay_sessions}
+                   "gameplay_sessions": gameplay_sessions,
+                   "items_converted": converted_items,
+                   "item_templates_without_class_variant": list(unconverted_items)}
         self.repository.audit(account.username, "character.identity", cid, details)
-        return {"ok": True, "chat_sessions": chat_sessions, "gameplay_sessions": gameplay_sessions}
+        return {"ok": True, "chat_sessions": chat_sessions,
+                "gameplay_sessions": gameplay_sessions,
+                "class_id": class_id if class_change else profile.class_id,
+                "items_converted": converted_items,
+                "item_templates_without_class_variant": list(unconverted_items)}
+
+    def _convert_class_items(self, inventory, source_class, target_class):
+        """Convert owned items using their own template class restrictions."""
+        if not target_class or source_class == target_class:
+            return 0, ()
+        return convert_class_incompatible_items(
+            inventory,
+            static_database_path=self.static_database_path,
+            class_name=target_class,
+            source_class=source_class,
+        )
 
     @staticmethod
     def _update_session_character(server, session, cid, changes, *, progression_xp=None):
@@ -2007,8 +2090,11 @@ class AdminService:
             if len(parts) == 4 and parts[3] == "offers":
                 category_name = payload.get("category_name")
                 item_id = payload.get("item_id")
-                if not isinstance(category_name, str) or category_name not in OFFER_CATEGORY_IDS:
+                if not isinstance(category_name, str) or (category_name != "Deals" and category_name not in OFFER_CATEGORY_IDS):
                     raise ValueError("choose a category supported by the game client")
+                is_recommended = bool(payload.get("is_recommended", False)) or category_name == "Deals"
+                if category_name == "Deals":
+                    category_name = "Misc"
                 if not isinstance(item_id, str) or not 1 <= len(item_id) <= 200:
                     raise ValueError("item template ID is required")
                 if type(payload.get("amount")) is not int:
@@ -2017,8 +2103,10 @@ class AdminService:
                     shop_id, OFFER_CATEGORY_IDS[category_name], category_name,
                     item_id, payload["amount"], payload.get("prices"),
                     account.username, reason,
+                    is_recommended=is_recommended,
                 )
-                self.repository.audit(account.username, "npc_shop.offer.create", offer_id, {
+                action = "cash_shop.offer.create" if shop_id == "global_rc_trader" else "npc_shop.offer.create"
+                self.repository.audit(account.username, action, offer_id, {
                     "shop_id": shop_id, "item_id": item_id,
                     "category": category_name, "amount": payload["amount"],
                     "prices": payload.get("prices"), "reason": reason,
@@ -2027,9 +2115,20 @@ class AdminService:
                         "live_refreshed": self._refresh_open_npc_shops(shop_id)}
             if len(parts) == 6 and parts[3] == "offers" and parts[5] == "delete":
                 offer_id = unquote(parts[4])
-                deleted = self.npc_shop_overrides.delete_offer(shop_id, offer_id)
-                self.repository.audit(account.username, "npc_shop.offer.delete", offer_id, {
+                deleted = self.npc_shop_overrides.delete_offer(
+                    shop_id, offer_id, account.username, reason,
+                )
+                action = "cash_shop.offer.delete" if shop_id == "global_rc_trader" else "npc_shop.offer.delete"
+                self.repository.audit(account.username, action, offer_id, {
                     "shop_id": shop_id, **deleted, "reason": reason,
+                })
+                return {"ok": True, "live_refreshed": self._refresh_open_npc_shops(shop_id)}
+            if len(parts) == 6 and parts[3] == "offers" and parts[5] == "restore":
+                offer_id = unquote(parts[4])
+                restored = self.npc_shop_overrides.restore_offer(shop_id, offer_id)
+                action = "cash_shop.offer.restore" if shop_id == "global_rc_trader" else "npc_shop.offer.restore"
+                self.repository.audit(account.username, action, offer_id, {
+                    "shop_id": shop_id, **restored, "reason": reason,
                 })
                 return {"ok": True, "live_refreshed": self._refresh_open_npc_shops(shop_id)}
             if len(parts) == 6 and parts[3] == "offers" and parts[5] == "price":

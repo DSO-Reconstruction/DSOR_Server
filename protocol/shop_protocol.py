@@ -560,6 +560,7 @@ def load_shop_offers(
             raise ValueError(f"unknown NPC shop {shop_id!r}")
         from dso_server.persistence.npc_shop_overrides import NpcShopOverrideStore
         cms_overrides = NpcShopOverrideStore(static_database_path).overrides(shop_id)
+        removed_offers = cms_overrides.get("removed", set())
         class_name = CLASS_NAMES.get(int(class_id), "").casefold()
         active_events = {
             str(value).strip().casefold()
@@ -595,6 +596,8 @@ def load_shop_offers(
         offers: list[ShopOffer] = []
         categories: list[int] = []
         for offer_id in _split_strings(shop["Offers"]):
+            if str(offer_id) in removed_offers:
+                continue
             row = database.execute(
                 "SELECT * FROM _Template_Offer WHERE Id=?", (offer_id,)
             ).fetchone()
@@ -806,7 +809,7 @@ def load_shop_offers(
                     timed_offer_amount=0,
                     min_player_level=1,
                     max_player_level=200,
-                    is_recommended=False,
+                    is_recommended=bool(row.get("is_recommended", 0)),
                     dynamic_price=False,
                     is_new=False,
                     auto_identify=False,

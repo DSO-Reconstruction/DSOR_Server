@@ -13,6 +13,25 @@ const pricesText = prices => priceFields.filter(([key]) => Number(prices[key]) >
 const priceInputs = prices => `<div class="form-grid">${priceFields.map(([key, label]) =>
   `<label>${esc(label)}<input name="${key}" type="number" min="0" max="4294967295" step="1" value="${esc(prices?.[key] ?? 0)}" required></label>`).join("")}</div>`;
 const readPrices = form => Object.fromEntries(priceFields.map(([key]) => [key, Number(new FormData(form).get(key))]));
+const cashShopSections = [
+  ["Deals", [["Deals", "Deals", 46]]],
+  ["General", [["General items", "Misc", 46], ["Packages", "Pakete", 14], ["Glyphs", "Glyph", 10], ["Mounts", "Mount", 13], ["Pets", "Pet", 15], ["Emotes", "Emote", 22]]],
+  ["Travel Items", [["Travel items", "TravelItem", 41], ["Event travel items", "TravelItemEvent", 42], ["Parallel World travel items", "TravelItemParallelWorld", 43]]],
+  ["Essences", [["Essences", "Essence", 11]]],
+  ["Potions", [["Potions", "Potion", 0], ["Elixirs", "Elixir", 1], ["Tonics", "Tonic", 2], ["Buff items", "BuffItem", 3]]],
+  ["Gems", [["Gems", "ItemGem", 4], ["Level 55 gems", "ItemGemCe55", 30]]],
+  ["Equipment · Weapons", [["One-handed weapons", "OneHand", 5], ["Two-handed weapons", "TwoHand", 6]]],
+  ["Equipment · Armor", [["Armor", "Armor", 7], ["Shields", "Shield", 8], ["Jewelry", "Jewelry", 9]]],
+  ["Equipment · Skins", [["Skins", "SkinConsumable", 44], ["Costumes", "Costume", 24], ["Temporary costumes", "TempCostume", 23], ["Colors", "Color", 12], ["Cloaks", "Cloak", 20]]],
+  ["Event", [["Event items", "Event", 16]]],
+];
+const cashShopOption = name => cashShopSections.flatMap(([sectionName, options]) =>
+  options.map(([label, categoryName, categoryId]) => ({sectionName, label, category_name: categoryName, category_id: categoryId}))
+).find(option => option.category_name === name);
+const cashShopCategoryLabel = name => {
+  const option = cashShopOption(name);
+  return option ? `${option.sectionName} · ${option.label}` : name;
+};
 
 export async function npcShopsPage(route) {
   const data = await api(`/api/npc-shops?${query(route.params)}`);
@@ -32,9 +51,10 @@ export async function npcShopsPage(route) {
   };
 }
 
-export async function npcShopPage(route) {
-  const shopId = decodeURIComponent(route.parts[1]), tab = route.parts[2] || "offers";
-  const root = `npc-shops/${encodeURIComponent(shopId)}`;
+export async function npcShopPage(route, {cashShop = false} = {}) {
+  const shopId = cashShop ? "global_rc_trader" : decodeURIComponent(route.parts[1]);
+  const tab = cashShop ? (route.parts[1] || "offers") : (route.parts[2] || "offers");
+  const root = cashShop ? "cash-shop" : `npc-shops/${encodeURIComponent(shopId)}`;
   const data = await api(`/api/npc-shops/${encodeURIComponent(shopId)}?${query(tab === "offers" ? route.params : {limit: 1})}`);
   const shop = data.shop;
   const editOffer = route.params.edit ? data.offers.find(row => row.offer_id === route.params.edit) : null;
@@ -47,9 +67,12 @@ export async function npcShopPage(route) {
     <label>Client category<select name="category_name" required>${data.available_categories.map(c => `<option value="${esc(c.category_name)}">${esc(c.category_name)} (${c.category_id})</option>`).join("")}</select></label>
     <p id="category-error" class="error-text" role="alert"></p><div class="form-actions"><button type="submit">Create category</button></div></form>` :
     `<p class="muted">All client-supported category tabs are already in use by this shop.</p>`;
-  const categoryOptions = data.categories.map(c => `<option value="${esc(c.category_name)}">${esc(c.category_name)}</option>`).join("");
-  const addForm = data.categories.length ? `<form id="shop-offer-form" class="form-page">
-    <h2>Add item for sale</h2>
+  const categoryOptions = cashShop
+    ? cashShopSections.map(([sectionName, options]) => `<optgroup label="${esc(sectionName)}">${options.map(([label, name]) =>
+        `<option value="${esc(name)}">${esc(label)}</option>`).join("")}</optgroup>`).join("")
+    : data.categories.map(c => `<option value="${esc(c.category_name)}">${esc(c.category_name)}</option>`).join("");
+  const addForm = cashShop || data.categories.length ? `<form id="shop-offer-form" class="form-page">
+    <h2>${cashShop ? "Add item to a Cash Shop section" : "Add item for sale"}</h2>
     <div class="form-grid"><label>Category<select name="category_name" required>${categoryOptions}</select></label>
       <label>Item template ID<input id="npc-item-id" name="item_id" required maxlength="200" autocomplete="off"></label>
       <label>Quantity per purchase<input name="amount" type="number" min="1" max="1000" step="1" value="1" required></label></div>
@@ -59,22 +82,26 @@ export async function npcShopPage(route) {
   const offerRows = data.offers.map(row => [
     `<span>${esc(row.item_name)}${row.custom ? " <small>CMS</small>" : row.price_overridden ? " <small>Custom price</small>" : ""}</span>`,
     `<code class="resource mono">${esc(row.item_id)}</code><span class="sub">${esc(row.offer_id)}</span>`,
-    esc(row.category_name), esc(row.amount), esc(pricesText(row.prices)),
-    `${link("Edit price", root, {...route.params, edit: row.offer_id})}${row.custom ? ` <button type="button" class="danger" data-delete-offer="${esc(row.offer_id)}" data-item-name="${esc(row.item_name)}">Delete</button>` : ""}`
+    esc(cashShop ? (row.is_recommended ? `Deals · ${cashShopCategoryLabel(row.category_name)}` : cashShopCategoryLabel(row.category_name)) : row.category_name), esc(row.amount), esc(pricesText(row.prices)),
+    `${link("Edit price", root, {...route.params, edit: row.offer_id})}${row.removed && cashShop
+      ? `<button type="button" class="secondary" data-restore-offer="${esc(row.offer_id)}" data-item-name="${esc(row.item_name)}">Restore</button>`
+      : (!row.removed && (cashShop || row.custom)
+        ? `<button type="button" class="danger" data-delete-offer="${esc(row.offer_id)}" data-item-name="${esc(row.item_name)}">Remove</button>`
+        : "")}`
   ]);
-  const categoryTable = table(["Game tab", "Category ID", "Offers", "Origin"], data.categories.map(c => [
-    esc(c.category_name), esc(c.category_id), esc(c.offer_count ?? "—"), c.created ? "CMS created" : "Existing"
+  const categoryTable = table([cashShop ? "Cash Shop section" : "Game tab", "Category ID", "Offers", "Origin"], data.categories.map(c => [
+    esc(cashShop ? cashShopCategoryLabel(c.category_name) : c.category_name), esc(c.category_id), esc(c.offer_count ?? "—"), c.created ? "CMS created" : "Existing"
   ]), "This shop has no categories.");
   const categoryFilter = `<select id="offer-category" aria-label="Category"><option value="">All categories</option>${data.categories.map(c =>
-    `<option value="${esc(c.category_id)}" ${route.params.category === String(c.category_id) ? "selected" : ""}>${esc(c.category_name)} (${esc(c.offer_count ?? "—")})</option>`).join("")}</select>`;
+    `<option value="${esc(c.category_id)}" ${route.params.category === String(c.category_id) ? "selected" : ""}>${esc(cashShop ? cashShopCategoryLabel(c.category_name) : c.category_name)} (${esc(c.offer_count ?? "—")})</option>`).join("")}</select>`;
   const views = {
     offers: () => editForm + collectionWorkspace(toolbar(route, "Search offers by item, offer ID, or category", categoryFilter),
       collectionPanel("Shop offers", collectionRecords(["Item", "Template / offer", "Category", "Amount", "Price", "Action"], offerRows,
         "This NPC shop has no matching offers."), pager(data, route), data.total, "Static and CMS offers with their current prices.")),
     add: () => addForm || '<p class="muted">Create a category tab first; offers are sold from a tab.</p>',
     categories: () => stats([["NPCs", shop.npcs.length], ["Offers", data.offer_total ?? data.total], ["Can sell items", shop.player_can_sell ? "Yes" : "No"]]) +
-      section("Shop categories", categoryTable) + categoryForm +
-      section("NPCs using this shop", facts(shop.npcs.map(npc => [npc.npc_id, `${npc.profession || "NPC"} · ${npc.shop_loca_id || "No shop label"}`])))
+      section(cashShop ? "Cash Shop sections" : "Shop categories", categoryTable) + (cashShop ? "" : categoryForm) +
+      (cashShop ? "" : section("NPCs using this shop", facts(shop.npcs.map(npc => [npc.npc_id, `${npc.profession || "NPC"} · ${npc.shop_loca_id || "No shop label"}`]))))
   };
   if (!views[tab]) throw new Error("NPC shop page not found.");
   const view = views[tab]();
@@ -85,14 +112,14 @@ export async function npcShopPage(route) {
     ["Category tabs", data.categories.length],
     ["Players can sell", shop.player_can_sell ? "Yes" : "No"]
   ]));
-  const workspace = isLegacyInterface() || tab === "categories" ? view
+  const workspace = cashShop || isLegacyInterface() || tab === "categories" ? view
     : `<div class="shop-workspace"><div>${view}</div><aside aria-label="Shop profile">${context}</aside></div>`;
   const result = {
-    title: shopId,
-    description: "NPC shop inventory and pricing. Saved changes refresh players who currently have this shop open.",
-    breadcrumbs: [["NPC shops", "npc-shops"], [shopId]],
-    actions: link("Back to NPC shops", "npc-shops", {}, "button secondary"),
-    html: tabs([["Offers", root, {}, data.offer_total ?? data.total], ["Add item", `${root}/add`], ["Categories and NPCs", `${root}/categories`]], tab === "offers" ? root : `${root}/${tab}`) + workspace
+    title: cashShop ? "Cash Shop" : shopId,
+    description: cashShop ? "Edit the in-game shop offers by section. Changes refresh this shop when a player has it open." : "NPC shop inventory and pricing. Saved changes refresh players who currently have this shop open.",
+    breadcrumbs: cashShop ? [["Administration", "status"], ["Cash Shop"]] : [["NPC shops", "npc-shops"], [shopId]],
+    actions: cashShop ? "" : link("Back to NPC shops", "npc-shops", {}, "button secondary"),
+    html: tabs([[cashShop ? "Items" : "Offers", root, {}, data.offer_total ?? data.total], ["Add item", `${root}/add`], [cashShop ? "Sections" : "Categories and NPCs", `${root}/categories`]], tab === "offers" ? root : `${root}/${tab}`) + workspace
   };
   result.mount = () => {
     bindSearch(route);
@@ -171,9 +198,9 @@ export async function npcShopPage(route) {
         const offerId = button.dataset.deleteOffer;
         const itemName = button.dataset.itemName;
         const reason = await confirmAction(
-          "Delete this CMS offer?",
-          `${itemName} will be removed from ${shopId}. This cannot be undone.`,
-          "Delete offer"
+          "Remove this offer?",
+          `${itemName} will be removed from ${cashShop ? "the Cash Shop" : shopId}.`,
+          "Remove offer"
         );
         if (reason === null) return;
         button.disabled = true;
@@ -183,10 +210,36 @@ export async function npcShopPage(route) {
             {reason}
           );
           notice(!Object.hasOwn(result, "live_refreshed")
-            ? "Offer deleted, but the game server needs a restart to load the change."
+            ? "Offer removed, but the game server needs a restart to load the change."
             : result.live_refreshed
-              ? `Offer deleted; refreshed ${result.live_refreshed} open shop(s).`
-              : "Offer deleted; it will be gone next time the shop is opened.");
+              ? `Offer removed; refreshed ${result.live_refreshed} open shop(s).`
+              : "Offer removed; it will be gone next time the shop is opened.");
+          window.dispatchEvent(new Event("reload-page"));
+        } catch (error) {
+          button.disabled = false;
+          notice(error.message, true);
+        }
+      });
+    }
+    for (const button of document.querySelectorAll("[data-restore-offer]")) {
+      button.addEventListener("click", async () => {
+        const offerId = button.dataset.restoreOffer;
+        const itemName = button.dataset.itemName;
+        const reason = await confirmAction(
+          "Restore this offer?",
+          `${itemName} will be available in ${cashShop ? "the Cash Shop" : shopId} again.`,
+          "Restore offer"
+        );
+        if (reason === null) return;
+        button.disabled = true;
+        try {
+          const result = await api(
+            `/api/npc-shops/${encodeURIComponent(shopId)}/offers/${encodeURIComponent(offerId)}/restore`,
+            {reason}
+          );
+          notice(result.live_refreshed
+            ? `Offer restored; refreshed ${result.live_refreshed} open shop(s).`
+            : "Offer restored; it will return next time the shop is opened.");
           window.dispatchEvent(new Event("reload-page"));
         } catch (error) {
           button.disabled = false;
