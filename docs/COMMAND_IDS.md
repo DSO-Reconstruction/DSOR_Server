@@ -1,20 +1,69 @@
 # Recovering the client's command id table
 
-## Server default: `release261_220`
+## Server default: `release261_221`
 
-The server uses [`command_ids_rel261_220.json`](command_ids_rel261_220.json)
-by default, matching the R261_220 client. Set `DSO_COMMAND_IDS` to
-`docs/command_ids_rel261_219.json`, `docs/command_ids_rel261_1024.json`,
-`docs/command_ids_rel261_203.json`, or `docs/command_ids_rel261_192.json` to
-select an older client table. `DSO_COMMAND_IDS=builtin` selects the original
-patch5 literals.
+The server uses [`command_ids_rel261_221.json`](command_ids_rel261_221.json)
+by default, matching the R261_221 client. Set `DSO_COMMAND_IDS` to
+`docs/command_ids_rel261_220.json`, `docs/command_ids_rel261_219.json`,
+`docs/command_ids_rel261_1024.json`, `docs/command_ids_rel261_203.json`, or
+`docs/command_ids_rel261_192.json` to select an older client table.
+`DSO_COMMAND_IDS=builtin` selects the original patch5 literals.
 
 This analysis recovers registered command names, IDs, and actor scoping flags.
 The existing `DSO_SKILL_HIT_MARKER_BITS=3` setting is retained as verified from
 the HitCommand decoder. For `dro_client64-patch5` or the DSOR client, set
 `DSO_COMMAND_IDS=builtin` and `DSO_SKILL_HIT_MARKER_BITS=0`.
 
-## R261_220 update analysis
+## R261_221 update analysis
+
+The executable analyzed was
+`%LOCALAPPDATA%\Temp\DSOClient\dlcache\dro_client64.exe`. Its embedded
+revision marker is `261_221` (`release261_221_64b`, Nov 19 2026 19:44:43);
+SHA-256:
+`306a2cfb71e790a8a49ddb1f59dcb068b4b8345102b1dd4dbb79885f8f27b818`.
+The recovered table is [`command_ids_rel261_221.json`](command_ids_rel261_221.json).
+
+The scan recovered all 371 command classes with 371 distinct IDs spanning 1–381,
+with zero duplicate IDs. Compared with R261_220:
+- Command classes: 371 (100% identical, 0 additions, 0 deletions)
+- Command IDs: Exactly identical across all 371 classes
+- Vtables and creators: The same 371 classes register at byte-identical
+  vtable and creator addresses, so command registration code did not move.
+- Wire layouts: Verified in the R261_221 binary against the codecs this server
+  emits/consumes:
+  - `HitCommand` writer — u32 tick, hit-tag array, flags +0x48/+0x49/+0x4a,
+    u64 current/maximum health, four u32s, float impact, flags
+    +0x80/+0x81, combat-text string +0x88 (unchanged; marker bits remain 3)
+  - `NewPlayerCommand` reader — string +0xe8, u64 +0xf0, u32 +0xf8,
+    u32 +0xfc, u8 +0x100 armament state, actor placement +0x104
+  - `InventoryInfoCommand` reader — floats +0x1d8/+0x1dc/+0x1e0,
+    final bool +0x1e4
+  - `ActorStatsUpdateCommand` reader — u64 stat id +0x20, two floats
+    +0x28/+0x2c
+  - `CharacterSelectionCommand` writer — u8/u8, three u32s, bool, two u32s
+    (extra header u32 present), locale string, character count
+  - `GetBlackFridayTransactionsInfoResultCommand` reader — dynamic string
+    array
+  - `BulletSkillCommand` reader/writer (`0x0048`) — base cast header with the
+    inheritance bit, 4-float direction, u8 variant, then the cast skill's
+    `_Template_Skill.SkillBulletId` as a u16-length string (`+0x130`); only
+    when the base flag `+0xcc` is set, a u32 target (`+0x2c`) and a u8-count
+    array of 3-float positions follow. `TargetPointBulletSkillCommand`
+    (`0x0049`) and `TargetBulletSkillCommand` (`0x004b`) delegate to this
+    reader before their own position/target arrays, so all three carry the
+    string.
+
+R261_221 is a same-day follow-up to R261_220 (both built Nov 19 2026); the
+command table is unchanged, but the bullet-skill family does require the
+codec correction above. The server previously wrote `BulletSkillCommand`
+bodies without the `SkillBulletId` string, so a live R261_221 client rejected
+every server-sent projectile cast with
+`Could not decode command (ID: '72', 'BulletSkillCommand')!` (observed
+2026-11-20 with `pw001_boss_UndeadMageShot`). The string equals
+`_Template_Skill.SkillBulletId`; a captured client cast of `iceball`
+(skill index 1889) carried `mage_icemissile_bullet_new`, matching that row.
+
+## Server default: `release261_220`
 
 The executable analyzed was
 `%LOCALAPPDATA%\Temp\DSOClient\dlcache\dro_client64.exe`. Its embedded

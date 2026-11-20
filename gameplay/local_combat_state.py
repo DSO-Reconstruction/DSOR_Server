@@ -1167,6 +1167,10 @@ class PlayerSkillGeometry:
     cooldown_seconds: float = 0.0
     cooldown_category: str = ""
     force_execution: bool = False
+    # ``_Template_Skill.SkillBulletId``: the client's BulletSkillCommand
+    # carries this string so the projectile visual matches the authored
+    # bullet (minion shots authored it too; empty sent no projectile).
+    bullet_id: str = ""
 
 
 def _metadata_float(metadata: dict[str, str], key: str) -> float:
@@ -1217,6 +1221,11 @@ class VictimStatusEffectDefinition:
     # a radius: the creator holds the child only while it stands inside
     # (Banner of War's cheaper skills and resource regeneration, 5.75 m).
     creator_aura: str = ""
+    # A summon support effect whose health ticks the summon loop already
+    # applies authoritatively (bloodmage Guardian: the heal fires from
+    # local_combat_state's support pass). Delivered to the client for its
+    # authored sequence, but the status engine must not tick it again.
+    server_tick_suppressed: bool = False
     # Actor item-set programs distinguish native persistent zero-duration
     # effects from ordinary transient skill effects.
     persistent: bool = False
@@ -1610,6 +1619,9 @@ class MonsterAttack:
     # strikes every player it passes. 0.0: not a lane shot.
     lane_release_at: float = 0.0
     lane_reach: float = 0.0
+    # ``PlayerSkillGeometry.bullet_id`` of the cast that authored this attack
+    # (player summons have no MonsterAttackDefinition to carry it).
+    bullet_id: str = ""
 
 
 HOMING_MOTION_TYPES = frozenset({"homing", "lockonhoming"})
@@ -3549,7 +3561,8 @@ class LocalCombatState:
                         COALESCE(b.StaticCollision, 0),
                         COALESCE(s.CoolDown, 0),
                         COALESCE(s.CoolDownCategory, ''),
-                        COALESCE(s.ForceExecution, 0)
+                        COALESCE(s.ForceExecution, 0),
+                        COALESCE(s.SkillBulletId, '')
                 FROM _Template_Skill AS s
                 LEFT JOIN _Template_SkillBullet AS b
                   ON b.Id = s.SkillBulletId
@@ -3706,6 +3719,7 @@ class LocalCombatState:
                 cooldown_seconds=max(0.0, float(row[45] or 0.0)),
                 cooldown_category=str(row[46] or "").strip(),
                 force_execution=bool(row[47]),
+                bullet_id=str(row[48] or ""),
             )
             if row is not None
             else None
@@ -3796,6 +3810,89 @@ class LocalCombatState:
             heal_fraction, heal_radius, heal_interval, taunt_radius,
             tuple(support_effects),
         )
+
+    @classmethod
+    def _summoner_heal_support(
+        cls,
+        database: sqlite3.Connection,
+        trigger_aura_id: str,
+    ) -> tuple[float, tuple[VictimStatusEffectDefinition, ...]]:
+        """Owner heal two auras deep from a summon's trigger aura.
+
+        Bloodmage's Guardian authors ``..._heal_trigger_aura`` on the summon
+        skill: it applies ``..._heal_trigger`` on the minion, which adds the
+        Summoner-targeted ``..._heal_aura``; that aura's child restores
+        CurrHealthPoints every tick and carries the heal sequence
+        (restore_health_globe). Returns the aura's tick interval and the
+        child definitions, marked so the status engine never ticks them in
+        addition to the summon support pass.
+        """
+
+        aura_row = database.execute(
+            'SELECT COALESCE(AuraEffectId, \'\') '
+            'FROM _Template_StatusEffect WHERE Id=? LIMIT 1',
+            (trigger_aura_id,),
+        ).fetchone()
+        if aura_row is None:
+            return 1.0, ()
+        for trigger_id in str(aura_row[0] or '').split(';'):
+            trigger_id = trigger_id.strip()
+            if not trigger_id:
+                continue
+            trigger_row = database.execute(
+                'SELECT COALESCE(StartModifiers, \'\') '
+                'FROM _Template_StatusEffect WHERE Id=? LIMIT 1',
+                (trigger_id,),
+            ).fetchone()
+            applied_ids = []
+            for encoded in str(trigger_row[0] or '').split(';') if trigger_row else ():
+                kind, separator, arguments = encoded.partition(':')
+                if not separator or kind.strip().casefold() != 'actorstatuseffect':
+                    continue
+                parts = [part.strip() for part in arguments.split(',')]
+                if len(parts) < 2 or not parts[0].casefold().startswith('add'):
+                    continue
+                if parts[1]:
+                    applied_ids.append(parts[1])
+            for applied_id in applied_ids:
+                applied_row = database.execute(
+                    'SELECT COALESCE(AuraEffectId, \'\'), '
+                    'COALESCE(AuraTargets, \'\'), '
+                    'COALESCE(StatusEffectTickRate, 1) '
+                    'FROM _Template_StatusEffect WHERE Id=? LIMIT 1',
+                    (applied_id,),
+                ).fetchone()
+                if (
+                    applied_row is None
+                    or str(applied_row[1] or '').strip().casefold()
+                    != 'summoner'
+                ):
+                    continue
+                interval = max(0.1, float(applied_row[2] or 1.0))
+                for heal_id in str(applied_row[0] or '').split(';'):
+                    heal_id = heal_id.strip()
+                    if not heal_id:
+                        continue
+                    heal_row = database.execute(
+                        'SELECT COALESCE(StartModifiers, \'\') '
+                        'FROM _Template_StatusEffect WHERE Id=? LIMIT 1',
+                        (heal_id,),
+                    ).fetchone()
+                    if heal_row is None or 'CurrHealthPoints:' not in str(
+                        heal_row[0] or ''
+                    ):
+                        continue
+                    support = tuple(
+                        replace(effect, server_tick_suppressed=True)
+                        for effect in cls._load_victim_status_effects(
+                            database,
+                            heal_id,
+                            default_trigger='immediate',
+                        )
+                    )
+                    if support:
+                        return interval, support
+        return 1.0, ()
 
     def player_summon_definition(
         self,
@@ -4257,6 +4354,7 @@ class LocalCombatState:
         heal_radius = definition.heal_radius
         heal_interval_seconds = definition.heal_interval_seconds
         damage_multiplier = getattr(definition, "damage_multiplier", 1.0)
+        heal_support_effects: tuple[VictimStatusEffectDefinition, ...] = ()
         for effect in geometry.user_status_effects:
             if effect.chance <= 0.0:
                 continue
@@ -4270,6 +4368,18 @@ class LocalCombatState:
                 heal_interval_seconds = 1.0
                 if len(effect.values) > 1 and effect.values[1] != 0.0:
                     damage_multiplier = max(0.0, 1.0 + float(effect.values[1]))
+                if not heal_support_effects:
+                    path = self.encounter.static_database_path
+                    with closing(sqlite3.connect(
+                        f"file:{path.as_posix()}?mode=ro", uri=True,
+                    )) as database:
+                        interval, heal_support_effects = (
+                            self._summoner_heal_support(
+                                database, effect.resource_id
+                            )
+                        )
+                    if heal_support_effects:
+                        heal_interval_seconds = interval
         return replace(
             definition,
             lifetime_seconds=max(
@@ -4281,6 +4391,29 @@ class LocalCombatState:
             heal_radius=heal_radius,
             heal_interval_seconds=heal_interval_seconds,
             damage_multiplier=damage_multiplier,
+            support_status_effects=tuple(
+                # The support pass re-applies this each heal interval with
+                # the rank-scaled fraction the talent stacks produced, so
+                # the client plays the authored heal sequence at the same
+                # cadence as the authoritative heal.
+                replace(
+                    effect,
+                    values=(heal_fraction, *effect.values[1:]),
+                    duration_ticks=max(
+                        1,
+                        round(
+                            (heal_interval_seconds + 0.25)
+                            * SERVER_TICKS_PER_SECOND
+                        ),
+                    ),
+                )
+                if effect.server_tick_suppressed
+                else effect
+                for effect in (
+                    *definition.support_status_effects,
+                    *heal_support_effects,
+                )
+            ),
         )
 
     def _player_summon_shape(
@@ -13656,6 +13789,7 @@ class LocalCombatState:
                     else None
                 ),
                 bullet_count=getattr(geometry, "bullet_count", 1),
+                bullet_id=getattr(geometry, "bullet_id", ""),
             )
             self.last_player_summon_attack_at[actor_id] = current_time
             if rotation_turn is not None:

@@ -259,6 +259,7 @@ class PlayerCombatService(PlayerCastTimingService):
                 client_skill.direction,
                 client_skill.variant,
                 client_skill.derived_flag,
+                client_skill.bullet_id,
             )
         elif command_id == TARGET_POINT_BULLET_SKILL_COMMAND:
             client_skill = decode_target_point_bullet_skill(
@@ -273,6 +274,7 @@ class PlayerCombatService(PlayerCastTimingService):
                 client_skill.direction,
                 client_skill.variant,
                 client_skill.derived_flag,
+                client_skill.bullet_id,
             )
         else:
             client_skill = decode_bullet_skill(

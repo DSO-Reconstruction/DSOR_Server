@@ -1934,6 +1934,10 @@ class CombatResolutionService:
             s: Session, *, instance_id: int, definition) -> None:
         """Schedule authored health or cooldown ticks on the accepted effect."""
 
+        if getattr(definition, "server_tick_suppressed", False):
+            # Its owning subsystem (the summon support pass) already applies
+            # this heal; ticking it here too would double it.
+            return
         with s.flow_lock:
             combat = s.gameplay_combat_state
             character = s.gameplay_character

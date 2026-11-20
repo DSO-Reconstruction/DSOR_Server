@@ -106,6 +106,10 @@ class BulletSkill:
     direction: tuple[float, float, float, float]
     variant: int
     derived_flag: bool | None = None
+    # ``_Template_Skill.SkillBulletId``; the native serializer writes it after
+    # the variant byte (u16 length + UTF-8 bytes) and the decoder always reads
+    # it.  The client uses it to build the projectile visual.
+    bullet_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -126,6 +130,7 @@ class BulletSkillServer:
     direction: tuple[float, float, float, float]
     variant: int
     derived_flag: bool | None = None
+    bullet_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -149,6 +154,7 @@ class TargetBulletSkill:
     additional_target_actor_ids: tuple[int, ...] = ()
     target_positions: tuple[tuple[float, float, float], ...] = ()
     derived_flag: bool | None = None
+    bullet_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -167,6 +173,7 @@ class TargetPointBulletSkill:
         tuple[float, float, float], ...
     ] = ()
     derived_flag: bool | None = None
+    bullet_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -339,6 +346,19 @@ def _read_optional_derived_flag(reader: BitReader) -> bool | None:
     return reader.read_bool() if reader.remaining % 8 == 1 else None
 
 
+def _read_bullet_visual_id(reader: BitReader) -> str:
+    """Read ``SkillBulletId`` written after the bullet variant byte.
+
+    ``BulletSkillCommand::Serialize`` stores the cast skill's SkillBulletId
+    (``_Template_Skill.SkillBulletId``, e.g. ``mage_icemissile_bullet_new``)
+    as a u16-length string.  Synthesized test payloads may end before it.
+    """
+
+    if reader.remaining < 16:
+        return ""
+    return reader.read_string()
+
+
 def decode_skill(
     payload: bytes, bit_length: int | None = None
 ) -> SkillCast:
@@ -410,10 +430,7 @@ def decode_target_point_bullet_skill(
     derived_flag = _read_optional_derived_flag(reader)
     direction = tuple(reader.read_float() for _ in range(4))
     variant = reader.read_uint8()
-    if reader.remaining >= 16:
-        size = struct.unpack("<H", reader.read_bytes(2))[0]
-        if size > 0 and reader.remaining >= size * 8:
-            reader.read_bytes(size)
+    bullet_id = _read_bullet_visual_id(reader)
     # An early reconstructed fixture omitted the generated array count.
     # Accept it read-only, while every native current command uses the count.
     if reader.remaining == 96:
@@ -437,6 +454,7 @@ def decode_target_point_bullet_skill(
         positions[0],
         positions[1:],
         derived_flag,
+        bullet_id,
     )
     if reader.remaining:
         raise ValueError("TargetPointBulletSkillCommand has unread bits")
@@ -461,10 +479,7 @@ def decode_bullet_skill(
     derived_flag = _read_optional_derived_flag(reader)
     direction = tuple(reader.read_float() for _ in range(4))
     variant = reader.read_uint8()
-    if reader.remaining >= 16:
-        size = struct.unpack("<H", reader.read_bytes(2))[0]
-        if size > 0 and reader.remaining >= size * 8:
-            reader.read_bytes(size)
+    bullet_id = _read_bullet_visual_id(reader)
     if derived_flag and reader.remaining >= 32:
         reader.read_uint32_le()
         if reader.remaining >= 8:
@@ -479,6 +494,7 @@ def decode_bullet_skill(
         direction=direction,
         variant=variant,
         derived_flag=derived_flag,
+        bullet_id=bullet_id,
     )
     if reader.remaining:
         raise ValueError("BulletSkill has unread bits")
@@ -511,10 +527,7 @@ def decode_target_bullet_skill(
     derived_flag = _read_optional_derived_flag(reader)
     direction = tuple(reader.read_float() for _ in range(4))
     variant = reader.read_uint8()
-    if reader.remaining >= 16:
-        size = struct.unpack("<H", reader.read_bytes(2))[0]
-        if size > 0 and reader.remaining >= size * 8:
-            reader.read_bytes(size)
+    bullet_id = _read_bullet_visual_id(reader)
     target_actor_id = reader.read_uint32_le() if reader.remaining >= 32 else 0
     additional = tuple(
         reader.read_uint32_le()
@@ -542,6 +555,7 @@ def decode_target_bullet_skill(
         additional,
         positions,
         derived_flag,
+        bullet_id,
     )
 
 
@@ -643,6 +657,7 @@ def encode_monster_attack_batch(
             for component in value.direction:
                 writer.write_float(component)
             writer.write_uint8(value.variant)
+            writer.write_string(value.bullet_id)
             writer.write_uint32_le(attack.actor_id)
             _write_skill_context(writer, attack.context)
         elif isinstance(attack, TargetPointBulletSkillServerCommand):
@@ -654,6 +669,7 @@ def encode_monster_attack_batch(
             for component in value.direction:
                 writer.write_float(component)
             writer.write_uint8(value.variant)
+            writer.write_string(value.bullet_id)
             positions = (
                 value.target_position,
                 *value.additional_target_positions,
@@ -739,6 +755,7 @@ def encode_monster_attack_batch(
             for component in value.direction:
                 writer.write_float(component)
             writer.write_uint8(value.variant)
+            writer.write_string(value.bullet_id)
             writer.write_uint32_le(value.target_actor_id)
             writer.write_uint8(len(value.additional_target_actor_ids))
             for actor_id in value.additional_target_actor_ids:
@@ -809,6 +826,7 @@ def decode_monster_attack_batch(
                 direction=tuple(reader.read_float() for _ in range(4)),
                 variant=reader.read_uint8(),
                 derived_flag=flag,
+                bullet_id=_read_bullet_visual_id(reader),
             )
             actor_id = reader.read_uint32_le()
             attacks.append(
@@ -820,6 +838,7 @@ def decode_monster_attack_batch(
             level, index, angle, tick, cast_id, flag = _read_skill_base(reader)
             direction = tuple(reader.read_float() for _ in range(4))
             variant = reader.read_uint8()
+            bullet_id = _read_bullet_visual_id(reader)
             target_position_count = reader.read_uint8()
             if target_position_count == 0:
                 raise ValueError(
@@ -840,6 +859,7 @@ def decode_monster_attack_batch(
                 target_positions[0],
                 target_positions[1:],
                 flag,
+                bullet_id,
             )
             actor_id = reader.read_uint32_le()
             context = _read_skill_context(reader)
@@ -948,6 +968,7 @@ def decode_monster_attack_batch(
             ) = _read_skill_base(reader)
             direction = tuple(reader.read_float() for _ in range(4))
             variant = reader.read_uint8()
+            bullet_id = _read_bullet_visual_id(reader)
             target_actor_id = reader.read_uint32_le()
             if target_actor_id == 0:
                 raise ValueError(
@@ -979,6 +1000,7 @@ def decode_monster_attack_batch(
                 additional_target_actor_ids,
                 target_positions,
                 derived_flag,
+                bullet_id,
             )
             attacks.append(
                 TargetBulletSkillServerCommand(
