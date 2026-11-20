@@ -1212,7 +1212,10 @@ def credit_currency_template(
     fixed_name = {
         "money_rc": "andermant",
         "money_vc": "gold",
+        "money_vc_copper": "gold",
+        "money_vc_silver": "gold",
         "money_vc_gold": "gold",
+        "money_vc_gold_no_auto_use": "gold",
         "money_gc_no_auto_use": "glyph",
         "money_uc_no_auto_use": "legacy",
         "money_hc_no_auto_use": "badge",

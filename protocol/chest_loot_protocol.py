@@ -357,6 +357,11 @@ _NEW_YEAR_FORTUNE_COOKIE_REWARDS = (
     ("epicmount_goldfish", 1),
 )
 _AUTHORED_WEIGHTED_CHESTS: dict[str, tuple[tuple[str, int, float], ...]] = {
+    # The server owner supplied the Lv20 Harvest Horn odds.
+    "horn_of_harvest_lv20": (
+        ("money_rc", 1_000, 70.0),
+        ("money_rc", 10_000, 30.0),
+    ),
     # Surprise Spring Pack: tooltip states exact one-of odds (total 100%).
     "surprise_spring_pack_box": (
         ("holy_core_selectbox", 1, 5.0),
@@ -600,6 +605,23 @@ _AUTHORED_BONUS_CHESTS: dict[
         tuple[tuple[str, int, float], ...],
     ],
 ] = {
+    # Published Goose guidance says each egg yields a Golden Eggshell, with a
+    # 1% chance to hatch a real goose. The static template for that grown
+    # goose is ``super_golden_goose``.
+    "golden_goose_egg": (
+        (("golden_eggshell", 1),),
+        (("super_golden_goose", 1, 1.0),),
+    ),
+    # Official event guidance confirms a Golden Goose Egg and an occasional
+    # Bruised Golden Goose, but publishes neither egg quantity nor bruised
+    # odds. One egg is guaranteed; 10% is a provisional "occasional" rate.
+    **{
+        f"golden_goose_Lv{level}": (
+            (("golden_goose_egg", 1),),
+            (("broken_golden_goose", 1, 10.0),),
+        )
+        for level in range(50, 100, 5)
+    },
     "immortal_relic_chest": (
         (("event_fools_lucky_gift", 1), ("item_season_pass_experience", 5)),
         (
@@ -2287,6 +2309,12 @@ def roll_chest_contents(
         records = _load_index(DESCRIPTION_CHEST_CONTENTS_MAP).get(box_template_id)
     if not records:
         records = mapped_records
+    if box_template_id.casefold() == "dragon_blood_box" and not records:
+        records = ({
+            "container": box_template_id,
+            "source": "none",
+            "required_level": box_definition.required_level,
+        },)
     if not records:
         adventurer_contents = _adventurer_chest_contents(
             static_database_path,
@@ -2361,11 +2389,14 @@ def roll_chest_contents(
         )
     record = _inventory_record(records)
     if record is None:
-        # Only an offer bundle or wishing well row shares the box's name.
-        raise _unresolved_contents(
-            box_definition.item_category,
-            f"mapping {box_template_id!r} is not an inventory container",
-        )
+        if box_template_id.casefold() == "dragon_blood_box":
+            record = {"required_level": box_definition.required_level}
+        else:
+            # Only an offer bundle or wishing well row shares the box's name.
+            raise _unresolved_contents(
+                box_definition.item_category,
+                f"mapping {box_template_id!r} is not an inventory container",
+            )
     required_level = max(1, int(record.get("required_level") or 1))
     if int(player_level) < required_level:
         raise ValueError(
@@ -2373,6 +2404,76 @@ def roll_chest_contents(
         )
     if rng is None:
         rng = random.SystemRandom()
+
+    if box_template_id.casefold() == "dragon_blood_box":
+        rewards: list[ChestReward] = []
+        # Each equipment item rolls independently from Magic through Epic
+        # (the client calls the Epic tier Legendary in this chest context).
+        for _ in range(rng.randint(3, 7)):
+            rarity = rng.choice(("Magic", "Rare", "Epic"))
+            rolled = roll_equipment_reward(
+                static_database_path,
+                class_name=str(class_name),
+                item_level=max(1, int(player_level)),
+                rarity=rarity,
+                rng=rng,
+            )
+            rewards.append(ChestReward(
+                _definition(static_database_path, rolled.template_id),
+                1,
+                item_level=rolled.item_level,
+                rarity=rolled.rarity,
+                appearance=rolled.appearance,
+            ))
+
+        for _ in range(rng.randint(3, 7)):
+            rank = chr(rng.randint(ord("d"), ord("i")))
+            family = rng.choice(_STANDARD_GEM_FAMILIES)
+            rewards.append(ChestReward(
+                _definition(static_database_path, f"gem_{family}_{rank}"), 1,
+            ))
+
+        # Gnob's standard pet offers, stored as one-of alternatives here
+        # because his server-side vendor list is not included in the client DB.
+        if rng.random() < 0.10:
+            rewards.append(ChestReward(_definition(
+                static_database_path,
+                rng.choice(("pet_fat_demon", "pet_raptor_01", "pet_rooster", "pet_fennec")),
+            ), 1))
+
+        total_copper = rng.randint(30_000, 100_000)
+        silver, copper = divmod(total_copper, 100)
+        if silver:
+            rewards.append(ChestReward(
+                _definition(static_database_path, "money_vc_silver"), silver,
+            ))
+        if copper:
+            rewards.append(ChestReward(
+                _definition(static_database_path, "money_vc"), copper,
+            ))
+
+        # The listed regular bands total 100%; lucky awards override that
+        # single regular roll when they hit, so an opening never pays twice.
+        lucky_roll = rng.random() * 100.0
+        if lucky_roll < 0.03:
+            andermant = 100_000
+        elif lucky_roll < 1.03:
+            andermant = 10_000
+        else:
+            andermant = rng.choices(
+                (250, 500, 1_000, 2_000, 5_000),
+                weights=(55, 25, 10, 8, 2),
+                k=1,
+            )[0]
+        rewards.append(ChestReward(
+            _definition(static_database_path, "money_rc"), 50 + andermant,
+        ))
+        return ChestContents(
+            box_template_id=box_template_id,
+            source="dragon blood box custom rewards",
+            rewards=tuple(rewards),
+            used_tooltip_mapping=False,
+        )
 
     guaranteed, one_of, chance, saw_choose = _direct_entries(
         static_database_path, record, class_name=str(class_name), rng=rng

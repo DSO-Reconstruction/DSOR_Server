@@ -411,11 +411,45 @@ def chest_drop_positions(
     )
 
 
+def chest_drop_positions_forward(
+    origin: tuple[float, float, float], rotation: float, count: int, *,
+    spacing: float = 1.2,
+) -> tuple[tuple[float, float, float], ...]:
+    """Place chest rewards in a spaced grid in front of the chest.
+
+    Map prop rotations use radians. The first row is offset from the chest
+    center, and each later row extends farther along its forward direction.
+    """
+
+    count = max(0, int(count))
+    if not count:
+        return ()
+    spacing = max(0.1, float(spacing))
+    # Game prop yaw zero faces -Z (the same convention used by monster
+    # encounter direction vectors).
+    forward_x = -math.sin(float(rotation))
+    forward_z = -math.cos(float(rotation))
+    right_x, right_z = forward_z, -forward_x
+    columns = min(4, count)
+    positions = []
+    for index in range(count):
+        row, column = divmod(index, columns)
+        lateral = (column - (columns - 1) / 2.0) * spacing
+        depth = 1.5 + row * spacing
+        positions.append((
+            float(origin[0]) + forward_x * depth + right_x * lateral,
+            float(origin[1]),
+            float(origin[2]) + forward_z * depth + right_z * lateral,
+        ))
+    return tuple(positions)
+
+
 __all__ = [
     "CHEST_DROP_SPACING",
     "PropLootCatalog",
     "PropLootEntry",
     "chest_drop_positions",
+    "chest_drop_positions_forward",
     "has_prop_loot",
     "load_prop_loot_catalog",
     "roll_prop_loot",
