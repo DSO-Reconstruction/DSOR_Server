@@ -489,7 +489,7 @@ def load_sticker_definition(
 # costumes are not sticker-book collectibles at all, so the book cannot be the
 # only route to their status effect.
 _INVENTORY_COSMETIC_CATEGORIES = frozenset(
-    {"Switchable", "Costume", "TempCostume", "Pet"}
+    {"Switchable", "Costume", "TempCostume", "Pet", "Wings"}
 )
 
 
