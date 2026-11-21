@@ -1664,7 +1664,9 @@ class InventoryMapService:
             )
             if (
                 cosmetic_definition is not None
-                and cosmetic_definition.kind in {"costume", "pet", "decoration"}
+                and cosmetic_definition.kind in {
+                    "costume", "pet", "decoration", "wings",
+                }
             ):
                 CharacterService._toggle_switchable_sticker(
                     self, s, cosmetic_definition,

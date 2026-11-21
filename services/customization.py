@@ -1629,7 +1629,7 @@ class CustomizationService:
             self, s: Session, definition, *, source_item=None) -> None:
         """Toggle a cosmetic, replacing only its own equipment/effect group."""
 
-        if definition.kind not in {"costume", "pet", "decoration"}:
+        if definition.kind not in {"costume", "pet", "decoration", "wings"}:
             raise ValueError(
                 f"unsupported switchable sticker kind {definition.kind!r}"
             )
@@ -1653,7 +1653,7 @@ class CustomizationService:
         )
         decoration_group = (
             definition.exclusive_group.casefold() or definition.resource_id
-            if definition.kind == "decoration" else None
+            if definition.kind in {"decoration", "wings"} else None
         )
         costume_effect_ids = (
             costume_status_effect_wire_ids(self.static_database_path)
@@ -2129,7 +2129,9 @@ class CustomizationService:
             return
         if (
             database_definition is not None
-            and database_definition.kind in {"costume", "pet", "decoration"}
+            and database_definition.kind in {
+                "costume", "pet", "decoration", "wings",
+            }
         ):
             CharacterService._toggle_switchable_sticker(
                 self, s, database_definition
