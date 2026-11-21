@@ -477,6 +477,89 @@ class PlayerResourceService:
         return bool(accepted)
 
     @staticmethod
+    def _apply_player_resource_gain_on_damage(s: Session, resolution) -> float:
+        """Apply active relative ResourceGainOnDamage programs to a hit.
+
+        The Warrior Tank talent authors a relative gain of 0.5: each 1% of
+        maximum health lost grants 0.5% of the rage pool. Resolving the amount
+        from the live status program keeps the value owned by the database.
+        """
+
+        damage = max(0.0, float(getattr(resolution, "damage", 0)))
+        if damage <= 0.0 or bool(getattr(resolution, "killed", False)):
+            return 0.0
+        with s.flow_lock:
+            combat = s.gameplay_combat_state
+            character = s.gameplay_character
+            inventory = s.gameplay_inventory
+            if combat is None or character is None or inventory is None:
+                return 0.0
+            actor_id = int(
+                s.gameplay_remote_actor_id
+                or CharacterService._remote_actor_id(character.character_id)
+            )
+        sources = CharacterService._active_skill_modifier_sources(s)
+        gains = []
+        for source in sources:
+            effect_id = getattr(source, "effect_id", None)
+            if effect_id is not None:
+                programs = combat._status_modifier_program(int(effect_id))
+                values = tuple(getattr(source, "values", ()))
+            elif hasattr(source, "kind") and hasattr(source, "arguments"):
+                programs = ((str(source.kind), tuple(source.arguments)),)
+                values = ()
+            else:
+                continue
+            for kind, arguments in programs:
+                if (
+                    str(kind).casefold() != "resourcegainondamage"
+                    or len(arguments) < 2
+                    or str(arguments[1]).casefold() != "relative"
+                ):
+                    continue
+                amount = combat._modifier_amount(None, arguments[0], values)
+                if amount is not None and float(amount) > 0.0:
+                    gains.append(float(amount))
+        if not gains:
+            return 0.0
+
+        with combat.lock:
+            health = combat.player_health.get(int(actor_id))
+            resource = combat.player_resource.get(int(actor_id))
+            if health is None or resource is None:
+                return 0.0
+            maximum_health = max(
+                1.0,
+                float(health[1]),
+                float(getattr(resolution, "maximum_health", 0)),
+            )
+            current_resource, maximum_resource = map(float, resource)
+            gain = damage / maximum_health * maximum_resource * sum(gains)
+            updated = min(maximum_resource, current_resource + gain)
+            recovered = updated - current_resource
+            if recovered <= 1e-6:
+                return 0.0
+            resource[0] = updated
+            now = time.perf_counter()
+            combat.last_player_resource_change_at[int(actor_id)] = now
+            combat.last_player_resource_regeneration_at[int(actor_id)] = now
+            current_health = int(health[0])
+
+        with s.flow_lock:
+            if s.gameplay_inventory is not inventory:
+                return 0.0
+            inventory.secondary_resource = float(updated)
+        s.send_reliable_ordered(
+            encode_actor_stats_update_batch(
+                ActorStatsUpdate(current_health, updated),
+                actor_id=LOCAL_PLAYER_ACTOR_ID,
+            ),
+            track=True,
+            label="resource-gained-on-damage",
+        )
+        return recovered
+
+    @staticmethod
     def _consume_active_essence(
             s: Session, combat, *, skill_index: int) -> bool:
         """Spend the active essence's ``AmmoCost`` for one accepted cast.

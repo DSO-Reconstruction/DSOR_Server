@@ -1368,6 +1368,9 @@ class PlayerSummonActor:
     created_at: float
     expires_at: float | None
     player_damage_range: tuple[float, float]
+    critical_hit_chance: float
+    critical_damage_multiplier: float
+    owner_attack_speed_multiplier: float
     modifier_sources: tuple[object, ...]
     initial_aura_instance_id: int | None
     cast_id: int = 0
@@ -1442,6 +1445,8 @@ class _PendingPlayerSummonAttack:
     attack: "MonsterAttack"
     geometry: PlayerSkillGeometry
     player_damage_range: tuple[float, float]
+    critical_hit_chance: float
+    critical_damage_multiplier: float
     target_actor_ids: tuple[int, ...]
     target_due_times: tuple[tuple[int, float, int], ...] = ()
 
@@ -5860,6 +5865,9 @@ class LocalCombatState:
         server_tick: int,
         cast_id: int = 0,
         player_damage_range: tuple[float, float],
+        critical_hit_chance: float = 0.0,
+        critical_damage_multiplier: float = 2.0,
+        owner_attack_speed_multiplier: float = 1.0,
         modifier_sources: tuple[object, ...] = (),
         now: float | None = None,
     ) -> PlayerSummonSpawn:
@@ -5988,6 +5996,11 @@ class LocalCombatState:
                     max(0.0, float(player_damage_range[0])),
                     max(0.0, float(player_damage_range[1])),
                 ),
+                critical_hit_chance=max(0.0, min(1.0, float(critical_hit_chance))),
+                critical_damage_multiplier=max(1.0, float(critical_damage_multiplier)),
+                owner_attack_speed_multiplier=max(
+                    0.01, min(10.0, float(owner_attack_speed_multiplier))
+                ),
                 modifier_sources=tuple(modifier_sources),
                 initial_aura_instance_id=initial_aura_instance_id,
                 cast_id=int(cast_id),
@@ -6038,6 +6051,8 @@ class LocalCombatState:
                 server_tick=server_tick,
                 cast_id=cast_id,
                 player_damage_range=player_damage_range,
+                critical_hit_chance=critical_hit_chance,
+                critical_damage_multiplier=critical_damage_multiplier,
                 modifier_sources=modifier_sources,
                 now=current_time,
             )
@@ -13365,6 +13380,14 @@ class LocalCombatState:
                 ),
             )
             if (
+                "turret" in definition.skill_resource_id.casefold()
+                or "turret" in definition.monster_template_id.casefold()
+            ):
+                summon_skill_speed = min(
+                    10.0,
+                    summon_skill_speed * summon.owner_attack_speed_multiplier,
+                )
+            if (
                 skill_index is None
                 or self.player_summon_health.get(actor_id, [0])[0] <= 0
                 or self._monster_actions_disabled(actor_id, now=current_time)
@@ -13710,7 +13733,7 @@ class LocalCombatState:
                         attack_interval_seconds
                         if is_overheated
                         else definition.attack_playback_interval_seconds
-                    )
+                    ) / summon_skill_speed
                 )
             )
             if idle_start:
@@ -13849,6 +13872,8 @@ class LocalCombatState:
                         attack,
                         geometry,
                         summon.player_damage_range,
+                        summon.critical_hit_chance,
+                        summon.critical_damage_multiplier,
                         target_actor_ids,
                         target_due_times,
                     )
@@ -14126,12 +14151,20 @@ class LocalCombatState:
                         self._summon_status_scale(actor_id, "Damage", "Min", now=current_time)
                         + self._summon_status_scale(actor_id, "Damage", "Max", now=current_time)
                     ) * 0.5 * self._monster_skill_damage_multiplier(actor_id, now=current_time) * getattr(summon.definition, "damage_multiplier", 1.0)
+                    critical_hit = (
+                        pending.critical_hit_chance > 0.0
+                        and deterministic_combat_roll(
+                            0x53554D43, attack.server_tick, actor_id,
+                            target_actor_id, attack.skill_index,
+                        ) < pending.critical_hit_chance
+                    )
                     damage = max(0, int(round(
                         base_damage
                         * max(0.0, PLAYER_HUNTING_MINION_STRIKES.get(
                             summon.definition.monster_template_id,
                             pending.geometry.damage_modifier,
                         ))
+                        * (pending.critical_damage_multiplier if critical_hit else 1.0)
                         * max(
                             0.0,
                             float(player_damage_multipliers.get(
@@ -14202,6 +14235,7 @@ class LocalCombatState:
                                 + target_actor_id
                             ),
                             killed=killed,
+                            critical_hit=critical_hit,
                         )
                     )
                     damage_resolutions.append(DamageResolution(
@@ -14220,6 +14254,9 @@ class LocalCombatState:
                         victim_status_effects=effects,
                         source_actor_id=effective_owner,
                         blocked=blocked,
+                        critical_hit=critical_hit,
+                        critical_hit_chance=pending.critical_hit_chance,
+                        critical_damage_multiplier=pending.critical_damage_multiplier,
                     ))
                     continue
                 if (
@@ -14256,6 +14293,18 @@ class LocalCombatState:
                         self._summon_status_scale(actor_id, "Damage", "Min", now=current_time)
                         + self._summon_status_scale(actor_id, "Damage", "Max", now=current_time)
                     ) * 0.5 * self._monster_skill_damage_multiplier(actor_id, now=current_time) * getattr(summon.definition, "damage_multiplier", 1.0)
+                critical_hit = (
+                    pending.critical_hit_chance > 0.0
+                    and deterministic_combat_roll(
+                        0x53554D43, attack.server_tick, actor_id,
+                        target.actor_id, attack.skill_index,
+                    ) < pending.critical_hit_chance
+                )
+                defensive_multiplier = self.monster_incoming_damage_multiplier(
+                    target.actor_id,
+                    pending.geometry.damage_type,
+                    now=current_time,
+                )
                 damage = max(
                     0,
                     int(
@@ -14265,6 +14314,8 @@ class LocalCombatState:
                                 0.0,
                                 pending.geometry.damage_modifier,
                             )
+                            * defensive_multiplier
+                            * (pending.critical_damage_multiplier if critical_hit else 1.0)
                         )
                     ),
                 )
@@ -14279,6 +14330,7 @@ class LocalCombatState:
                             + target.actor_id
                         ),
                         killed=False,
+                        critical_hit=critical_hit,
                     )
                 )
                 immediate_damage, immediate_types = (
@@ -14324,6 +14376,7 @@ class LocalCombatState:
                             + target.actor_id
                         ),
                         killed=killed,
+                        critical_hit=critical_hit,
                     )
                 )
                 if effects and not killed:
@@ -14354,6 +14407,9 @@ class LocalCombatState:
                         skill_index=attack.skill_index,
                         victim_status_effects=effects,
                         source_actor_id=summon.owner_actor_id,
+                        critical_hit=critical_hit,
+                        critical_hit_chance=pending.critical_hit_chance,
+                        critical_damage_multiplier=pending.critical_damage_multiplier,
                     )
                 )
                 for _bullet in range(extra_bullets):
@@ -14378,6 +14434,9 @@ class LocalCombatState:
                         skill_index=attack.skill_index,
                         victim_status_effects=(),
                         source_actor_id=summon.owner_actor_id,
+                        critical_hit=critical_hit,
+                        critical_hit_chance=pending.critical_hit_chance,
+                        critical_damage_multiplier=pending.critical_damage_multiplier,
                     ))
         damage_resolutions.extend(self._resolve_due_summon_strikes(current_time))
         for actor_id, summon in tuple(self.player_summons.items()):

@@ -13,6 +13,7 @@ summon, item-set and combat paths.  Client text (gui.statuseffects.xml):
   Lightning damage, +250% per absorbed turret.
 """
 
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -122,7 +123,7 @@ def anchor(s, ordinal=0):
     return (position[0] - 6.0 - 3.0 * ordinal, position[1], position[2])
 
 
-def cast(s, skill, position, cast_id, *, spawn=True):
+def cast(s, skill, position, cast_id, *, spawn=True, attack_speed=1.0):
     """The Shifted cast as player_combat runs it, then the delayed spawn.
 
     Skillstart user effects (the visualizer, Tesla's set-enabled trigger aura)
@@ -151,6 +152,7 @@ def cast(s, skill, position, cast_id, *, spawn=True):
         s, s.gameplay_chase_generation, ("player-summon", owner_id, cast_id),
         definition, owner_id, position, 0.0, 100, s.gameplay_chase_server_tick,
         (30.0, 30.0), sources,
+        owner_attack_speed_multiplier=attack_speed,
     )
     return next(x for x in combat.player_summons.values() if x.cast_id == cast_id)
 
@@ -222,6 +224,32 @@ def test_authored_minion_auras_and_programs():
         (5.0, "absolute", ("minionskill_machinegunturret",)),)
 
 
+def test_sewers_chimera_shot_turret_proc_is_limited_to_once_per_ten_seconds(
+    owner, clock,
+):
+    proc = effect("Sewers2026_SimpleShot_minion")
+    assert proc.duration_ticks == 250
+
+    CharacterService._spawn_socket_status_minions(
+        owner, proc, server_tick=501,
+    )
+    timers = owner.gameplay_projectile_timers
+    first_count = sum(key[0] == "socket-status-minion" for key in timers)
+    assert first_count == 1
+
+    clock.value += 9.9
+    CharacterService._spawn_socket_status_minions(
+        owner, proc, server_tick=502,
+    )
+    assert sum(key[0] == "socket-status-minion" for key in timers) == first_count
+
+    clock.value += 0.1
+    CharacterService._spawn_socket_status_minions(
+        owner, proc, server_tick=503,
+    )
+    assert sum(key[0] == "socket-status-minion" for key in timers) == first_count + 1
+
+
 # --------------------------------------------------------------------------
 # Tier 2: Lightning conversion and Electrified on every turret
 # --------------------------------------------------------------------------
@@ -264,6 +292,96 @@ def test_tier2_turrets_deal_lightning_and_electrify_until_unequipped(owner, sets
     assert removed == added
     assert damage_type_ids(
         attack_geometry(owner, turrets["TurretCombat"], now + 1.0).damage_type) == (0,)
+
+
+@pytest.mark.parametrize("skill", ("TurretCombat", "TurretMachineGun"))
+def test_dwarf_turret_health_scales_from_its_levelled_template(owner, skill):
+    turret = cast(owner, skill, anchor(owner), 15)
+    current, maximum = owner.gameplay_combat_state.player_summon_health[turret.actor_id]
+    spawned = next(
+        command.value for command in turret.spawn_group.spawn_batch.commands
+        if command.__class__.__name__ == "NewMonsterServerCommand"
+    )
+    template_hp = db().execute(
+        "SELECT HitPoints FROM _Template_Monster WHERE Id=?",
+        (turret.definition.monster_template_id,),
+    ).fetchone()[0]
+    assert current == maximum == spawned.field_90
+    assert maximum > template_hp
+
+
+@pytest.mark.parametrize("skill", ("TurretCombat", "TurretMachineGun"))
+def test_dwarf_turret_uses_owner_damage_and_critical_stats(owner, skill, clock):
+    combat = owner.gameplay_combat_state
+    turret = cast(owner, skill, anchor(owner), 16)
+    turret = replace(
+        turret,
+        player_damage_range=(100.0, 100.0),
+        critical_hit_chance=1.0,
+        critical_damage_multiplier=3.0,
+    )
+    combat.player_summons[turret.actor_id] = turret
+    now = max(clock.value + 2.0, turret.attack_ready_at)
+    attack_geometry(owner, turret, now)
+    pending = combat.pending_player_summon_attacks[turret.actor_id]
+    assert pending.critical_hit_chance == 1.0
+    assert pending.critical_damage_multiplier == 3.0
+    resolutions, _support = combat.resolve_due_player_summon_attacks(
+        now=now + 2.0,
+    )
+    hit = next(value for value in resolutions if value.attacker_actor_id == turret.actor_id)
+    assert hit.critical_hit
+    assert hit.damage > 0
+
+
+def test_turret_hit_damage_uses_target_armor_and_resistance_breaks(owner, clock):
+    combat = owner.gameplay_combat_state
+    turret = cast(owner, "TurretCombat", anchor(owner), 18)
+    turret = replace(
+        turret,
+        player_damage_range=(100.0, 100.0),
+        critical_hit_chance=0.0,
+    )
+    combat.player_summons[turret.actor_id] = turret
+    victim = combat.living_actor_ids[0]
+    initial_health = combat.monster_health[victim]
+
+    now = max(clock.value + 2.0, turret.attack_ready_at)
+    attack_geometry(owner, turret, now)
+    base_resolutions, _support = combat.resolve_due_player_summon_attacks(
+        now=now + 2.0,
+    )
+    base_hit = next(x for x in base_resolutions if x.target_actor_id == victim)
+
+    combat.monster_health[victim] = initial_health
+    attack_geometry(owner, turret, now + 3.0)
+    with patch.object(combat, "monster_incoming_damage_multiplier", return_value=0.5):
+        reduced_resolutions, _support = combat.resolve_due_player_summon_attacks(
+            now=now + 5.0,
+        )
+    reduced_hit = next(x for x in reduced_resolutions if x.target_actor_id == victim)
+    assert reduced_hit.damage == pytest.approx(base_hit.damage * 0.5, abs=1)
+
+
+@pytest.mark.parametrize(("attack_speed", "should_be_ready"), ((1.0, False), (2.0, True)))
+def test_dwarf_turret_attack_interval_uses_owner_attack_speed(
+    owner, clock, attack_speed, should_be_ready,
+):
+    combat = owner.gameplay_combat_state
+    turret = cast(
+        owner, "TurretMachineGun", anchor(owner), 17,
+        attack_speed=attack_speed,
+    )
+    first_attack_at = max(clock.value + 2.0, turret.attack_ready_at)
+    attack_geometry(owner, turret, first_attack_at)
+    interval = turret.definition.attack_interval_seconds
+    combat.pending_player_summon_attacks.pop(turret.actor_id, None)
+    combat.maybe_start_player_summon_attacks(
+        {owner.gameplay_remote_actor_id: turret.position},
+        server_tick=901,
+        now=first_attack_at + interval * 0.75,
+    )
+    assert (turret.actor_id in combat.pending_player_summon_attacks) is should_be_ready
 
 
 # --------------------------------------------------------------------------

@@ -11,6 +11,12 @@ class PlayerSummonService:
     """Materialize, synchronize, expire, and despawn player summons."""
 
     LOCATION_VISUAL_REFRESH_SECONDS = 1.0
+    STATUS_MINION_PROC_COOLDOWNS_SECONDS = {
+        # Sewers 2026's Dwarf Chimera Shot says this 30% Mechanical Turret
+        # proc can happen at most once every 10 seconds. The effect's D:10
+        # controls its duration, but by itself does not suppress repeat hits.
+        "sewers2026_simpleshot_minion": 10.0,
+    }
 
     @staticmethod
     def _activate_player_user_effect_children(
@@ -82,7 +88,11 @@ class PlayerSummonService:
             position: tuple[float, float, float], yaw: float,
             level: int, server_tick: int,
             player_damage_range: tuple[float, float],
-            modifier_sources: tuple[object, ...], *, round_token=None) -> None:
+            modifier_sources: tuple[object, ...], *,
+            critical_hit_chance: float = 0.0,
+            critical_damage_multiplier: float = 2.0,
+            owner_attack_speed_multiplier: float = 1.0,
+            round_token=None) -> None:
         """Materialize a delayed friendly construction from a ShiftedSkill."""
 
         now = time.perf_counter()
@@ -125,6 +135,9 @@ class PlayerSummonService:
                 server_tick=spawn_server_tick,
                 cast_id=int(timer_key[2] if len(timer_key) > 2 else timer_key[-1]),
                 player_damage_range=player_damage_range,
+                critical_hit_chance=critical_hit_chance,
+                critical_damage_multiplier=critical_damage_multiplier,
+                owner_attack_speed_multiplier=owner_attack_speed_multiplier,
                 modifier_sources=modifier_sources,
                 now=now,
             )
@@ -247,6 +260,31 @@ class PlayerSummonService:
             specs = combat.player_status_minion_specs(status_definition)
         if not specs:
             return
+        cooldown_seconds = PlayerSummonService.STATUS_MINION_PROC_COOLDOWNS_SECONDS.get(
+            str(status_definition.resource_id).casefold(), 0.0,
+        )
+        if cooldown_seconds > 0.0:
+            with s.flow_lock:
+                if (
+                    not s.connected
+                    or s.gameplay_combat_state is not combat
+                    or s.gameplay_chase_generation != generation
+                ):
+                    return
+                cooldown_key = (
+                    generation,
+                    int(owner_actor_id),
+                    str(status_definition.resource_id).casefold(),
+                )
+                cooldowns = getattr(
+                    s, "gameplay_status_minion_cooldowns", None,
+                )
+                if cooldowns is None:
+                    cooldowns = s.gameplay_status_minion_cooldowns = {}
+                now = time.perf_counter()
+                if float(cooldowns.get(cooldown_key, 0.0)) > now:
+                    return
+                cooldowns[cooldown_key] = now + cooldown_seconds
         modifier_sources = tuple(
             CharacterService._active_skill_modifier_sources(s)
         )

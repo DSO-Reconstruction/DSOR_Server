@@ -1224,7 +1224,12 @@ class PlayerCombatService(PlayerCastTimingService):
                         player_damage_range,
                         tuple(modifier_effect_ids),
                     ),
-                    kwargs={"round_token": CharacterService._pvp_round_token(s)},
+                    kwargs={
+                        "critical_hit_chance": player_critical_hit_chance,
+                        "critical_damage_multiplier": player_critical_damage_multiplier,
+                        "owner_attack_speed_multiplier": player_attack_speed,
+                        "round_token": CharacterService._pvp_round_token(s),
+                    },
                 )
                 summon_timer.daemon = True
 

@@ -1407,6 +1407,24 @@ def test_a_mastery_low_health_rule_runs_too(ranger):
     assert "warrior_talent_tank_buff_armor" in effect_names(ranger)
 
 
+def test_warrior_tank_talent_gains_rage_proportional_to_health_lost(ranger):
+    ranger.gameplay_character.class_id = 0
+    learn_rank(ranger, "warrior_talent_tank", 2)
+    combat = ranger.gameplay_combat_state
+    actor_id = int(ranger.gameplay_remote_actor_id)
+    combat.player_health[actor_id] = [900, 1000]
+    combat.player_resource[actor_id] = [0.0, 100.0]
+    ranger.gameplay_inventory.health_points = 900.0
+    ranger.gameplay_inventory.secondary_resource = 0.0
+
+    dispatch_incoming_hit(
+        ranger, taken(ranger, damage=100, current=900, maximum=1000),
+    )
+
+    assert combat.player_resource[actor_id][0] == pytest.approx(5.0)
+    assert ranger.gameplay_inventory.secondary_resource == pytest.approx(5.0)
+
+
 def test_master_of_lightning_leaves_a_field_when_stunned(ranger):
     ranger.gameplay_persistent_status_effects[900] = replace(
         wire_entry(TALENTS.status_effect_wire_id("warrior_talent_lightning_master_lvl")),
