@@ -582,6 +582,11 @@ def dispatch_incoming_hit(session, resolution) -> None:
         return
     if getattr(resolution, "blocked", False):
         dispatch_talent_event(session, "hitblocked", server_tick=server_tick)
+    if int(getattr(resolution, "damage", 0)) > 0:
+        from dso_server.services.base import CharacterService
+        CharacterService._apply_player_resource_gain_on_damage(
+            session, resolution,
+        )
     if getattr(resolution, "periodic_damage", False):
         return
     combat = getattr(session, "gameplay_combat_state", None)
