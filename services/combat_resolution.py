@@ -334,6 +334,7 @@ class CombatResolutionService:
                     skill_index=0,
                     victim_status_effects=(),
                     source_actor_id=remote_id,
+                    combat_text_type="HealingSelf",
                 )
                 s.gameplay_presence_callback(s, ("pvp_combat_resolution", resolution))
 
@@ -557,12 +558,15 @@ class CombatResolutionService:
                         impact_strength=0.0,
                         field_80=False,
                         field_81=False,
-                        combat_text_type=_combat_text_type(
-                            resolution.hit_tags,
-                            periodic_damage=bool(resolution.periodic_damage),
-                        ) if not bool(
-                            getattr(resolution, "damage_immune", False)
-                        ) else "DamageImmunityOther",
+                        combat_text_type=(
+                            "DamageImmunityOther"
+                            if bool(getattr(resolution, "damage_immune", False))
+                            else str(getattr(resolution, "combat_text_type", "") or "")
+                            or _combat_text_type(
+                                resolution.hit_tags,
+                                periodic_damage=bool(resolution.periodic_damage),
+                            )
+                        ),
                         rift_hit=rift_hit,
                     ),
                     resolution.target_actor_id,
@@ -1850,11 +1854,17 @@ class CombatResolutionService:
                 label=label,
             )
             if s.gameplay_presence_callback is not None:
+                peer_suppressed_effect_ids = tuple(
+                    int(definition.effect_id)
+                    for definition in definitions
+                    if getattr(definition, "server_tick_suppressed", False)
+                )
                 finish_effect_step(s.gameplay_presence_callback,
                     s,
                     (
                         "status_effects",
                         tuple(command.value for command in commands),
+                        peer_suppressed_effect_ids,
                     ),
                 )
             vitality_kinds = {
