@@ -8,6 +8,9 @@ import threading
 import time
 
 from dso_server.protocol.consumable_protocol import load_instant_consumable_definition
+from dso_server.protocol.membership_protocol import (
+    DELUXE_MEMBERSHIP, PREMIUM_MEMBERSHIP, membership_is_active,
+)
 from dso_server.protocol.world_loot_protocol import inventory_loot_text_type
 
 from dso_server.runtime.context import *
@@ -42,6 +45,9 @@ AUTO_PICKUP_INGREDIENT_RADIUS = 3.5
 PET_AUTO_PICKUP_RADIUS = 4.5
 PET_AUTO_PICKUP_INGREDIENT_RADIUS = 5.5
 AUTO_PICKUP_RANGE_BONUS = 2.0
+# Premium and Deluxe share this server-side radius extension. Validate the
+# saved tier and expiry instead of trusting a client-side membership badge.
+MEMBERSHIP_AUTO_PICKUP_RANGE_BONUS = 5.0
 # Loot categories swept up from every player on approach. Keys reach world
 # loot only as event Loot-list drops (christmas sugar beets) and amphorae,
 # authored to auto-pick-up; retail auto-picked amphora Draken
@@ -146,7 +152,9 @@ def _pet_auto_pickup_categories(resource_id: str) -> frozenset[str]:
     )
 
 
-def _auto_pickup_radius(category: str, pet_categories: frozenset[str]) -> float:
+def _auto_pickup_radius(
+        category: str, pet_categories: frozenset[str], *,
+        membership_active: bool = False) -> float:
     """Reach of one automatic pickup, including the global range increase."""
     if category in pet_categories:
         base_radius = (PET_AUTO_PICKUP_INGREDIENT_RADIUS
@@ -156,7 +164,27 @@ def _auto_pickup_radius(category: str, pet_categories: frozenset[str]) -> float:
         base_radius = (AUTO_PICKUP_INGREDIENT_RADIUS
                        if category == 'IngredientItem'
                        else AUTO_PICKUP_RADIUS)
-    return base_radius + AUTO_PICKUP_RANGE_BONUS
+    return (
+        base_radius + AUTO_PICKUP_RANGE_BONUS
+        + (MEMBERSHIP_AUTO_PICKUP_RANGE_BONUS if membership_active else 0.0)
+    )
+
+
+def _membership_auto_pickup_active(s: Session) -> bool:
+    """Whether a live Premium/Deluxe membership grants pickup privileges."""
+    try:
+        membership_type = int(getattr(s, 'gameplay_membership_type', 0))
+        return (
+            bool(getattr(s, 'gameplay_membership_active', False))
+            and membership_type in (PREMIUM_MEMBERSHIP, DELUXE_MEMBERSHIP)
+            and membership_is_active(
+                membership_type,
+                True,
+                str(getattr(s, 'gameplay_membership_expires_at', '') or ''),
+            )
+        )
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 @contextmanager
@@ -2287,6 +2315,7 @@ class WorldService:
             player_position = encounter.coordinate_frame.wire_to_world(
                 wire_position
             )
+            membership_active = _membership_auto_pickup_active(s)
             pet_categories = _pet_auto_pickup_categories(
                 str(getattr(s, 'gameplay_active_pet', '') or '')
             )
@@ -2315,7 +2344,20 @@ class WorldService:
                         or bool(getattr(drop, 'force_auto_pickup', False))
                         or drop.item_category in pet_categories
                         or (
-                            drop.auto_pick_up == 'All'
+                            membership_active
+                            and (
+                                str(drop.auto_pick_up or '').casefold()
+                                == 'privileged'
+                                or bool(
+                                    getattr(drop, 'quest_id', '')
+                                    or getattr(drop, 'quest_collect_id', '')
+                                )
+                                or str(drop.item_category or '').casefold()
+                                == 'questitem'
+                            )
+                        )
+                        or (
+                            str(drop.auto_pick_up or '').casefold() == 'all'
                             and drop.item_category in AUTO_PICKUP_CATEGORIES
                         )
                     )
@@ -2324,6 +2366,7 @@ class WorldService:
                         drop.item.ground_position[2] - player_position[2],
                     ) <= _auto_pickup_radius(
                         drop.item_category, pet_categories,
+                        membership_active=membership_active,
                     )
                 )
             )

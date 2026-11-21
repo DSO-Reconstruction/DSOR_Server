@@ -1,6 +1,8 @@
 """Remote-player presence, equipment, status, and world synchronization."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.player_summon_lifecycle import player_summon_preparation_batch
@@ -13,12 +15,11 @@ class PresenceService:
     def _send_remote_player_actor_to(
         viewer: Session, remote: RemotePlayer,
     ) -> None:
-        """Register the actor in the client's vicinity before creating it.
+        """Create the remote player before publishing it into the vicinity.
 
-        NPCs and props are registered through ActorsEnterVicinity before the
-        client receives their entity command. Remote players need the same
-        ordering: NewRemotePlayer alone can arrive with a valid actor id that
-        the client's vicinity/actor registry has never seen.
+        ActorsEnterVicinity only updates the client's visible actor set; it
+        cannot create the GamePlayer entity. The client warns and drops the
+        entry when it arrives before NewRemotePlayer.
         """
 
         vicinity_packet, _ = encode_actors_enter_vicinity_batch(
@@ -29,20 +30,19 @@ class PresenceService:
             )
         )
         viewer.send_reliable_ordered(
-            vicinity_packet,
-            track=True,
-            label=f"remote-player-vicinity-{remote.actor_id}",
-        )
-        viewer.send_reliable_ordered(
             encode_new_remote_player(remote),
             track=True,
             label=f"remote-player-enter-{remote.actor_id}",
         )
         viewer.send_reliable_ordered(
-            encode_remote_player_info(remote),
+            vicinity_packet,
             track=True,
-            label=f"remote-player-info-{remote.actor_id}",
+            label=f"remote-player-vicinity-{remote.actor_id}",
         )
+        # The release261_221 RemotePlayerInfo decoder rejects our standalone
+        # two-string update. NewRemotePlayer already carries the initial name,
+        # guild and equipment visuals, while the remote-player template gives
+        # the actor its base animation set.
 
     def _remote_player_for(self, session: Session) -> RemotePlayer:
         character = session.gameplay_character
@@ -916,20 +916,17 @@ class PresenceService:
                         viewer,
                         label="world-loot-spawn",
                     )
-                    if any(
-                        str(drop.item.template_id).casefold()
-                        in {"e_easter_keyitem_01", "e_easter_progress_item_t0"}
-                        or str(drop.item.template_id).casefold().startswith(
-                            "e_colour_ammunition_"
+                    # Evaluate every fresh drop at the player's current
+                    # position. Waiting for another MoveCommand left ordinary
+                    # auto-pickups and membership-only quest loot on the
+                    # ground indefinitely when the player stood still after a
+                    # kill.
+                    with viewer.flow_lock:
+                        last_move = viewer.gameplay_last_move
+                    if last_move is not None:
+                        CharacterService._pickup_nearby_auto_loot(
+                            viewer, last_move.relative_position,
                         )
-                        for drop in drops
-                    ):
-                        with viewer.flow_lock:
-                            last_move = viewer.gameplay_last_move
-                        if last_move is not None:
-                            CharacterService._pickup_nearby_auto_loot(
-                                viewer, last_move.relative_position,
-                            )
                     if dragan_claim_generation is not None:
                         CharacterService._confirm_dragan_great_hall_first_clear(
                             self, viewer, dragan_claim_generation,
@@ -1045,6 +1042,10 @@ class PresenceService:
                 peer.send_unreliable_sequenced(packet)
             return
         if event == "appearance":
+            # Keep the registered actor and update its equipment visuals in
+            # place. DiscardPlayer/NewRemotePlayer can leave the client's
+            # actor generation stale and make subsequent movement/status
+            # commands target a missing entity.
             remote = self._remote_player_for(session)
             packet = encode_remote_player_info(remote)
             for peer in vicinity_peers:
@@ -1053,6 +1054,9 @@ class PresenceService:
                     track=True,
                     label=f"remote-player-info-{remote.actor_id}",
                 )
+            CharacterService._broadcast_presence_social_status(
+                self, character.character_id
+            )
             return
         if isinstance(event, tuple) and event[0] in {
             "status_effect",
@@ -1069,6 +1073,26 @@ class PresenceService:
                 if event[0] == "status_effect"
                 else tuple(event[1])
             )
+            # Some effects are delivered to the owner for their authored
+            # animation while the server applies their health tick. Relaying
+            # those entries makes remote clients run the relative heal using
+            # their stale view of the owner's maximum health. The authoritative
+            # heal transition is sent separately as a HealingSelf Hit.
+            excluded_effect_ids = (
+                {int(value) for value in event[2]}
+                if event[0] == "status_effects" and len(event) > 2
+                else set()
+            )
+            if excluded_effect_ids:
+                filtered_values = []
+                for value in values:
+                    entries = tuple(
+                        entry for entry in value.entries
+                        if int(entry.effect_id) not in excluded_effect_ids
+                    )
+                    if entries:
+                        filtered_values.append(replace(value, entries=entries))
+                values = tuple(filtered_values)
             remapped = tuple(
                 CharacterService._remap_player_status_effect(
                     value, actor_id

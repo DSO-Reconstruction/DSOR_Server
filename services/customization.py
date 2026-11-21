@@ -31,8 +31,10 @@ from dso_server.protocol.item_receipt_protocol import (
     item_received_message,
 )
 from dso_server.protocol.player_init_protocol import (
-    CURRENCY_CHANGED_COMMAND, MESSAGE_COMMAND,
+    CURRENCY_CHANGED_COMMAND, ITEM_CUSTOMIZATION_INFO_COMMAND,
+    MESSAGE_COMMAND, ItemCustomizationInfo,
 )
+from dso_server.gameplay.skin_unlocks import load_skin_unlock_customizations
 from dso_server.services.admin_effects import (
     ADMIN_EFFECTS, matching_admin_effects, limited_admin_speed_entries,
 )
@@ -618,6 +620,28 @@ class CustomizationService:
         for packet, bits in packets:
             CharacterService._send_world_loot_state_batch(
                 s, packet, bits, label='item-customization')
+        character = s.gameplay_character
+        class_name = (
+            CLASS_NAMES.get(int(character.class_id), "mage")
+            if character is not None else "mage"
+        )
+        customization_info = ItemCustomizationInfo(
+            load_skin_unlock_customizations(
+                self.static_database_path,
+                class_name=class_name,
+            )
+        )
+        s.send_reliable_ordered(
+            encode_server_command_batch((
+                ServerCommand(
+                    ITEM_CUSTOMIZATION_INFO_COMMAND,
+                    customization_info,
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+            )),
+            track=True,
+            label="item-customization-info-refresh",
+        )
         CharacterService._request_account_save(s, 'equipment appearance changed', flush=True)
         if s.gameplay_presence_callback is not None:
             s.gameplay_presence_callback(s, 'appearance')

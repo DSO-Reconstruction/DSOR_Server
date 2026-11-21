@@ -1584,7 +1584,14 @@ _NATIVE_SCENE_EXIT_TARGETS = {
     # Cardhun's authored hub gates are absent from the loaded scene. The
     # PW199 gate shares its quest EventSet with Annagreth Everly; create it
     # only after that EventSet is activated.
-    "pw000_hub": ("pw199_cardhun_dun", "pw200_cardhun_dun"),
+    # Standard Parallel World gates are catalogued by the server, but are not
+    # present in the active client scene until their EventUpdate. Materialize
+    # only active gates after that update, avoiding lookups of missing exits.
+    "pw000_hub": (
+        "pw199_cardhun_dun", "pw200_cardhun_dun",
+        "pw001_", "pw004_", "pw007_", "pw010_", "pw013_",
+        "pw016_", "pw019_", "pw022_", "pw025_",
+    ),
     # The Cardhun city return gate is also absent from the loaded scene.
     "pw200_cardhun_dun": ("pw000_hub",),
     # Parallel World destinations reached from Cardhun have their return
@@ -1708,6 +1715,14 @@ def select_doe_random_portal_target(instance_key: object) -> str:
     return random.Random(seed).choice(_DOE_RANDOM_PORTAL_TARGETS)
 
 
+def is_native_scene_exit(map_id: str, definition: LocalMapExit) -> bool:
+    """Whether an exit target is absent from the loaded native map scene."""
+
+    targets = _NATIVE_SCENE_EXIT_TARGETS.get(str(map_id).casefold(), ())
+    destination = definition.destination_map_id.casefold()
+    return any(destination.startswith(target) for target in targets)
+
+
 def filter_native_scene_exit_definitions(
     map_id: str,
     exits: tuple[LocalMapExit, ...],
@@ -1745,7 +1760,6 @@ def native_scene_exit_variation_entries(
         map_id, exits,
         selected_doe_portal_target=selected_doe_portal_target,
     )
-    targets = _NATIVE_SCENE_EXIT_TARGETS.get(str(map_id).casefold(), ())
     return tuple(
         VariationInfoEntry(
             definition.instance_guid,
@@ -1757,10 +1771,7 @@ def native_scene_exit_variation_entries(
         for definition in exits
         if (
             definition.active
-            and any(
-                definition.destination_map_id.casefold().startswith(target)
-                for target in targets
-            )
+            and is_native_scene_exit(map_id, definition)
             # Piritlidag's extracted map contains repeated generic exits at
             # this position. The key-lock row is the authored gate entity;
             # materialize only that GUID to avoid stacking duplicate portals.
@@ -1859,14 +1870,19 @@ def load_local_map_initialization(
             map_id, exit_definitions,
             selected_doe_portal_target=selected_doe_portal_target,
         )
-        native_targets = _NATIVE_SCENE_EXIT_TARGETS.get(
-            str(map_id).casefold(), (),
-        )
         exit_info_definitions = tuple(
             definition for definition in exit_definitions
-            if definition.active or not any(
-                definition.destination_map_id.casefold().startswith(target)
-                for target in native_targets
+            if (
+                definition.active
+                or (
+                    # Event-gated exits are absent from the loaded client
+                    # scene while their EventSet is closed. Sending a closed
+                    # ExitInfo entry still makes UpdateExitState look them up
+                    # by name and log "exit entity not found". They are
+                    # published when the map event activates them.
+                    definition.event_set_row < 0
+                    and not is_native_scene_exit(map_id, definition)
+                )
             )
         )
         exits = _exit_info_entries_for_access(

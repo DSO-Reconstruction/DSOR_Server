@@ -1708,6 +1708,9 @@ class DamageResolution:
     # Explosive Shot's victim-hosted BGH explosion.
     critical_hit_chance: float = 0.0
     critical_damage_multiplier: float = 2.0
+    # Override the client's floating combat-text classification for results
+    # such as an authoritative player heal replicated to remote viewers.
+    combat_text_type: str = ""
 
 
 class _MonsterOccupancy:
@@ -12491,14 +12494,13 @@ class LocalCombatState:
         skill_index: int,
         modifier_sources: tuple[object, ...],
     ) -> tuple[object, ...]:
-        """Return actor effects that select a non-default skill sequence.
+        """Return status effects needed to render this remote skill cast.
 
         A remote player does not own the caster's talent model.  The native
-        client therefore needs the small subset of active actor effects whose
-        modifier program replaces ``SkillSequence:execute`` before it decodes
-        the cast.  Sending every persistent talent effect caused invalid talent
-        warnings and oversized snapshots; filtering here preserves only the
-        presentation dependency for this exact skill.
+        client needs active effects that change the cast's sequence or
+        projectile count before decoding the cast. Sending every persistent
+        talent effect caused invalid talent warnings and oversized snapshots;
+        keep only presentation modifiers scoped to this exact skill.
         """
 
         geometry = self._load_player_skill_geometry(skill_index)
@@ -12510,10 +12512,21 @@ class LocalCombatState:
                 continue
             program = self._status_modifier_program(int(source.effect_id))
             if any(
-                kind.casefold() == "skillsequence"
-                and len(arguments) >= 3
-                and arguments[0].casefold() == "execute"
-                and self._skill_scope_matches(geometry, (arguments[1],))
+                (
+                    kind.casefold() == "skillsequence"
+                    and len(arguments) >= 3
+                    and arguments[0].casefold() == "execute"
+                    and self._skill_scope_matches(
+                        geometry, (arguments[1],)
+                    )
+                )
+                or (
+                    kind.casefold() == "bulletcount"
+                    and len(arguments) >= 3
+                    and self._skill_scope_matches(
+                        geometry, arguments[2:]
+                    )
+                )
                 for kind, arguments in program
             ):
                 result.append(source)

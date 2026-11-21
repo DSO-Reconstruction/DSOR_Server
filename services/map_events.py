@@ -39,6 +39,7 @@ from dso_server.gameplay.local_map_state import (
     exit_display_map_id,
     filter_parallel_world_exits_for_access,
     filter_native_scene_exit_definitions,
+    is_native_scene_exit,
     select_doe_random_portal_target,
     strip_doe_portal_unlock_flags,
     load_local_map_exits,
@@ -13002,21 +13003,20 @@ class MapEventService:
                         f"event_sets={tuple(entry.event_set_row for entry in native_exit_entries)}"
                     )
             for definition in viewer_definitions:
-                if (
-                    active_override is False
-                    and definition.instance_guid in native_exit_guids
-                ):
-                    # This is the pre-EventUpdate snapshot. The client has
-                    # not created these native scene exits yet, so asking it
-                    # to update them now only produces an UpdateExitState
-                    # "entity not found" warning. The post-event refresh
-                    # publishes them after VariationInfo creates the entity.
-                    continue
                 is_active = definition.active
                 if active_override is not None:
                     entry_active = active_override
                 else:
                     entry_active = is_active
+                if (
+                    not entry_active
+                    and is_native_scene_exit(runtime.map_id, definition)
+                ):
+                    # EventUpdate removes a closed event-bound scene exit.
+                    # These exits are absent from the native scene to begin
+                    # with, so a closed ExitInfo would only make
+                    # UpdateExitState log a missing-entity warning.
+                    continue
                 if is_active:
                     active_viewer_definitions.append(definition)
                 exit_entries.append((definition, entry_active))

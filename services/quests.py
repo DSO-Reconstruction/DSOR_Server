@@ -3287,6 +3287,12 @@ class QuestService:
                 s.gameplay_world_loot[drop.item.item_id] = drop
             s.gameplay_next_item_id = max(s.gameplay_next_item_id, end)
         CharacterService._reconcile_world_loot_visibility(s, label="quest-drop")
+        with s.flow_lock:
+            last_move = s.gameplay_last_move
+        if last_move is not None:
+            CharacterService._pickup_nearby_auto_loot(
+                s, last_move.relative_position,
+            )
 
     def _quest_obstacle_update(self, s: Session, map_id: str) -> ObstacleUpdate:
         """Restore physical quest gates as well as their scene EventSets."""

@@ -1443,12 +1443,7 @@ def _remote_title_fields(value: RemotePlayer) -> tuple[int, str, str]:
 
 
 def encode_new_remote_player(value: RemotePlayer) -> tuple[bytes, int]:
-    """Encode the fully typed, equipment-empty NewRemotePlayer branch.
-
-    Equipment and status arrays are deliberately valid empty arrays. They are
-    not omitted and can be extended with RemotePlayerInfo as multiplayer
-    equipment synchronization grows.
-    """
+    """Encode NewRemotePlayer using the release261_221 generated field order."""
 
     writer = BitWriter()
     writer.write_uint8(0x85)
@@ -1482,17 +1477,23 @@ def encode_new_remote_player(value: RemotePlayer) -> tuple[bytes, int]:
     ):
         writer.write_uint8(number)
     writer.write_uint32_le(value.template_row)
+    # Equipment skins and authored item VFX are separate fields in
+    # NewRemotePlayer. The client consumes this second string array through
+    # UpdateAdditionalSequencer::SetSequences during actor setup.
     _write_remote_equipment(writer, value.equipment)
-    writer.write_uint32_le(len(value.permanent_statuses))
-    for status_id in value.permanent_statuses:
-        writer.write_string(status_id)
+    writer.write_uint32_le(len(value.additional_sequences))
+    for sequence in value.additional_sequences:
+        writer.write_string(sequence)
     writer.write_uint64_le(value.character_id)
     writer.write_uint64_le(value.account_id)
-    writer.write_uint32_le(value.level)
-    writer.write_uint32_le(value.level)
-    # The client decodes this as a validated int8 enum with accepted values
-    # -1..4. Value 5 makes NewRemotePlayerCommand::Decode fail, so use the
-    # valid remote-player kind used by this client build.
+    # release261_221 has four scalar fields between the identities and the
+    # validated player-kind enum. The first and third drive player setup;
+    # keep both positive so SetupPlayerAttributes can initialize the actor.
+    writer.write_uint32_le(max(1, value.level))
+    writer.write_uint32_le(max(0, int(value.fighting_power)))
+    writer.write_uint32_le(max(1, value.level))
+    writer.write_uint32_le(0)
+    # The current client accepts player-kind values -1..5.
     writer.write_uint8(4)
     # A remote player must have a distinct, non-owned ActorPlacement.
     # Reusing the local player's 0x10002 faction and setting owned=True makes
@@ -1504,9 +1505,10 @@ def encode_new_remote_player(value: RemotePlayer) -> tuple[bytes, int]:
     writer.write_uint8(0)
     writer.write_bool(False)
     writer.write_bool(False)
+    # The client copies +0x158 to GamePlayer::level and looks up base health
+    # and resource by (class, level) in SetupPlayerAttributes. Keep the
+    # remaining fields in their generated order: team then honor points.
     writer.write_uint32_le(0)
-    # +0x150 is copied into GamePlayer::level before SetupPlayerAttributes.
-    # Zero makes setup fail even when the visible level field is non-zero.
     writer.write_uint32_le(max(1, value.level))
     writer.write_uint32_le(value.team & 0xFFFFFFFF)
     writer.write_uint32_le(max(0, int(value.honor_points)))
@@ -1514,8 +1516,6 @@ def encode_new_remote_player(value: RemotePlayer) -> tuple[bytes, int]:
     writer.write_uint8(title_type)
     writer.write_string(achievement_title)
     writer.write_string(pvp_rank_title)
-    # The client's final identity string sets the remote player's emblem
-    # icon (Messaging::SetEmblemIcon::SetEmblemId).
     writer.write_string(str(value.emblem_id or ""))
     writer.write_uint32_le(value.actor_id)
     writer.write_uint8(0xFF)
@@ -1523,17 +1523,14 @@ def encode_new_remote_player(value: RemotePlayer) -> tuple[bytes, int]:
 
 
 def encode_remote_player_info(value: RemotePlayer) -> tuple[bytes, int]:
-    """Encode the valid minimal RemotePlayerInfo generated branch.
-
-    The two collection fields are present as typed arrays. The remaining
-    fields follow this client's generated serializer, including three
-    trailing strings and the observer actor context.
-    """
+    """Encode a live RemotePlayerInfo update for an existing actor."""
 
     writer = BitWriter()
     writer.write_uint8(0x85)
     writer.write_bytes(REMOTE_PLAYER_INFO_COMMAND.to_bytes(2, "little"))
-    # +0x20 updates GamePlayer::guildName, not the character name.
+    # The client applies this command to the existing GamePlayer. It refreshes
+    # the additional equipment skins and sequencer list without replacing the
+    # actor or disturbing its movement/status state.
     writer.write_string(value.guild_name)
     _write_remote_equipment(writer, value.equipment)
     writer.write_string(value.animation_set)
@@ -1542,8 +1539,7 @@ def encode_remote_player_info(value: RemotePlayer) -> tuple[bytes, int]:
         writer.write_string(sequence)
     writer.write_uint32_le(0)  # attribute type 2
     writer.write_uint32_le(max(1, value.level))  # attribute type 5
-    # Match NewRemotePlayer's validated player-kind enum (-1..4).
-    writer.write_uint8(4)
+    writer.write_uint8(4)  # valid remote-player kind for this client build
     writer.write_uint32_le(value.faction_id)
     writer.write_uint32_le(value.actor_id)
     writer.write_uint8(0)
@@ -1555,7 +1551,6 @@ def encode_remote_player_info(value: RemotePlayer) -> tuple[bytes, int]:
     writer.write_uint8(title_type)
     writer.write_string(achievement_title)
     writer.write_string(pvp_rank_title)
-    # The client dispatches this string to SetEmblemIcon::SetEmblemId.
     writer.write_string(str(value.emblem_id or ""))
     writer.write_uint32_le(value.actor_id)
     writer.write_uint8(0xFF)
