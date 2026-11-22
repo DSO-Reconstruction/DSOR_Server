@@ -2,6 +2,7 @@
 cache paths stay inside the output folder, the CDN payload layers unwrap, and
 setup unpacks beside the server's data, never into the client folder."""
 
+import hashlib
 import struct
 import tempfile
 import unittest
@@ -39,6 +40,58 @@ class PayloadTests(unittest.TestCase):
             path = Path(root) / "x.nz"
             path.write_bytes(outer)
             self.assertEqual(setup._read_cached_payload(setup.CacheFile("x", path, "nz")), raw)
+
+
+def _zn(data):
+    return b"__ZN" + struct.pack("<I", len(data)) + zlib.compress(data)
+
+
+class RuntimeCacheTests(unittest.TestCase):
+    def _write(self, files, digests):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            cached = {}
+            for name, data in files.items():
+                path = root / name
+                path.write_bytes(data)
+                cached[name.rsplit(".", 2)[-2] if name.endswith(".nz") else name.rsplit("._", 1)[1]] = path
+            runtime = root / "dlcache"
+            written = unpack._write_cached_runtime_assets(runtime, digests, cached, {})
+            return written, {
+                name: unpack._runtime_destination(runtime, name).read_bytes()
+                for name in digests
+                if unpack._runtime_destination(runtime, name).is_file()
+            }
+
+    def test_legacy_sidecar_hashes_the_wrapped_object(self):
+        raw = b"FONTINFO" + bytes(24)
+        obj = _zn(raw)
+        digest = hashlib.md5(obj).hexdigest()
+        written, out = self._write(
+            {f"export_win32_ui_chat_unicode0_info.bytes._{digest}": obj},
+            {"export/win32/ui/chat_unicode0_info.bytes": digest},
+        )
+        self.assertEqual(written, 1)
+        self.assertEqual(out["export/win32/ui/chat_unicode0_info.bytes"], raw)
+
+    def test_double_wrapped_download_is_written_without_a_zn_header(self):
+        raw = b"DDS " + bytes(124)
+        inner = _zn(raw)
+        digest = hashlib.md5(inner).hexdigest()
+        written, out = self._write(
+            {f"export_win32_textures_icon.dds.{digest}.nz": _zn(inner)},
+            {"export/win32/textures/icon.dds": digest},
+        )
+        self.assertEqual(written, 1)
+        self.assertEqual(out["export/win32/textures/icon.dds"], raw)
+
+    def test_object_matching_no_layer_is_still_skipped(self):
+        obj = _zn(b"payload")
+        written, out = self._write(
+            {"export_win32_data_x.bin._" + "0" * 32: obj},
+            {"export/win32/data/x.bin": "0" * 32},
+        )
+        self.assertEqual((written, out), (0, {}))
 
 
 class SetupTests(unittest.TestCase):
