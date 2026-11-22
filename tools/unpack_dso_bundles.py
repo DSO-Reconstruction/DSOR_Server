@@ -87,6 +87,22 @@ def _inflate_cdn(source: Path, target) -> None:
             )
 
 
+def _unwrap_cdn_layers(data: bytes) -> tuple[bytes, tuple[str, ...]]:
+    """Strip every __ZN layer; return the payload and each layer's MD5."""
+    digests = [hashlib.md5(data).hexdigest()]
+    while data[:4] == _CDN_MAGIC:
+        if len(data) < 8:
+            raise ValueError("truncated __ZN header")
+        expected_size = struct.unpack_from("<I", data, 4)[0]
+        data = zlib.decompress(data[8:])
+        if len(data) != expected_size:
+            raise ValueError(
+                f"CDN size mismatch: expected {expected_size:,}, got {len(data):,}."
+            )
+        digests.append(hashlib.md5(data).hexdigest())
+    return data, tuple(digests)
+
+
 def _seekable_bundle(source: Path) -> tuple[Path, bool]:
     with source.open("rb") as handle:
         signature = handle.read(8)
@@ -568,25 +584,26 @@ def _write_cached_runtime_assets(
         # replace it with a standalone cache object that happens to share a key.
         if destination.is_file():
             continue
+        try:
+            payload, layer_digests = _unwrap_cdn_layers(source.read_bytes())
+        except (OSError, ValueError, zlib.error) as exc:
+            print(f"WARNING: Could not inflate cached object for {name!r}: {exc}", flush=True)
+            continue
+        # TOC digests hash a __ZN object: the file itself for legacy ._<md5>
+        # sidecars, the inner object for double-wrapped .nz downloads. Accept
+        # a match on any layer, then write the fully unwrapped payload; a
+        # leftover __ZN header breaks the client's font, table and DDS loaders.
+        if expected_md5.lower() not in layer_digests:
+            print(
+                f"WARNING: Skipping cached object for {name!r}: "
+                f"expected MD5 {expected_md5}, got {', '.join(layer_digests)}.",
+                flush=True,
+            )
+            continue
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_name(destination.name + ".tmp")
-        digest = hashlib.md5()
         try:
-            with temporary.open("wb") as out:
-                class DigestWriter:
-                    def write(self, data: bytes) -> int:
-                        digest.update(data)
-                        return out.write(data)
-
-                _inflate_cdn(source, DigestWriter())
-            actual = digest.hexdigest()
-            if actual != expected_md5.lower():
-                print(
-                    f"WARNING: Skipping cached object for {name!r}: "
-                    f"expected MD5 {expected_md5}, got {actual}.",
-                    flush=True,
-                )
-                continue
+            temporary.write_bytes(payload)
             os.replace(temporary, destination)
             written += 1
         finally:
