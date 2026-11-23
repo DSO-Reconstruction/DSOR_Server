@@ -534,11 +534,6 @@ class CustomizationService:
         quickbar_updated = CharacterService._select_mercenary_quickbar_shortcut(
             s, definition.resource_id
         )
-        # Sticker-book activation can restore the Shadow Soul after map
-        # initialization has already performed its town rest. Apply the rest
-        # after the aura and summon are fully installed so the final maxima
-        # are authoritative before this activation is persisted.
-        CharacterService._restore_player_full_vitals_in_hub(s)
         CharacterService._persist_gameplay_session(
             self,
             s,
