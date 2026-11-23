@@ -25,6 +25,7 @@ import time
 
 from dso_server.runtime import resident_content
 from dso_server.protocol.inventory_codec import active_equipment_slots
+from dso_server.protocol.item_set_protocol import ItemSetDatabase
 from dso_server.gameplay import pvp_arena_rules
 from dso_server.gameplay.item_random import deterministic_base_enchantment_rolls
 
@@ -966,6 +967,34 @@ def _apply_variable_programs(
     return variables
 
 
+@lru_cache(maxsize=256)
+def _mercenary_health_set_modifiers(
+        database_path: str, database_revision: tuple[int, int],
+        class_name: str,
+        equipped_templates: tuple[str, ...]) -> tuple[object, ...]:
+    """Return only Soul-set health tiers owned by the active mercenary gear.
+
+    Companion set damage and actor effects belong to the summon. The client
+    also applies a mercenary set's MaxHealthPoints tier to the player, so that
+    one stat must be shared with the player's authoritative health pool.
+    """
+
+    if not equipped_templates:
+        return ()
+    evaluation = ItemSetDatabase(database_path).evaluate(
+        equipped_templates, class_name=class_name,
+    )
+    return tuple(
+        modifier
+        for modifier in evaluation.modifiers
+        if (
+            str(modifier.kind).casefold() == "maxhealthpoints"
+            and str(getattr(modifier, "source_set_id", ""))
+            .casefold().startswith("mercenary_")
+        )
+    )
+
+
 def _absolute_progression_scale(
     database: StaticPlayerCombatDatabase,
     modifier: CombatModifier,
@@ -1545,7 +1574,6 @@ def _calculate_vitality(
 
     health_absolute = 0.0
     health_relative = 0.0
-    health_set_multipliers = 1.0
     resource_absolute = 0.0
     resource_relative = 0.0
     regeneration_relative, regeneration_absolute, interval = (
@@ -1602,23 +1630,7 @@ def _calculate_vitality(
             else:
                 resource_absolute += amount
         elif operation == "relative":
-            # The Shadow Soul set's advertised +20% Maximum Health is a
-            # final health multiplier. Keep it separate from ordinary
-            # relative health bonuses, which are additive against the base
-            # health pool; otherwise existing bonuses dilute the set's
-            # stated 20% effect.
-            source_set_id = str(
-                getattr(modifier, "source_set_id", "")
-            ).casefold()
-            if (
-                kind == "maxhealthpoints"
-                and source_set_id.startswith(
-                    "mercenary_souldestruction_"
-                )
-            ):
-                health_set_multipliers *= max(0.0, 1.0 + amount)
-            else:
-                health_relative += amount
+            health_relative += amount
         else:
             health_absolute += amount
     maximum_health = max(
@@ -1630,7 +1642,6 @@ def _calculate_vitality(
                 + health_absolute
             )
             * max(0.0, 1.0 + health_relative)
-            * health_set_multipliers
         )),
     )
     maximum_resource = max(
@@ -2514,18 +2525,20 @@ def _calculate_player_combat_stats(
     equipped = []
     allocations = {}
     # Slots 25..27 are the summoned Shadow Soul's amulet, cloak, and belt.
-    # They stay equipped in InventoryInfo so ItemSetDatabase can count the
-    # companion set, but their individual item stats belong to the companion,
-    # not the player. In particular, counting old mercenary gear's
-    # HealthPoints here inflated the player's pre-set max HP and made the
-    # 20% MaxHealthPoints set tier appear to grant less than 20% when the new
-    # set replaced those pieces.
+    # Their damage/defense belong to the companion, but the client applies
+    # mercenary item HealthPoints and the Soul set's MaxHealthPoints tier to
+    # the owner. Keep those health lines in the player's pool while excluding
+    # every other individual mercenary item modifier below.
     mercenary_equipment_slots = pvp_arena_rules.MERCENARY_EQUIPMENT_SLOTS
+    mercenary_item_ids: set[int] = set()
     # The secondary essence stays equipped but does not act: only the active
     # slot's essence supplies its damage factor and ammunition type here, and
     # therefore to every cast that reads ``skill_modifier_sources``.
     for item_id, allocation in active_equipment_slots(inventory).items():
-        if mercenary_equipment_slots.intersection(allocation):
+        is_mercenary_item = bool(
+            mercenary_equipment_slots.intersection(allocation)
+        )
+        if is_mercenary_item and pvp_arena:
             continue
         item = items_by_id.get(item_id)
         definition = (
@@ -2552,6 +2565,8 @@ def _calculate_player_combat_stats(
             definition, banned_categories
         ):
             continue
+        if is_mercenary_item:
+            mercenary_item_ids.add(int(item_id))
         allocations[item_id] = allocation
         equipped.append((item, definition))
 
@@ -2561,6 +2576,11 @@ def _calculate_player_combat_stats(
         instructions = _cached_item_instructions(
             database, item, pvp_arena=pvp_arena,
         )
+        if int(item.item_id) in mercenary_item_ids:
+            instructions = tuple(
+                instruction for instruction in instructions
+                if instruction.modifier.kind.casefold() == "itemhealthpoints"
+            )
         item_instruction_groups.append((item, definition, instructions))
         all_item_instructions.extend(instructions)
 
@@ -2583,7 +2603,35 @@ def _calculate_player_combat_stats(
                 instruction.modifier.kind
             )
         )
-    combined = tuple(all_item_instructions) + active_instructions
+    mercenary_templates = tuple(sorted(
+        str(items_by_id[item_id].template_id)
+        for item_id in mercenary_item_ids
+        if item_id in items_by_id
+    ))
+    mercenary_set_health = (
+        () if pvp_arena else _mercenary_health_set_modifiers(
+            str(database.database_path),
+            tuple(database.database_revision),
+            str(class_name),
+            mercenary_templates,
+        )
+    )
+    mercenary_health_instructions = tuple(
+        _Instruction(
+            CombatModifier(
+                str(modifier.kind),
+                tuple(str(value) for value in modifier.arguments),
+                str(getattr(modifier, "source_set_id", "")),
+            ),
+            absolute_scale=1.0,
+        )
+        for modifier in mercenary_set_health
+    )
+    combined = (
+        tuple(all_item_instructions)
+        + active_instructions
+        + mercenary_health_instructions
+    )
     variables = _apply_variable_programs(
         combined, database.actor_variables
     )

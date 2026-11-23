@@ -70,6 +70,11 @@ GAME_CURRENCY_DEFINITIONS = (
     GameCurrencyDefinition(
         "lantern_coin", "cny_lantern_coin", 1_050
     ),
+    # These client ItemCurrency templates live in the same keyed wallet as
+    # the other event currencies. Their names are exposed to admin/config
+    # surfaces; the wire IDs must match _Template_Item.Id exactly.
+    GameCurrencyDefinition("chronos_coin", "plane_coin", 0),
+    GameCurrencyDefinition("returned_coin", "currency_return_points", 0),
 )
 
 GAME_CURRENCY_BY_NAME = {

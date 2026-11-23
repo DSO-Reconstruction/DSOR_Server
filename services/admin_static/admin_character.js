@@ -309,6 +309,36 @@ function recipeBookSection() {
     <div class="form-actions"><button type="submit">Unlock all recipes</button></div></form>`);
 }
 
+function allAchievementsSection() {
+  return section("Achievements", `<form id="all-achievements-form" class="form-page">
+    <fieldset class="form-section"><legend>Achievement progress</legend>
+      <p class="help">Completes every live achievement in the server database. The character must be offline; completions appear at next login. Achievement reward items are not granted by this action.</p>
+    </fieldset>
+    <p id="all-achievements-error" class="error-text" role="alert"></p>
+    <div class="form-actions"><button type="submit">Obtain all the achievements</button></div></form>`);
+}
+
+function bindAllAchievements(id) {
+  $("#all-achievements-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const button = event.target.querySelector("button[type=submit]");
+    button.disabled = true;
+    try {
+      const reason = await confirmAction("Obtain all the achievements?",
+        "This completes every live achievement for this character, including account-wide achievements shared with its account. The character must be offline. Achievement reward items are not granted.",
+        "Obtain achievements");
+      if (reason === null) return;
+      const result = await api(`/api/characters/${id}/obtain-all-achievements`, {reason});
+      notice(`Completed ${result.newly_completed} achievements (${result.total_completed} of ${result.total_available} total).`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) {
+      const target = $("#all-achievements-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { button.disabled = false; }
+  });
+}
+
 function bindUnlockRecipes(id) {
   $("#unlock-recipes-form").addEventListener("submit", async event => {
     event.preventDefault();
@@ -512,8 +542,8 @@ export async function characterPage(route) {
       section("Achievements", recordTable("achievements", "achievements", "Achievement", Object.entries(s.achievements || {}))) +
       '<div class="columns">' + section("Events", tree({progress: s.event_progress, participation: s.event_participation})) +
       section("Talent presets", tree({skills: s.skill_talent_presets, categories: s.category_talent_presets})) + '</div>';
-    result.html += mainQuestSection() + ammonPWQuestSection();
-    result.mount = () => { bindMainQuests(id); bindAmmonPWQuests(id); };
+    result.html += allAchievementsSection() + mainQuestSection() + ammonPWQuestSection();
+    result.mount = () => { bindAllAchievements(id); bindMainQuests(id); bindAmmonPWQuests(id); };
   } else if (tab === "state") {
     result.html += '<div class="columns">' + section("Position and map access", tree({map: s.map_id, position: s.position, last_visited_town: s.last_visited_town,
       map_access: s.map_access_id, map_difficulty: s.map_difficulty, scaling_difficulty: s.scaling_difficulty, unlocked_maps: s.unlocked_maps})) +

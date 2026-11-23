@@ -199,6 +199,7 @@ class PlayerInitializationService(
             )
         CharacterService._quest_start_active_holdgrounds(self, s)
         CharacterService._refresh_premium_bags(s)
+        CharacterService._restore_player_full_vitals_in_hub(s)
         CharacterService._announce_remote_presence(self, s)
         CharacterService._on_map_entered(self, s)
         # A battleground map load is the second half of a match handoff: the

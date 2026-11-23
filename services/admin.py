@@ -1422,6 +1422,61 @@ class AdminService:
                 "total_unlocked": len(resources),
                 "achievements_completed": completed_achievements}
 
+    def complete_character_all_achievements(self, cid, actor, reason):
+        if self.registry.character_owner(cid) is None or self.store.get_profile(cid) is None:
+            raise ValueError("owned character not found")
+        state = self.store.get(cid)
+        if state is None:
+            raise ValueError("character must enter the game once before achievements can be changed")
+        if cid in self.online_characters():
+            raise ValueError("character must be offline; achievements will appear at next login")
+
+        catalog = load_achievement_catalog(self.static_database_path)
+        achievements = {
+            str(key).casefold(): AchievementProgress.from_document(value)
+            for key, value in state.achievements.items()
+            if isinstance(value, dict)
+        }
+        newly_completed = 0
+        # Account-wide achievements are shared by the account's characters.
+        # Merge the latest shared snapshot and hold the normal gameplay lock
+        # while saving so an online sibling cannot race this account update.
+        with self.store.achievement_lock:
+            shared = self.store.achievement_snapshot(cid, catalog)
+            achievements.update({
+                key: AchievementProgress.from_document(value)
+                for key, value in shared.items()
+            })
+            for definition in catalog.achievements.values():
+                if complete_achievement(achievements, definition):
+                    newly_completed += 1
+            documents = {
+                key: progress.to_document()
+                for key, progress in achievements.items()
+            }
+            self.store.put(
+                replace(state, achievements=documents),
+                flush=True,
+                achievement_catalog=catalog,
+            )
+
+        total_completed = sum(
+            achievements.get(definition.key, AchievementProgress()).completed
+            for definition in catalog.achievements.values()
+        )
+        self.repository.audit(actor.username, "character.achievements.complete_all", cid, {
+            "newly_completed": newly_completed,
+            "total_completed": total_completed,
+            "total_available": len(catalog.achievements),
+            "reason": reason,
+        })
+        return {
+            "ok": True,
+            "newly_completed": newly_completed,
+            "total_completed": total_completed,
+            "total_available": len(catalog.achievements),
+        }
+
     def unlock_character_all_stickers(self, cid, actor, reason):
         if self.registry.character_owner(cid) is None or self.store.get_profile(cid) is None:
             raise ValueError("owned character not found")
@@ -2238,6 +2293,8 @@ class AdminService:
                 return self.complete_character_active_quests(cid, account, reason)
             if parts[3] == "unlock-all-recipes":
                 return self.unlock_character_all_recipes(cid, account, reason)
+            if parts[3] == "obtain-all-achievements":
+                return self.complete_character_all_achievements(cid, account, reason)
             if parts[3] == "unlock-all-stickers":
                 return self.unlock_character_all_stickers(cid, account, reason)
             return self.live.action(cid, parts[3], payload, account.username, reason)
