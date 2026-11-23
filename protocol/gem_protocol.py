@@ -162,7 +162,51 @@ def _validate_socket_content(
             f"{definition.item_category!r} cannot be inserted into "
             f"{container.template_id!r}; expected {required!r}"
         )
+    # Trinkets also need the matching GemSlotType. Legacy weapon and neck
+    # runes share the EquipmentRune category with trinket runes but are not
+    # authored for RuneTrinket, so the category alone lets them through.
+    trinket = _trinket_slot_type(static_database_path, container)
+    if trinket:
+        slots = _gem_slot_types(static_database_path, socket_item.template_id)
+        if slots and trinket not in slots:
+            raise ValueError(
+                f"item {socket_item.item_id} ({socket_item.template_id!r}) "
+                f"does not fit a {trinket} socket; it is made for "
+                f"{', '.join(sorted(slots))}"
+            )
     return definition.item_category
+
+
+def _trinket_slot_type(
+    static_database_path: str | Path,
+    container: ItemInfo,
+) -> str:
+    """Return the GemSlotType token a trinket container accepts, or ''."""
+
+    definition = load_purchase_item_definition(
+        static_database_path, container.template_id
+    )
+    category = str(definition.item_category or "")
+    return category if category in SOCKET_CATEGORY_BY_CONTAINER else ""
+
+
+def _gem_slot_types(
+    static_database_path: str | Path,
+    template_id: str,
+) -> frozenset[str]:
+    path = Path(static_database_path)
+    database = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        row = database.execute(
+            "SELECT GemSlotType FROM _Template_Item WHERE Id=?",
+            (template_id,),
+        ).fetchone()
+    finally:
+        database.close()
+    return frozenset(
+        token.strip() for token in str((row or [""])[0] or "").split(",")
+        if token.strip()
+    )
 
 
 def _level_scaled_value(value: str, level: int) -> int:
