@@ -108,7 +108,49 @@ def _is_land_of_immortals_quest(quest) -> bool:
 
 def _is_ce_2026_quest(quest) -> bool:
     """Keep the Crimson Tide / CE 2026 story out of bulk main completion."""
-    return str(quest.quest_id or "").casefold().startswith("ce2026-")
+    quest_id = str(quest.quest_id or "").casefold()
+    return (
+        quest_id.startswith(("ce2026-", "ce2026_"))
+        or str(quest.chapter_id or "").casefold().startswith("act_90_")
+        or any(
+            str(map_id).casefold().startswith("ce2026_")
+            for map_id in quest.maps
+        )
+    )
+
+
+def _expand_main_quest_branches(catalog, quests, class_name):
+    """Add linked one-time Local, Heroic, and Event branches to main quests."""
+    selected = {quest.key: quest for quest in quests}
+    branch_quests = {
+        quest.key: quest
+        for quest in catalog.quests.values()
+        if quest.quest_type.casefold() in {"local", "heroic", "event"}
+        and not quest.repeatable
+        and quest.accepts_class(class_name)
+        and not _is_ce_2026_quest(quest)
+    }
+    while True:
+        selected_ids = set(selected)
+        followups = {
+            followup.casefold()
+            for quest in selected.values()
+            for followup in quest.followups
+        }
+        additions = tuple(
+            quest for quest in branch_quests.values()
+            if quest.key not in selected_ids
+            and (
+                quest.key in followups
+                or any(
+                    required.casefold() in selected_ids
+                    for required in quest.required
+                )
+            )
+        )
+        if not additions:
+            return tuple(selected.values())
+        selected.update((quest.key, quest) for quest in additions)
 
 
 def character_name(value):
@@ -1322,8 +1364,12 @@ class AdminService:
                         chapter_acts.get(quest.chapter_id.casefold())
                     ) or _is_land_of_immortals_quest(quest)
                 ) and not quest.event_id.strip()
+                and not _is_ce_2026_quest(quest)
             ]
         else:
+            # Do not require chapter metadata for the broad story action:
+            # chapterless World chains such as Ashraya's Divine Exploration
+            # and Kingshill's Ancient Legends are still main quest lines.
             quests = [
                 quest for quest in world_quests
                 if not _is_ce_2026_quest(quest)
@@ -1336,6 +1382,9 @@ class AdminService:
         quests = tuple(quests)
         if not quests:
             raise ValueError("no main story quests are available for this character")
+        main_quest_count = len(quests)
+        quests = _expand_main_quest_branches(catalog, quests, class_name)
+        branch_count = len(quests) - main_quest_count
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         online = cid in self.online_characters()
         target = self.live.find(cid) if online else None
@@ -1344,6 +1393,8 @@ class AdminService:
 
         completed = 0
         if target is None:
+            from dso_server.gameplay.map_unlocks import quest_map_unlocks
+
             state = self.store.get(cid)
             if state is None:
                 raise ValueError("character must enter the game once before quests can be changed")
@@ -1357,11 +1408,22 @@ class AdminService:
                     quest.quest_id, state=QUEST_STATE_CLOSED,
                     finished_mask=finished_mask, completed_at=stamp,
                 ).to_document()
+            unlocked_maps = quest_map_unlocks(
+                str(self.static_database_path),
+                (quest.quest_id for quest in quests),
+            )
             from dataclasses import replace as replace_state
-            self.store.put(replace_state(state, quest_log=quest_log), flush=True)
+            self.store.put(replace_state(
+                state,
+                quest_log=quest_log,
+                unlocked_maps=tuple(sorted(
+                    {*state.unlocked_maps, *unlocked_maps}
+                )),
+            ), flush=True)
         else:
             server, session = target
             from dso_server.services.quests import _quest_log
+            newly_closed = []
             def commit():
                 nonlocal completed
                 if not server.is_session_current(session):
@@ -1375,6 +1437,7 @@ class AdminService:
                         progress = log.get(quest.quest_id)
                         if progress is None or progress.state != QUEST_STATE_CLOSED:
                             completed += 1
+                            newly_closed.append(quest)
                         finished_mask = sum(1 << task.index for task in quest.tasks)
                         if progress is None:
                             progress = QuestProgress(quest.quest_id)
@@ -1393,16 +1456,25 @@ class AdminService:
                         CHAPTER_PROGRESS_COMMAND,
                         server._quest_chapter_progress(session), 1,
                     ))
-                scope = "Act main quests" if act_only else "main quests"
-                PlayerPersistenceService._persist_gameplay_session(
-                    server, session, reason=f"CMS {scope} completed", flush=True
-                )
+                for quest in quests:
+                    server._quest_unlock_maps(session, quest.quest_id)
                 server._send_quest_commands(
                     session, commands,
                     label=(
                         "admin-act-main-quests-completed" if act_only
                         else "admin-main-quests-completed"
                     ),
+                )
+                for quest in newly_closed:
+                    server._quest_fire_signal(
+                        session, "PlayerClosedQuest", (quest.quest_id,),
+                    )
+                server._quest_spawn_revealed_npcs(session)
+                server._quest_refresh_map_phases(session)
+                server._quest_sync_props(session)
+                scope = "Act main quests" if act_only else "main quests"
+                PlayerPersistenceService._persist_gameplay_session(
+                    server, session, reason=f"CMS {scope} completed", flush=True
                 )
                 return True
             if not call_admin_command(server.admin_commands, commit, session=session):
@@ -1413,12 +1485,14 @@ class AdminService:
         )
         self.repository.audit(actor.username, action, cid, {
             "quest_count": len(quests), "newly_completed": completed,
+            "branch_count": branch_count,
             "ce2026_left_open": len(ce2026_quests),
             "online": target is not None, "reason": reason,
             "scope": "act_main" if act_only else "all_main_except_ce2026",
         })
         return {"ok": True, "quest_count": len(quests),
-                "newly_completed": completed, "online": target is not None,
+                "newly_completed": completed, "branch_count": branch_count,
+                "online": target is not None,
                 "ce2026_left_open": len(ce2026_quests)}
 
     def undo_character_main_quests(self, cid, actor, reason):
@@ -1429,16 +1503,23 @@ class AdminService:
             raise ValueError("character must exist and belong to an account")
         catalog = load_quest_catalog(DEFAULT_QUESTS_PATH)
         class_name = CLASS_NAMES.get(int(profile.class_id), "")
-        quests = {
-            quest.key: quest
+        quests = [
+            quest
             for quest in catalog.quests.values()
             if quest.quest_type.casefold() == "world"
             and quest.accepts_class(class_name)
-        }
-        # Match the exact scope of the bulk-completion action above.
+            and not _is_ce_2026_quest(quest)
+        ]
+        # Match the all-main action, including its linked branch quests.
         parallel_world_intro = catalog.quest("pw000-introduction-01-n")
         if parallel_world_intro is not None:
-            quests.setdefault(parallel_world_intro.key, parallel_world_intro)
+            quests.append(parallel_world_intro)
+        quests = {
+            quest.key: quest
+            for quest in _expand_main_quest_branches(
+                catalog, quests, class_name,
+            )
+        }
         if not quests:
             raise ValueError("no main story quests are available for this character")
 

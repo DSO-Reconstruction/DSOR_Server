@@ -233,9 +233,9 @@ function bindInventoryCopy(id) {
 function mainQuestSection() {
   return section("Main quests", `<form id="main-quests-form" class="form-page">
     <fieldset class="form-section"><legend>Quest progress</legend>
-      <p class="help">The all-main option completes every World type quest and the Parallel Worlds introduction prerequisite, including Land of Immortals and other event story quests. CE 2026 story quests are left open. No quest rewards are granted.</p>
-      <p class="help">The Act-only option completes campaign quests assigned to Acts 0–8 plus the Land of Immortals storyline. Event chapters such as CE 2026 and other quests without an Act chapter are excluded.</p>
-      <p class="help">Undo removes completed main quest records so they can be replayed. It does not roll back rewards, levels, or map unlocks earned separately.</p>
+      <p class="help">The all-main option completes every World type quest and the Parallel Worlds introduction, including Land of Immortals, Divine Exploration in Ashraya, and Ancient Legends in Kingshill. It also completes linked one-time Local, Heroic and Event branch quests. CE 2026 story quests are left open. No quest rewards are granted. Map unlocks are saved and quest-gated doors are refreshed.</p>
+      <p class="help">The Act-only option completes campaign quests assigned to Acts 0–8 plus the Land of Immortals storyline and their linked one-time branches. CE 2026 and unrelated chapterless quests are excluded. Map unlocks are saved and quest-gated doors are refreshed.</p>
+      <p class="help">Undo removes completed main and linked branch quest records so they can be replayed. It does not roll back rewards, levels, or map unlocks earned separately.</p>
     </fieldset>
     <p id="main-quests-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button type="submit">Complete all main quests except CE 2026</button>
@@ -252,13 +252,13 @@ function bindMainQuests(id) {
       const reason = await confirmAction(
         actOnly ? "Complete Act main quests?" : "Complete all main quests except CE 2026?",
         actOnly
-          ? "This marks campaign quests from Acts 0–8 and the Land of Immortals storyline as completed. Seasonal/event chapters such as CE 2026 and other quests without an Act chapter are excluded. Quest rewards will not be granted."
-          : "This marks every World type quest except CE 2026, plus the Parallel Worlds introduction prerequisite, as completed. Land of Immortals and other event story quests are included. CE 2026 quests stay open; quest rewards will not be granted.",
+          ? "This marks campaign quests from Acts 0–8 and the Land of Immortals storyline, plus their linked one-time branches, as completed. CE 2026 and unrelated chapterless quests are excluded. Quest rewards will not be granted. Map unlocks are saved and quest-gated doors are refreshed."
+          : "This marks every World type quest except CE 2026, plus the Parallel Worlds introduction and all linked one-time Local, Heroic and Event branches, as completed. It includes Land of Immortals, Divine Exploration in Ashraya, and Ancient Legends in Kingshill. CE 2026 quests stay open; quest rewards will not be granted. Map unlocks are saved and quest-gated doors are refreshed.",
         actOnly ? "Complete Act quests" : "Complete main quests");
       if (reason === null) return;
       const endpoint = actOnly ? "complete-act-main-quests" : "complete-main-quests";
       const result = await api(`/api/characters/${id}/${endpoint}`, {reason});
-      notice(`Marked ${result.newly_completed} ${actOnly ? "Act main" : "main"} quests as completed. CE 2026 quests left open: ${result.ce2026_left_open}.`);
+      notice(`Marked ${result.newly_completed} ${actOnly ? "Act main" : "main"} quests as completed; included ${result.branch_count} linked branches. CE 2026 quests left open: ${result.ce2026_left_open}.`);
       window.dispatchEvent(new Event("reload-page"));
     } catch (error) {
       const target = $("#main-quests-error");
