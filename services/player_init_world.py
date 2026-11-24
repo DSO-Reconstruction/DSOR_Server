@@ -500,6 +500,12 @@ class PlayerInitializationWorldService:
                         player_resource_regeneration_delay=(
                             state.resource_regeneration_delay
                         ),
+                        player_maximum_soul_resource=(
+                            state.maximum_soul_resource
+                        ),
+                        player_current_soul_resource=float(
+                            state.inventory.tertiary_resource
+                        ),
                         initially_active=False,
                     )
                     with match.lock:
@@ -560,6 +566,12 @@ class PlayerInitializationWorldService:
                     player_resource_regeneration_delay=(
                         state.resource_regeneration_delay
                     ),
+                    player_maximum_soul_resource=(
+                        state.maximum_soul_resource
+                    ),
+                    player_current_soul_resource=float(
+                        state.inventory.tertiary_resource
+                    ),
                     initially_active=False,
                 )
                 # Construction performs database/cache work outside the world
@@ -599,6 +611,10 @@ class PlayerInitializationWorldService:
                     ),
                     resource_regeneration_delay=(
                         state.resource_regeneration_delay
+                    ),
+                    maximum_soul_resource=state.maximum_soul_resource,
+                    current_soul_resource=float(
+                        state.inventory.tertiary_resource
                     ),
                 )
         with self.gameplay_world_lock:

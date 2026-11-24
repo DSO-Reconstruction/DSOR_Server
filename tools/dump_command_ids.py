@@ -72,15 +72,18 @@ def recover_command_ids(exe_path: Path) -> dict[str, dict]:
     ]
 
     candidate_targets = [
-        (0x140CF114C, 0x140CF1184),  # release261_220/221
-        (0x140CF100C, 0x140CF1044),  # release261_219
+        # (registration function, allocator thunk, inherited actor stubs)
+        (0x140CF19FC, 0x140CF1A34, (0x140A8B3FC, 0x140A8B438)),  # release261_222
+        (0x140CF114C, 0x140CF1184, (0x140A8AA04, 0x140A8AA40)),  # release261_220/221
+        (0x140CF100C, 0x140CF1044, (0x140A8AA04, 0x140A8AA40)),  # release261_219
     ]
 
     target_va = None
     allocator_va = None
     callers = []
 
-    for t_va, a_va in candidate_targets:
+    stub_pair = None
+    for t_va, a_va, candidate_stub_pair in candidate_targets:
         test_callers = []
         for offset in range(len(text_data) - 5):
             if text_data[offset] == 0xE8:
@@ -92,6 +95,7 @@ def recover_command_ids(exe_path: Path) -> dict[str, dict]:
         if len(test_callers) > 200:
             target_va = t_va
             allocator_va = a_va
+            stub_pair = candidate_stub_pair
             callers = test_callers
             break
 
@@ -232,9 +236,7 @@ def recover_command_ids(exe_path: Path) -> dict[str, dict]:
 
             slot13_va = read_qword(vtable_va + 13 * 8)
             slot14_va = read_qword(vtable_va + 14 * 8)
-            is_scoped = not (
-                hex(slot13_va) == "0x140a8aa04" and hex(slot14_va) == "0x140a8aa40"
-            )
+            is_scoped = (slot13_va, slot14_va) != stub_pair
 
             recovered[name] = {
                 "id": cmd_id,
@@ -262,7 +264,7 @@ def main() -> int:
     parser.add_argument(
         "--json",
         type=Path,
-        default=Path("docs") / "command_ids_rel261_221.json",
+        default=Path("docs") / "command_ids_rel261_222.json",
         help="Output JSON file path",
     )
     parser.add_argument(

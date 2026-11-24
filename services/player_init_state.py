@@ -177,6 +177,7 @@ class PlayerInitializationState:
     socket_effects: dict = field(default_factory=dict)
     maximum_health: int = 1
     maximum_resource: int = 100
+    maximum_soul_resource: float = 0.0
     health_regeneration_fraction: float = 0.0
     health_regeneration_absolute: float = 0.0
     health_regeneration_interval: float = 1.0
@@ -869,7 +870,12 @@ class PlayerInitializationStateService:
             honor_points=honor_points,
             title_type=title_type,
             achievement_title=achievement_title,
-            armament_state=inventory_armament_state(state.inventory),
+            # GamePlayer::OnEquipedItem derives the final armament state as
+            # the equipment records are installed. NewPlayerCommand must
+            # start at zero; pre-seeding 5 for a two-slot weapon makes the
+            # client treat its first weapon callback as an invalid transition
+            # ("unexpected armament state (5)").
+            armament_state=0,
             pvp_kills_total=pvp_kills_total,
             pvp_kills_today=pvp_kills_today,
             pvp_kills_alone_total=pvp_kills_alone_total,
@@ -1568,6 +1574,16 @@ class PlayerInitializationStateService:
             state.persistent_status_effects[entry.instance_id] = entry
         state.maximum_health = max(1, int(stats.maximum_health))
         state.maximum_resource = max(1, int(stats.maximum_resource))
+        state.maximum_soul_resource = max(
+            0.0, float(stats.maximum_soul_resource)
+        )
+        if int(character.class_id) == 4:
+            # Soul Energy is map-session state for the Soulweaver. Every new
+            # map initialization starts the pool at one, then sphere pickups
+            # build it for the remainder of that map.
+            state.inventory.tertiary_resource = min(
+                1.0, state.maximum_soul_resource
+            )
         state.health_regeneration_fraction = max(
             0.0, float(stats.health_regeneration_fraction)
         )
@@ -1605,6 +1621,10 @@ class PlayerInitializationStateService:
             state.inventory.secondary_resource = float(
                 state.maximum_resource
             )
+            state.inventory.tertiary_resource = min(
+                state.maximum_soul_resource,
+                max(0.0, float(state.inventory.tertiary_resource)),
+            )
         else:
             state.inventory.health_points = float(min(
                 state.maximum_health,
@@ -1614,6 +1634,10 @@ class PlayerInitializationStateService:
                 state.maximum_resource,
                 max(0, int(round(state.inventory.secondary_resource))),
             ))
+            state.inventory.tertiary_resource = min(
+                state.maximum_soul_resource,
+                max(0.0, float(state.inventory.tertiary_resource)),
+            )
 
     def _apply_initialization_state(
             self, s: Session, state: PlayerInitializationState) -> None:

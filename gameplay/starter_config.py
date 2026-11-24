@@ -305,7 +305,7 @@ def normalize_starter_config(document: Any) -> dict[str, Any]:
 
         raw_class_eq = raw_items.get("class_equipment")
         if isinstance(raw_class_eq, dict):
-            for class_name in ("warrior", "mage", "ranger", "dwarf"):
+            for class_name in ("warrior", "mage", "necro", "ranger", "dwarf"):
                 entries = raw_class_eq.get(class_name)
                 if isinstance(entries, list):
                     valid_class_items: list[dict[str, Any]] = []

@@ -302,8 +302,10 @@ class CombatResolutionService:
             if s.gameplay_inventory is not None:
                 s.gameplay_inventory.health_points = float(current_health)
                 current_resource = float(s.gameplay_inventory.secondary_resource)
+                current_soul = float(s.gameplay_inventory.tertiary_resource)
             else:
                 current_resource = 0.0
+                current_soul = 0.0
             server_tick = max(
                 int(s.gameplay_chase_server_tick),
                 int(s.gameplay_last_heal_server_tick) + 1,
@@ -339,7 +341,9 @@ class CombatResolutionService:
         )
         s.send_reliable_ordered(
             encode_actor_stats_update_batch(
-                ActorStatsUpdate(int(current_health), current_resource),
+                ActorStatsUpdate(
+                    int(current_health), current_resource, current_soul
+                ),
                 actor_id=LOCAL_PLAYER_ACTOR_ID,
             ),
             track=True,
@@ -1591,6 +1595,9 @@ class CombatResolutionService:
         combat = s.gameplay_combat_state
         if character is None or STATUS_EFFECTS_DISABLED:
             return
+        CharacterService._award_necro_soul_energy_from_mark_applications(
+            s, resolutions,
+        )
         own_ids = {
             LOCAL_PLAYER_ACTOR_ID,
             int(getattr(s, "gameplay_remote_actor_id", 0)
@@ -1697,6 +1704,23 @@ class CombatResolutionService:
         if getattr(s, "gameplay_item_set_programs", None):
             CharacterService._expire_runtime_status_effects(s)
         definitions = list(definitions)
+        delayed_mortis_children = []
+        combat = s.gameplay_combat_state
+        if combat is not None:
+            for definition in tuple(definitions):
+                if not str(definition.resource_id).casefold().startswith(
+                    "necro_shadowofmortis"
+                ):
+                    continue
+                for child in combat.player_status_start_effects(
+                    int(definition.effect_id)
+                ):
+                    if child.delay_ticks > 0:
+                        delayed_mortis_children.append((
+                            str(definition.resource_id).casefold(), child,
+                        ))
+                    else:
+                        definitions.append(child)
         # Heavy Blow's localized contract is 10% per hit for five seconds.
         # The shipped victim column still supplies 5%; skill modifiers can
         # further change that parameter before this causer-hosted buff lands.
@@ -1751,6 +1775,7 @@ class CombatResolutionService:
             instant_programs = []
             stack_transitions = []
             persisted = []
+            mortis_parent_instances = {}
             applied_at = time.perf_counter()
             for definition in definitions:
                 combat = s.gameplay_combat_state
@@ -1844,6 +1869,16 @@ class CombatResolutionService:
                     entry = replace(entry, instance_id=instance_id,
                                     stack_index=previous.stack_index,
                                     stacked=previous.stacked)
+                if str(definition.resource_id).casefold().startswith(
+                    "necro_shadowofmortis"
+                ) and str(definition.resource_id).casefold() not in {
+                    "necro_shadowofmortis_clock",
+                    "necro_shadowofmortis_swing_01",
+                    "necro_shadowofmortis_vfx",
+                }:
+                    mortis_parent_instances[
+                        str(definition.resource_id).casefold()
+                    ] = int(instance_id)
                 wire_entry = (
                     replace(entry, update_timing=True, has_details=False, values=())
                     if capped_refresh else entry
@@ -2042,12 +2077,111 @@ class CombatResolutionService:
                 position_override=effect_position,
             )
         if commands:
+            location_visual_effects = tuple(
+                (instance_id, definition)
+                for instance_id, definition in periodic_effects
+                # Mortis' swing status is a player-hosted enemy aura and is
+                # resolved by apply_player_status_enemy_auras. Starting it a
+                # second time as a location visual would apply each pulse
+                # through both authoritative damage paths.
+                if str(definition.resource_id).casefold()
+                != "necro_shadowofmortis_swing_01"
+            )
             finish_effect_step(CharacterService._activate_player_user_effect_children,
-                s, tuple((instance_id, definition) for instance_id, definition in periodic_effects),
+                s, location_visual_effects,
                 server_tick=server_tick, effect_position=effect_position,
             )
+        if any(
+            str(definition.resource_id).casefold() == "necro_soul_affinity"
+            for definition in definitions
+        ):
+            from dso_server.services.minion_auras import request_minion_aura_sync
+            finish_effect_step(request_minion_aura_sync, s)
+        for parent_resource_id, child in delayed_mortis_children:
+            parent_instance_id = mortis_parent_instances.get(
+                parent_resource_id
+            )
+            if parent_instance_id is not None:
+                finish_effect_step(
+                    CharacterService._schedule_player_status_delayed_child,
+                    s,
+                    parent_instance_id=int(parent_instance_id),
+                    definition=child,
+                )
         if output_error is not None:
             raise output_error
+
+    @staticmethod
+    def _schedule_player_status_delayed_child(
+            s: Session, *, parent_instance_id: int, definition) -> None:
+        """Start an authored Mortis child after its database delay."""
+        with s.flow_lock:
+            combat = s.gameplay_combat_state
+            if not s.connected or combat is None:
+                return
+            timer_key = (
+                "player-status-delayed-child",
+                int(parent_instance_id),
+                int(definition.effect_id),
+            )
+            old_timer = s.gameplay_projectile_timers.pop(timer_key, None)
+            timer = s.gameplay_deadline_timer(
+                max(0.0, int(definition.delay_ticks)
+                    / float(SERVER_TICKS_PER_SECOND)),
+                CharacterService._start_player_status_delayed_child,
+                args=(
+                    s,
+                    s.gameplay_chase_generation,
+                    timer_key,
+                    int(parent_instance_id),
+                    definition,
+                ),
+            )
+            timer.daemon = True
+            s.gameplay_projectile_timers[timer_key] = timer
+        if old_timer is not None:
+            old_timer.cancel()
+        timer.start()
+
+    @staticmethod
+    def _start_player_status_delayed_child(
+            s: Session, generation: int, timer_key, parent_instance_id: int,
+            definition) -> None:
+        with s.flow_lock:
+            s.gameplay_projectile_timers.pop(timer_key, None)
+            combat = s.gameplay_combat_state
+            parent = s.gameplay_runtime_status_effects.get(
+                int(parent_instance_id)
+            )
+            now = time.perf_counter()
+            if (
+                not s.connected
+                or generation != s.gameplay_chase_generation
+                or combat is None
+                or parent is None
+                or (parent[1] is not None and parent[1] <= now)
+            ):
+                return
+            server_tick = int(s.gameplay_chase_server_tick)
+        child = replace(definition, delay_ticks=0)
+        nested = tuple(
+            replace(effect, delay_ticks=0)
+            for effect in combat.player_status_start_effects(
+                int(child.effect_id)
+            )
+        )
+        CharacterService._send_player_skill_status_effects(
+            s,
+            (child, *nested),
+            server_tick=server_tick,
+            label="shadow-of-mortis-clock-start",
+        )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] activated Shadow of Mortis aura "
+            f"clock instance={parent_instance_id}, "
+            f"pulse={child.resource_id}, "
+            f"tick={server_tick & 0xFFFFFFFF}"
+        )
 
     @staticmethod
     def _schedule_counted_status_expiry(s, entry, duration_ticks):
@@ -2112,7 +2246,10 @@ class CombatResolutionService:
                 raw.partition(":")[0].strip().casefold()
                 for raw in tick_modifiers.split(";")
             }
-            if not kinds & {"activecooldown", "actorcooldownreset", "actorstatuseffect"}:
+            if not kinds & {
+                "activecooldown", "actorcooldownreset",
+                "actorstatuseffect", "currsoulresource",
+            }:
                 return
             interval = max(1.0 / SERVER_TICKS_PER_SECOND, cooldown_interval)
             duration = max(0, definition.duration_ticks) / SERVER_TICKS_PER_SECOND
@@ -2159,6 +2296,8 @@ class CombatResolutionService:
         replacement = None
         healing_transition = None
         cooldown_catalog = None
+        soul_transition = None
+        soul_overflow = 0.0
         with s.flow_lock:
             combat = s.gameplay_combat_state
             character = s.gameplay_character
@@ -2196,6 +2335,22 @@ class CombatResolutionService:
                     actor_id, fraction
                 )
 
+        if getattr(runtime[0], "effect_id", None) is not None:
+            with combat.lock:
+                soul = combat.player_soul_resource.get(int(actor_id))
+                if soul is not None:
+                    previous_soul = float(soul[0])
+                    soul_delta = combat.player_status_tick_soul_resource_delta(
+                        int(runtime[0].effect_id), actor_id=int(actor_id)
+                    )
+                    current_soul, maximum_soul, soul_overflow = (
+                        combat.apply_player_soul_resource_delta(
+                            int(actor_id), soul_delta
+                        )
+                    )
+                    if abs(current_soul - previous_soul) > 1e-6:
+                        soul_transition = (current_soul, maximum_soul)
+
         with s.flow_lock:
             runtime = s.gameplay_runtime_status_effects.get(instance_id)
             if (
@@ -2224,6 +2379,8 @@ class CombatResolutionService:
                 healing_transition = (
                     current, maximum, recovered, next_tick
                 )
+            if soul_transition is not None and s.gameplay_inventory is not None:
+                s.gameplay_inventory.tertiary_resource = soul_transition[0]
             remaining_ticks -= 1
             expires_at = runtime[1]
             if (
@@ -2268,6 +2425,32 @@ class CombatResolutionService:
                 recovered=recovered,
                 server_tick=tick,
                 label="player-status-heal",
+            )
+        elif soul_transition is not None:
+            with s.flow_lock:
+                inventory = s.gameplay_inventory
+                if inventory is None or s.gameplay_combat_state is not combat:
+                    return
+                current_health = max(
+                    0, int(round(inventory.health_points))
+                )
+                current_resource = float(inventory.secondary_resource)
+                current_soul = float(inventory.tertiary_resource)
+            s.send_reliable_ordered(
+                encode_actor_stats_update_batch(
+                    ActorStatsUpdate(
+                        current_health, current_resource, current_soul
+                    ),
+                    actor_id=LOCAL_PLAYER_ACTOR_ID,
+                ),
+                track=True,
+                label="player-status-soul-resource-tick",
+            )
+        if soul_overflow > 1e-6:
+            CharacterService._apply_soul_affinity_overflow(
+                s, combat, stacks=int(round(soul_overflow)),
+                server_tick=int(s.gameplay_chase_server_tick),
+                label="necro-status-tick-soul-affinity",
             )
 
     @staticmethod

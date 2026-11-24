@@ -97,6 +97,19 @@ _CLASS_CORE_EQUIPMENT: dict[str, tuple[tuple[str, tuple[int, ...]], ...]] = {
         ("all_base_belt_crafted", (11,)),
         ("mage_base_weaponmod_crafted", (12,)),
     ),
+    "necro": (
+        ("necro_base_helmet_crafted", (0,)),
+        ("necro_base_shoulders_crafted", (1,)),
+        ("necro_base_torso_crafted", (2,)),
+        ("necro_base_gloves_crafted", (3,)),
+        ("necro_base_boots_crafted", (4,)),
+        ("necro_base_rh_staff_speedAttack_damage", (5,)),
+        ("necro_base_lh_orb_armor_healthpoints_resistanceAll", (6,)),
+        ("necro_base_backitem_defense_crafted", (7,)),
+        ("all_base_amulet_crafted", (10,)),
+        ("all_base_belt_crafted", (11,)),
+        ("necro_base_weaponmod_crafted", (12,)),
+    ),
     "ranger": (
         ("ranger_base_helmet_crafted", (0,)),
         ("ranger_base_shoulders_crafted", (1,)),
@@ -453,7 +466,7 @@ def convert_class_incompatible_items(
 
     class_tokens = {
         str(value).casefold() for value in CLASS_NAMES.values()
-    } | {"necro"}
+    } | {"niwalk"}
     source_class = str(source_class or "").casefold()
 
     def item_signature(template_id, slot):

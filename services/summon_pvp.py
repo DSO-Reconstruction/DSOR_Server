@@ -276,6 +276,9 @@ class SummonPVPService:
                     owner_session, "killplayer",
                     server_tick=int(resolution.server_tick),
                 )
+                CharacterService._award_necro_soul_energy_from_enemy_player_death(
+                    owner_session, resolution.position,
+                )
                 continue
             if bool(getattr(resolution, "blocked", False)):
                 from dso_server.services.talent_events import dispatch_talent_event

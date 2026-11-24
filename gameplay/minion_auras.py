@@ -1076,10 +1076,19 @@ class _OwnerPass:
             hosted.expires_at is None or hosted.expires_at > self.now
         )
         if active and hosted.held_by is not None:
-            if hosted.held_by != aura.key and hosted.held_by not in self.current:
-                # A successor instance of the same aura keeps holding it.
-                hosted.held_by = aura.key
-            return
+            if tuple(hosted.definition.values) != tuple(child.values):
+                # A live owner aura can change its parameter while keeping
+                # the same receiver resource. Recreate the receiver so the
+                # client and authoritative damage scale pick up the new
+                # value (Soul Affinity adds one percent per stack).
+                self.stop(actor_id, hosted)
+                hosted = None
+                active = False
+            else:
+                if hosted.held_by != aura.key and hosted.held_by not in self.current:
+                    # A successor instance of the same aura keeps holding it.
+                    hosted.held_by = aura.key
+                return
         if active and child.exclusivity_type.casefold() == "deny":
             hosted.held_by = aura.key
             hosted.expires_at = None

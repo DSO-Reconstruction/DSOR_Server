@@ -6,7 +6,7 @@ export const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({
 }[c]));
 export const human = value => String(value).replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
 export const date = value => value ? new Date(typeof value === "number" ? value * 1000 : value).toLocaleString() : "—";
-export const classes = ["Dragonknight", "Spellweaver", "Ranger", "Steam Mechanicus", "Niwalk"];
+export const classes = ["Dragonknight", "Spellweaver", "Ranger", "Steam Mechanicus", "Soulweaver"];
 export const rarities = ["Common", "Uncommon", "Magic", "Rare", "Epic", "Unique", "Set", "Mythic"];
 let csrf = "", searchTimer, sectionSpy;
 export function setSession(value) { csrf = value; }

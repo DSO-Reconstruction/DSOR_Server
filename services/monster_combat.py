@@ -318,10 +318,13 @@ class MonsterCombatService(
             # the resource globe: "idem pour le mana").
             combat = target_session.gameplay_combat_state
             live = None
+            live_soul = None
             if combat is not None:
                 with combat.lock:
                     live = combat.player_resource.get(int(actor_id))
                     live = None if live is None else float(live[0])
+                    soul = combat.player_soul_resource.get(int(actor_id))
+                    live_soul = None if soul is None else float(soul[0])
             with target_session.flow_lock:
                 inventory = target_session.gameplay_inventory
                 if inventory is None or target_session.gameplay_death_pending:
@@ -329,14 +332,17 @@ class MonsterCombatService(
                 inventory.health_points = float(current_health)
                 if live is not None:
                     inventory.secondary_resource = live
+                if live_soul is not None:
+                    inventory.tertiary_resource = live_soul
                 current_resource = float(inventory.secondary_resource)
+                current_soul = float(inventory.tertiary_resource)
                 server_tick = max(
                     int(target_session.gameplay_chase_server_tick),
                     int(target_session.gameplay_last_heal_server_tick) + 1,
                 ) & 0xFFFFFFFF
                 target_session.gameplay_last_heal_server_tick = server_tick
             packet = encode_actor_stats_update_batch(
-                ActorStatsUpdate(current_health, current_resource),
+                ActorStatsUpdate(current_health, current_resource, current_soul),
                 actor_id=LOCAL_PLAYER_ACTOR_ID,
             )
             target_session.send_reliable_ordered(
@@ -1429,6 +1435,34 @@ class MonsterCombatService(
                     attacks,
                     return_home_transitions,
                     resolutions,
+                )
+        # A monster can spend its aggro on a taunting player summon.  Its
+        # lethal resolution uses that summon actor id, so retire the actor
+        # after the hit has been published instead of leaving a 0-HP minion
+        # registered forever. Necro skeleton retirement also feeds the
+        # authored +10 Soul Energy death rule in _expire_player_summon.
+        for resolution in resolutions:
+            if not bool(getattr(resolution, "killed", False)):
+                continue
+            summon = combat.player_summons.get(
+                int(resolution.target_actor_id)
+            )
+            if summon is None:
+                continue
+            owner_session = target_sessions.get(int(summon.owner_actor_id))
+            if (
+                owner_session is None
+                and int(summon.owner_actor_id) == int(combat.player_actor_id)
+            ):
+                owner_session = s
+            if owner_session is None:
+                continue
+            with _post_commit_step("pve-summon-death-expiry"):
+                CharacterService._expire_player_summon(
+                    owner_session,
+                    owner_session.gameplay_chase_generation,
+                    ("pve-summon-kill", int(summon.actor_id)),
+                    int(summon.actor_id),
                 )
         mark_phase(s, "socket-status-updates")
         from dso_server.services.talent_events import dispatch_incoming_hit

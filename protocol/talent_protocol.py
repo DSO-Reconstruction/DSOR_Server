@@ -666,7 +666,9 @@ class TalentDatabase:
         prefix = str(talent_id).split("_", 1)[0].casefold()
         return (
             prefix
-            if prefix in {"dwarf", "mage", "ranger", "warrior", "niwalk"}
+            if prefix in {
+                "dwarf", "mage", "ranger", "warrior", "niwalk", "necro"
+            }
             else ""
         )
 

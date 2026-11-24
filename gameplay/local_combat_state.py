@@ -1151,6 +1151,9 @@ class PlayerSkillGeometry:
     # operate on these values before they are converted to absolute points.
     resource_cost_fraction: float = 0.0
     resource_gain_fraction: float = 0.0
+    # ``_Template_Skill.SoulCost`` is a fraction of the Soul Energy scale
+    # (the client descriptions confirm .1/.2 as 10/20 points).
+    soul_cost_fraction: float = 0.0
     resource_cost_to_damage: float = 0.0
     # ``_Template_Skill.AmmoCost``: essences spent from the active ammunition
     # slot per accepted cast. Zero for utility skills such as teleport.
@@ -1879,6 +1882,8 @@ class LocalCombatState:
         player_resource_regeneration_absolute: float = 0.0,
         player_resource_regeneration_interval: float = 1.0,
         player_resource_regeneration_delay: float = 0.0,
+        player_maximum_soul_resource: int = 0,
+        player_current_soul_resource: float | None = None,
         initially_active: bool = True,
     ) -> None:
         self.encounter = encounter
@@ -1938,6 +1943,19 @@ class LocalCombatState:
         )
         self.player_resource: dict[int, list[float]] = {
             self.player_actor_id: [current_resource, maximum_resource]
+        }
+        maximum_soul_resource = max(0.0, float(player_maximum_soul_resource))
+        current_soul_resource = min(
+            maximum_soul_resource,
+            max(
+                0.0,
+                float(player_current_soul_resource or 0.0),
+            ),
+        )
+        self.player_soul_resource: dict[int, list[float]] = {
+            self.player_actor_id: [
+                current_soul_resource, maximum_soul_resource
+            ]
         }
         self.player_resource_regeneration: dict[
             int, tuple[float, float, float, float]
@@ -2941,6 +2959,8 @@ class LocalCombatState:
         resource_regeneration_absolute: float = 0.0,
         resource_regeneration_interval: float = 1.0,
         resource_regeneration_delay: float = 0.0,
+        maximum_soul_resource: float | None = None,
+        current_soul_resource: float | None = None,
     ) -> None:
         actor_id = int(actor_id)
         maximum_health = max(1, int(maximum_health))
@@ -2993,6 +3013,24 @@ class LocalCombatState:
             max(0.05, float(resource_regeneration_interval)),
             max(0.0, float(resource_regeneration_delay)),
         )
+        previous_soul = self.player_soul_resource.get(actor_id)
+        resolved_maximum_soul = max(
+            0.0,
+            float(
+                maximum_soul_resource
+                if maximum_soul_resource is not None
+                else (previous_soul[1] if previous_soul is not None else 0.0)
+            ),
+        )
+        resolved_current_soul = (
+            previous_soul[0]
+            if current_soul_resource is None and previous_soul is not None
+            else float(current_soul_resource or 0.0)
+        )
+        self.player_soul_resource[actor_id] = [
+            min(resolved_maximum_soul, max(0.0, resolved_current_soul)),
+            resolved_maximum_soul,
+        ]
         resource_now = time.perf_counter()
         self.last_player_resource_change_at.setdefault(actor_id, resource_now)
         # A refresh (every status expiry re-registers the player) must not
@@ -3008,6 +3046,7 @@ class LocalCombatState:
             self.player_health_regeneration.pop(actor_id, None)
             self.last_player_health_regeneration_at.pop(actor_id, None)
             self.player_resource.pop(actor_id, None)
+            self.player_soul_resource.pop(actor_id, None)
             self.player_resource_regeneration.pop(actor_id, None)
             self.last_player_resource_change_at.pop(actor_id, None)
             self.last_player_resource_regeneration_at.pop(actor_id, None)
@@ -3058,6 +3097,26 @@ class LocalCombatState:
                 self.player_current_health = current
         return tuple(transitions)
 
+    def apply_player_soul_resource_delta(
+        self, actor_id: int, delta: float,
+    ) -> tuple[float, float, float]:
+        """Apply Soul Energy and return (current, maximum, overflow).
+
+        Callers hold ``self.lock``. Positive energy above the cap becomes
+        Soul Affinity stacks rather than disappearing.
+        """
+
+        actor_id = int(actor_id)
+        pool = self.player_soul_resource.get(actor_id)
+        if pool is None:
+            return 0.0, 0.0, 0.0
+        current, maximum = map(float, pool)
+        uncapped = current + float(delta)
+        updated = min(maximum, max(0.0, uncapped))
+        overflow = max(0.0, uncapped - maximum)
+        pool[0] = updated
+        return updated, maximum, overflow
+
     def apply_player_skill_resource(
         self,
         actor_id: int,
@@ -3066,6 +3125,7 @@ class LocalCombatState:
         gain_fraction: float,
         now: float,
         resource_pool: float | None = None,
+        soul_cost: float = 0.0,
     ) -> tuple[bool, float, float, float, float]:
         """Atomically pay/gain one skill's authored resource fractions.
 
@@ -3094,7 +3154,15 @@ class LocalCombatState:
         gain = max(0.0, pool * max(0.0, gain_fraction))
         if math.floor(current + 0.5) < math.floor(cost + 0.5):
             return False, current, maximum, cost, gain
+        soul = self.player_soul_resource.setdefault(actor_id, [0.0, 0.0])
+        soul_current, soul_maximum = soul
+        required_soul = max(0.0, float(soul_cost))
+        if math.floor(soul_current + 0.5) < math.floor(required_soul + 0.5):
+            return False, current, maximum, cost, gain
         current = min(maximum, max(0.0, current - cost + gain))
+        soul[0] = min(
+            soul_maximum, max(0.0, soul_current - required_soul)
+        )
         resource[0] = current
         # Only rage's out-of-combat delay counts from the last spend; mana keeps
         # ticking on its own clock. Restarting it here meant a mage casting more
@@ -3570,7 +3638,8 @@ class LocalCombatState:
                         COALESCE(s.CoolDown, 0),
                         COALESCE(s.CoolDownCategory, ''),
                         COALESCE(s.ForceExecution, 0),
-                        COALESCE(s.SkillBulletId, '')
+                        COALESCE(s.SkillBulletId, ''),
+                        COALESCE(s.SoulCost, 0)
                 FROM _Template_Skill AS s
                 LEFT JOIN _Template_SkillBullet AS b
                   ON b.Id = s.SkillBulletId
@@ -3728,6 +3797,7 @@ class LocalCombatState:
                 cooldown_category=str(row[46] or "").strip(),
                 force_execution=bool(row[47]),
                 bullet_id=str(row[48] or ""),
+                soul_cost_fraction=max(0.0, float(row[49] or 0.0)),
             )
             if row is not None
             else None
@@ -9175,6 +9245,83 @@ class LocalCombatState:
             max(0.0, float(geometry.resource_gain_fraction)),
         )
 
+    def player_skill_soul_cost(
+        self,
+        skill_index: int,
+        *,
+        modifier_sources: tuple[object, ...] = (),
+    ) -> float:
+        geometry = self._load_player_skill_geometry(skill_index)
+        if geometry is None:
+            return 0.0
+        geometry = self._modified_player_skill_geometry(
+            geometry, tuple(modifier_sources)
+        )
+        # Client item descriptions define the normalized values (.1/.2) as
+        # 10/20 Soul Energy. They price against the fixed 100-point scale.
+        return max(0.0, float(geometry.soul_cost_fraction) * 100.0)
+
+    def player_status_soul_resource_delta(
+        self,
+        definitions: tuple[VictimStatusEffectDefinition, ...],
+        *,
+        maximum_resource: float,
+    ) -> float:
+        total = 0.0
+        for definition in definitions:
+            if "currsoulresource" not in definition.modifier_kinds:
+                continue
+            for kind, arguments in self._status_modifier_program(
+                int(definition.effect_id)
+            ):
+                if kind.casefold() != "currsoulresource" or not arguments:
+                    continue
+                amount = self._modifier_amount(
+                    None, arguments[0], tuple(definition.values)
+                )
+                if amount is None:
+                    continue
+                operation = (
+                    arguments[1].casefold()
+                    if len(arguments) > 1 else "absolute"
+                )
+                total += (
+                    float(maximum_resource) * float(amount)
+                    if operation == "relative" else float(amount)
+                )
+        return total
+
+    def player_status_tick_soul_resource_delta(
+        self, effect_id: int, *, actor_id: int | None = None,
+    ) -> float:
+        """Resolve one status effect's direct CurrSoulResource tick."""
+        _interval, modifiers, _start = self._status_effect_runtime_program(
+            int(effect_id)
+        )
+        total = 0.0
+        for instruction in str(modifiers).split(";"):
+            kind, separator, body = instruction.partition(":")
+            if not separator or kind.strip().casefold() != "currsoulresource":
+                continue
+            arguments = tuple(part.strip() for part in body.split(","))
+            if not arguments:
+                continue
+            amount = self._modifier_amount(None, arguments[0], ())
+            if amount is None:
+                continue
+            operation = (
+                arguments[1].casefold() if len(arguments) > 1 else "absolute"
+            )
+            resource = self.player_soul_resource.get(
+                self.player_actor_id if actor_id is None else int(actor_id),
+                (0.0, 0.0),
+            )
+            total += (
+                float(resource[1]) * float(amount)
+                if operation == "relative" else float(amount)
+            )
+        return total
+
     def player_skill_ammo_cost(self, skill_index: int) -> int:
         """Essences one accepted cast of this skill spends (``AmmoCost``)."""
 
@@ -9209,9 +9356,61 @@ class LocalCombatState:
                 operation, _, entry = payload.partition(",")
                 if kind.casefold() != "actorstatuseffect" or operation.casefold() != "addae":
                     continue
-                result.extend(e for e in self._load_victim_status_effects(
-                    db, entry, default_trigger="immediate")
-                    if e.trigger in {"immediate", "immediatemanaged"})
+                for effect in self._load_victim_status_effects(
+                    db, entry, default_trigger="immediate"
+                ):
+                    trigger = str(effect.trigger or "immediate").split(
+                        "#", 1
+                    )[0].casefold()
+                    if trigger in {"immediate", "immediatemanaged"}:
+                        result.append(replace(effect, trigger=trigger))
+        return tuple(result)
+
+    def player_status_start_effects(self, effect_id: int) -> tuple:
+        """Resolve immediate player-status children from ``StartModifiers``.
+
+        This is needed for authored caster effects whose gameplay is nested
+        under an immediate child (Shadow of Mortis -> clock -> swing aura).
+        The client executes these children from the parent template, but the
+        server must materialize them too so its player aura simulation sees
+        the same active status chain.
+        """
+        _interval, _ticks, modifiers = self._status_effect_runtime_program(
+            int(effect_id)
+        )
+        if "actorstatuseffect:" not in str(modifiers).casefold():
+            return ()
+        result = []
+        path = self.encounter.static_database_path
+        with closing(sqlite3.connect(
+            f"file:{path.as_posix()}?mode=ro", uri=True
+        )) as database:
+            for instruction in str(modifiers).split(";"):
+                kind, separator, payload = instruction.partition(":")
+                if not separator or kind.strip().casefold() != "actorstatuseffect":
+                    continue
+                parts = [part.strip() for part in payload.split(",")]
+                if len(parts) < 2 or parts[0].casefold() != "addae":
+                    continue
+                metadata = {
+                    name.strip().casefold(): value.split("#", 1)[0].strip().casefold()
+                    for token in parts[2:]
+                    for name, marker, value in (token.partition(":"),)
+                    if marker
+                }
+                trigger = metadata.get("on", "immediate")
+                if trigger not in {"immediate", "immediatemanaged"}:
+                    continue
+                for child in self._load_victim_status_effects(
+                    database,
+                    ",".join(parts[1:]),
+                    default_trigger="immediate",
+                ):
+                    cleaned_trigger = str(child.trigger or "immediate").split(
+                        "#", 1
+                    )[0].casefold()
+                    if cleaned_trigger in {"immediate", "immediatemanaged"}:
+                        result.append(replace(child, trigger=cleaned_trigger))
         return tuple(result)
 
     def player_status_resource_delta(
@@ -9581,12 +9780,10 @@ class LocalCombatState:
         return self._player_taunt_aura_radii[effect_id]
 
     def player_status_enemy_aura(self, effect_id, values=(), *, duration_ticks=1):
-        """Resolve the receiver effects for a player-hosted enemy aura.
+        """Resolve receiver effects for an active player-hosted enemy aura.
 
-        Chillingly Cold's third tier applies ``mh_rings_set_aura`` directly
-        to the wearer. The client expands its 100-unit aura, but the server
-        must also install its ``mh_rings_set_buff`` child on nearby monsters
-        for ``SkillDamage:...,MonsterSkills`` to affect authoritative hits.
+        This includes equipment auras such as Chillingly Cold and temporary
+        class-skill auras such as Soulweaver's Shadow of Mortis.
         """
         effect_id = int(effect_id)
         normalized_values = tuple(float(value) for value in (values or ()))
@@ -9607,9 +9804,6 @@ class LocalCombatState:
                 self._player_status_aura_cache[key] = None
                 return None
             resource_id = str(row[0] or "")
-            if resource_id.casefold() != "mh_rings_set_aura":
-                self._player_status_aura_cache[key] = None
-                return None
             targets = {
                 value.strip().casefold()
                 for value in str(row[1] or "").replace(",", ";").split(";")
@@ -9631,14 +9825,14 @@ class LocalCombatState:
             definitions = self._load_victim_status_effects(
                 database, encoded_status, default_trigger="immediate"
             )
-            if not definitions:
-                self._player_status_aura_cache[key] = None
-                return None
-            aura = definitions[0]
             receivers = self._load_location_aura_effects(
                 database, encoded_status
             )
-        result = (aura, tuple(receivers)) if receivers else None
+            if not definitions or not receivers:
+                self._player_status_aura_cache[key] = None
+                return None
+            aura = definitions[0]
+        result = (aura, tuple(receivers))
         self._player_status_aura_cache[key] = result
         return result
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import random
+import time
 from functools import lru_cache
 
 from dso_server.runtime.context import *
@@ -13,6 +14,9 @@ from dso_server.gameplay.status_modifier_runtime import (
     evaluate_active_status_modifiers, load_status_modifier_catalog,
     snapshot_player_modifier_sources,
 )
+
+
+NECRO_SOUL_ENERGY_PER_NEARBY_MOB_DEATH = 3
 
 
 def _reconciled_pool_value(
@@ -139,8 +143,337 @@ def _skill_start_released_effects(
     )
 
 
+@lru_cache(maxsize=128)
+def _status_effect_wire_id(database_path: str, resource_id: str) -> int | None:
+    """Resolve one static status resource to its zero-based client id."""
+
+    try:
+        with sqlite3.connect(
+            f"file:{Path(database_path).as_posix()}?mode=ro", uri=True
+        ) as database:
+            row = database.execute(
+                "SELECT rowid - 1 FROM _Template_StatusEffect WHERE Id=?",
+                (str(resource_id),),
+            ).fetchone()
+    except (OSError, sqlite3.Error):
+        return None
+    return int(row[0]) if row is not None else None
+
+
 class PlayerResourceService:
     """Own live vitality limits, skill payments, and resource regeneration."""
+
+    @staticmethod
+    def _apply_soul_affinity_overflow(
+            s: Session, combat, *, stacks: int, server_tick: int,
+            label: str) -> None:
+        """Convert capped Soul Energy into its authored five-second buff."""
+
+        count = min(50, max(0, int(stacks)))
+        if count <= 0 or combat is None:
+            return
+        try:
+            database_path = str(combat.encounter.static_database_path)
+            with sqlite3.connect(
+                f"file:{Path(database_path).as_posix()}?mode=ro", uri=True
+            ) as database:
+                definitions = LocalCombatState._load_victim_status_effects(
+                    database, "necro_soul_affinity,C:1,D:5,DP:5"
+                )
+        except (AttributeError, OSError, sqlite3.Error, ValueError):
+            return
+        if definitions:
+            effect_id = int(definitions[0].effect_id)
+            with s.flow_lock:
+                current_stacks = max(
+                    (
+                        int(entry.stack_index) + 1
+                        for entry, expires_at
+                        in s.gameplay_runtime_status_effects.values()
+                        if int(entry.effect_id) == effect_id
+                        and (
+                            expires_at is None
+                            or float(expires_at) > time.perf_counter()
+                        )
+                    ),
+                    default=0,
+                )
+            CharacterService._send_player_skill_status_effects(
+                s,
+                (definitions[0],) * count,
+                server_tick=int(server_tick),
+                label=label,
+            )
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] Soul Affinity overflow: "
+                f"+{count} stack(s), "
+                f"{min(50, current_stacks + count)}/50"
+            )
+
+    @staticmethod
+    def _apply_player_soul_energy_gain(
+            s: Session, amount: float, *, label: str,
+            server_tick: int | None = None) -> float:
+        """Commit one server-authored gain to this Soulweaver's Soul pool."""
+
+        amount = max(0.0, float(amount))
+        if amount <= 1e-6:
+            return 0.0
+        with s.flow_lock:
+            combat = s.gameplay_combat_state
+            character = s.gameplay_character
+            inventory = s.gameplay_inventory
+            if (
+                combat is None or character is None or inventory is None
+                or int(character.class_id) != 4
+            ):
+                return 0.0
+            actor_id = int(
+                s.gameplay_remote_actor_id
+                or CharacterService._remote_actor_id(character.character_id)
+            )
+            tick = int(
+                s.gameplay_chase_server_tick
+                if server_tick is None else server_tick
+            )
+        with combat.lock:
+            pool = combat.player_soul_resource.get(actor_id)
+            if pool is None:
+                return 0.0
+            before = float(pool[0])
+            current, _maximum, overflow = (
+                combat.apply_player_soul_resource_delta(actor_id, amount)
+            )
+            health = combat.player_health.get(actor_id, [0])[0]
+            resource = combat.player_resource.get(actor_id, [0.0])[0]
+        with s.flow_lock:
+            if (
+                s.gameplay_combat_state is not combat
+                or s.gameplay_inventory is not inventory
+            ):
+                return 0.0
+            inventory.tertiary_resource = float(current)
+        s.send_reliable_ordered(
+            encode_actor_stats_update_batch(
+                ActorStatsUpdate(int(health), float(resource), float(current)),
+                actor_id=LOCAL_PLAYER_ACTOR_ID,
+            ),
+            track=True,
+            label=label,
+        )
+        if overflow > 1e-6:
+            CharacterService._apply_soul_affinity_overflow(
+                s, combat, stacks=int(round(overflow)), server_tick=tick,
+                label=f"{label}-soul-affinity",
+            )
+        CharacterService._request_account_save(s, "Soul Energy changed")
+        return max(0.0, current - before) + overflow
+
+    @staticmethod
+    def _award_necro_soul_energy_from_enemy_deaths(
+            s: Session, monsters) -> int:
+        """Grant base Soul Energy for each nearby enemy death."""
+
+        monsters = tuple(monsters)
+        if not monsters:
+            return 0
+        # Normal gameplay kills have a world-loot allocator. Those deaths
+        # create native Soul Spheres in the loot generation path; collecting
+        # the sphere applies ``necro_soul_globe_pickup``. Keep a direct gain
+        # only for minimal hosts that do not publish world loot.
+        with s.flow_lock:
+            if s.gameplay_world_loot_allocator is not None:
+                return 0
+        return PlayerResourceService._award_necro_soul_energy_from_death_positions(
+            s,
+            tuple(
+                getattr(monster, "position", None)
+                for monster in monsters
+            ),
+        )
+
+    @staticmethod
+    def _award_necro_soul_energy_from_enemy_player_death(
+            s: Session, position) -> int:
+        """PvP enemy kills give the base nearby-death Soul Energy only."""
+
+        return PlayerResourceService._award_necro_soul_energy_from_death_positions(
+            s, (position,), allow_match=True, energy_per_death=1,
+        )
+
+    @staticmethod
+    def _award_necro_soul_energy_from_mark_applications(
+            s: Session, resolutions) -> int:
+        """Roll Wraith Master's 15% +5 Soul proc on direct mark hits."""
+
+        mark_ids = {
+            "necro_mortismark",
+            "necro_mortismark_ce2026",
+            "necro_mortismark_apply",
+            "necro_mortismark_physical_apply",
+            "necro_mortismark_apply_ce2026",
+            "necro_mortismark_physical_apply_ce2026",
+        }
+        with s.flow_lock:
+            combat = s.gameplay_combat_state
+            character = s.gameplay_character
+            if (
+                combat is None or character is None
+                or int(character.class_id) != 4
+                or s.gameplay_match is not None
+            ):
+                return 0
+            actor_id = int(
+                s.gameplay_remote_actor_id
+                or CharacterService._remote_actor_id(character.character_id)
+            )
+            database_path = str(combat.encounter.static_database_path)
+        if not PlayerResourceService._active_necro_talent_stack(
+            s, database_path, "necro_talent_wraith_master"
+        ):
+            return 0
+        marked_hits = 0
+        for resolution in tuple(resolutions):
+            source_actor_id = int(
+                getattr(resolution, "source_actor_id", None)
+                or getattr(resolution, "attacker_actor_id", -1)
+            )
+            if source_actor_id not in {
+                actor_id, LOCAL_PLAYER_ACTOR_ID,
+            }:
+                continue
+            if any(
+                str(getattr(effect, "resource_id", "")).casefold()
+                in mark_ids
+                for effect in getattr(
+                    resolution, "victim_status_effects", ()
+                )
+            ):
+                marked_hits += 1
+        procs = sum(1 for _ in range(marked_hits) if random.random() < 0.15)
+        if procs:
+            CharacterService._apply_player_soul_energy_gain(
+                s, float(procs * 5),
+                label="necro-wraith-master-mark-soul",
+            )
+        return procs
+
+    @staticmethod
+    def _award_necro_soul_energy_from_death_positions(
+            s: Session, positions, *, allow_match: bool = False,
+            energy_per_death: int = NECRO_SOUL_ENERGY_PER_NEARBY_MOB_DEATH) -> int:
+        energy = PlayerResourceService._necro_soul_energy_globe_count(
+            s, positions, allow_match=allow_match,
+            energy_per_death=energy_per_death,
+        )
+        if energy:
+            CharacterService._apply_player_soul_energy_gain(
+                s, float(energy), label="necro-nearby-enemy-death-soul",
+            )
+        return energy
+
+    @staticmethod
+    def _necro_soul_energy_globe_count(
+            s: Session, positions, *, allow_match: bool = False,
+            energy_per_death: int = NECRO_SOUL_ENERGY_PER_NEARBY_MOB_DEATH) -> int:
+        """Count Soul Spheres from nearby eligible deaths."""
+
+        positions = tuple(positions)
+        if not positions:
+            return 0
+        with s.flow_lock:
+            combat = s.gameplay_combat_state
+            character = s.gameplay_character
+            move = s.gameplay_last_move
+            if (
+                combat is None or character is None or move is None
+                or int(character.class_id) != 4
+                or (s.gameplay_match is not None and not allow_match)
+            ):
+                return 0
+            player_position = combat.encounter.coordinate_frame.wire_to_world(
+                move.relative_position
+            )
+            actor_id = int(
+                s.gameplay_remote_actor_id
+                or CharacterService._remote_actor_id(character.character_id)
+            )
+            database_path = str(combat.encounter.static_database_path)
+        with combat.lock:
+            active_archer = any(
+                int(getattr(summon, "owner_actor_id", -1)) == actor_id
+                and str(getattr(
+                    getattr(summon, "definition", None),
+                    "monster_template_id", "",
+                )).casefold() == "minion_necro_skeleton_archer"
+                and combat.player_summon_health.get(
+                    int(summon.actor_id), [0]
+                )[0] > 0
+                for summon in combat.player_summons.values()
+            )
+        # The shipped Skeleton Archer attack range is 15 units; use it as the
+        # authored proximity band for the Soul Energy “nearby death” trigger.
+        nearby_positions = []
+        for position in positions:
+            if position is None or len(position) < 3:
+                continue
+            if LocalCombatState._distance(
+                tuple(position), tuple(player_position)
+            ) <= 15.0:
+                nearby_positions.append(position)
+        if not nearby_positions:
+            return 0
+        master_enabled = PlayerResourceService._active_necro_talent_stack(
+            s, database_path, "necro_talent_wraith_master"
+        )
+        master_level = PlayerResourceService._active_necro_talent_stack(
+            s, database_path, "necro_talent_wraith_master_lvl"
+        )
+        master_rank = max(1, master_level) if master_enabled else 0
+        archer_node = PlayerResourceService._active_necro_talent_stack(
+            s, database_path, "necro_talent_skill_cat_01_03"
+        )
+        if s.gameplay_match is not None:
+            # Necro skill-tree talents and class masteries carrying
+            # DisabledMatchPvP are inert in arenas; player kills still grant
+            # the base point shown by the class resource tooltip.
+            master_rank = 0
+            archer_node = 0
+        energy = len(nearby_positions) * max(0, int(energy_per_death))
+        for _position in nearby_positions:
+            if active_archer and archer_node and random.random() < 0.20:
+                energy += 1
+            if master_rank and random.random() < min(
+                0.50, 0.10 + 0.10 * (master_rank - 1)
+            ):
+                # Each successful proc is another one-energy Soul Sphere.
+                energy += 1
+        return energy
+
+    @staticmethod
+    def _active_necro_talent_stack(
+            s: Session, database_path: str, resource_id: str) -> int:
+        effect_id = _status_effect_wire_id(
+            str(database_path), str(resource_id)
+        )
+        if effect_id is None:
+            return 0
+        now = time.perf_counter()
+        with s.flow_lock:
+            entries = list(s.gameplay_persistent_status_effects.values())
+            entries.extend(
+                entry for entry, expiry
+                in s.gameplay_runtime_status_effects.values()
+                if expiry is None or float(expiry) >= now
+            )
+        return max(
+            (
+                max(1, int(getattr(entry, "stack_index", 0)) + 1)
+                for entry in entries
+                if int(getattr(entry, "effect_id", -1)) == int(effect_id)
+            ),
+            default=0,
+        )
 
     @staticmethod
     def _end_player_runtime_effects(s: Session, matches, *, label: str) -> bool:
@@ -296,9 +629,14 @@ class PlayerResourceService:
                 float(stats.maximum_resource),
                 previous_resource,
             )
+            previous_soul = max(0.0, float(inventory.tertiary_resource))
+            current_soul = min(
+                float(stats.maximum_soul_resource), previous_soul
+            )
             publish = (
                 int(current) != previous_current
                 or abs(float(current_resource) - previous_resource) > 1e-6
+                or abs(current_soul - previous_soul) > 1e-6
             )
         else:
             with combat.lock:
@@ -310,11 +648,18 @@ class PlayerResourceService:
                     int(actor_id),
                     [float(stats.maximum_resource)] * 2,
                 )
+                old_soul = combat.player_soul_resource.get(
+                    int(actor_id),
+                    [float(stats.maximum_soul_resource),
+                     float(stats.maximum_soul_resource)],
+                )
                 previous = (
                     int(old_health[0]),
                     int(old_health[1]),
                     float(old_resource[0]),
                     float(old_resource[1]),
+                    float(old_soul[0]),
+                    float(old_soul[1]),
                 )
                 reconciled_health = _reconciled_pool_value(
                     previous[0],
@@ -327,6 +672,10 @@ class PlayerResourceService:
                     previous[3],
                     stats.maximum_resource,
                     minimum=0.0,
+                )
+                reconciled_soul = min(
+                    float(stats.maximum_soul_resource),
+                    max(0.0, previous[4]),
                 )
                 combat.register_player(
                     actor_id,
@@ -349,26 +698,34 @@ class PlayerResourceService:
                     resource_regeneration_delay=(
                         stats.resource_regeneration_delay
                     ),
+                    maximum_soul_resource=stats.maximum_soul_resource,
+                    current_soul_resource=reconciled_soul,
                 )
                 current, maximum = combat.player_health[int(actor_id)]
                 current_resource, maximum_resource = (
                     combat.player_resource[int(actor_id)]
                 )
+                current_soul, maximum_soul = combat.player_soul_resource[
+                    int(actor_id)
+                ]
             publish = previous != (
                 int(current),
                 int(maximum),
                 float(current_resource),
                 float(maximum_resource),
+                float(current_soul),
+                float(maximum_soul),
             )
         with s.flow_lock:
             if s.gameplay_inventory is not inventory:
                 return
             inventory.health_points = float(current)
             inventory.secondary_resource = float(current_resource)
+            inventory.tertiary_resource = float(current_soul)
         if publish:
             s.send_reliable_ordered(
                 encode_actor_stats_update_batch(
-                    ActorStatsUpdate(current, current_resource),
+                    ActorStatsUpdate(current, current_resource, current_soul),
                     actor_id=LOCAL_PLAYER_ACTOR_ID,
                 ),
                 track=True,
@@ -424,6 +781,8 @@ class PlayerResourceService:
             maximum_resource = (
                 max(0.0, float(resource[1])) if resource is not None else 0.0
             )
+            soul = combat.player_soul_resource.get(int(actor_id))
+            current_soul = float(soul[0]) if soul is not None else 0.0
             health[0] = maximum_health
             if resource is not None:
                 resource[0] = maximum_resource
@@ -436,6 +795,7 @@ class PlayerResourceService:
             inventory.health_points = float(maximum_health)
             if resource is not None:
                 inventory.secondary_resource = current_resource
+            inventory.tertiary_resource = current_soul
 
         recovered = maximum_health - previous_health
         if recovered > 0:
@@ -453,7 +813,9 @@ class PlayerResourceService:
         ) > 1e-6:
             s.send_reliable_ordered(
                 encode_actor_stats_update_batch(
-                    ActorStatsUpdate(maximum_health, current_resource),
+                    ActorStatsUpdate(
+                        maximum_health, current_resource, current_soul
+                    ),
                     actor_id=LOCAL_PLAYER_ACTOR_ID,
                 ),
                 track=True,
@@ -499,6 +861,9 @@ class PlayerResourceService:
                 modifier_sources=tuple(modifier_sources),
             )
         )
+        soul_cost = combat.player_skill_soul_cost(
+            skill_index, modifier_sources=tuple(modifier_sources)
+        )
         # The client prices skills against the class's base pool for its
         # level, not the maximum pets and wisdom raise (see
         # LocalCombatState.apply_player_skill_resource).
@@ -511,8 +876,9 @@ class PlayerResourceService:
             effect_ids = sorted({int(getattr(m, "effect_id", -1)) for m in modifier_sources
                                  if getattr(m, "effect_id", None) is not None})
             print(f"[skill-resource] skill {skill_index} cost {cost_fraction:.3f} "
-                  f"gain {gain_fraction:.3f} pool {resource_pool:g} effects {effect_ids}")
-        if cost_fraction <= 0.0 and gain_fraction <= 0.0:
+                  f"gain {gain_fraction:.3f} soul={soul_cost:g} "
+                  f"pool {resource_pool:g} effects {effect_ids}")
+        if cost_fraction <= 0.0 and gain_fraction <= 0.0 and soul_cost <= 0.0:
             return True
         with combat.lock:
             accepted, current, _maximum, cost, gain = (
@@ -522,8 +888,12 @@ class PlayerResourceService:
                     gain_fraction=gain_fraction,
                     now=now,
                     resource_pool=resource_pool,
+                    soul_cost=soul_cost,
                 )
             )
+            current_soul = combat.player_soul_resource.get(
+                int(actor_id), [0.0, 0.0]
+            )[0]
             if accepted and on_commit is not None:
                 on_commit()
             current_health = combat.player_health.get(
@@ -533,10 +903,11 @@ class PlayerResourceService:
             if s.gameplay_inventory is not inventory:
                 return False
             inventory.secondary_resource = float(current)
+            inventory.tertiary_resource = float(current_soul)
         try:
             s.send_reliable_ordered(
                 encode_actor_stats_update_batch(
-                    ActorStatsUpdate(current_health, current),
+                    ActorStatsUpdate(current_health, current, current_soul),
                     actor_id=LOCAL_PLAYER_ACTOR_ID,
                 ),
                 track=True,
@@ -564,6 +935,12 @@ class PlayerResourceService:
                 f"[{GAMEPLAY_SERVICE_NAME}] rejected skill index "
                 f"{int(skill_index)}: resource={current:.0f}, "
                 f"cost={cost:.0f}, gain={gain:.0f}"
+            )
+        if not accepted and soul_cost > 0.0:
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] rejected skill index "
+                f"{int(skill_index)}: Soul Energy="
+                f"{current_soul:.0f}, cost={soul_cost:.0f}"
             )
         return bool(accepted)
 
@@ -625,6 +1002,8 @@ class PlayerResourceService:
                 float(getattr(resolution, "maximum_health", 0)),
             )
             current_resource, maximum_resource = map(float, resource)
+            soul = combat.player_soul_resource.get(int(actor_id))
+            current_soul = float(soul[0]) if soul is not None else 0.0
             gain = damage / maximum_health * maximum_resource * sum(gains)
             updated = min(maximum_resource, current_resource + gain)
             recovered = updated - current_resource
@@ -640,9 +1019,10 @@ class PlayerResourceService:
             if s.gameplay_inventory is not inventory:
                 return 0.0
             inventory.secondary_resource = float(updated)
+            inventory.tertiary_resource = current_soul
         s.send_reliable_ordered(
             encode_actor_stats_update_batch(
-                ActorStatsUpdate(current_health, updated),
+                ActorStatsUpdate(current_health, updated, current_soul),
                 actor_id=LOCAL_PLAYER_ACTOR_ID,
             ),
             track=True,
@@ -751,13 +1131,18 @@ class PlayerResourceService:
 
     @staticmethod
     def _apply_player_status_resource(s: Session, definitions) -> None:
-        """Apply immediate CurrSkillResource programs from user effects."""
+        """Apply immediate player skill-resource and Soul Energy effects."""
 
-        definitions = tuple(
-            definition for definition in definitions
-            if "currskillresource" in definition.modifier_kinds
+        definitions = tuple(definitions)
+        has_skill = any(
+            "currskillresource" in definition.modifier_kinds
+            for definition in definitions
         )
-        if not definitions:
+        has_soul = any(
+            "currsoulresource" in definition.modifier_kinds
+            for definition in definitions
+        )
+        if not has_skill and not has_soul:
             return
         with s.flow_lock:
             combat = s.gameplay_combat_state
@@ -771,21 +1156,37 @@ class PlayerResourceService:
             )
         with combat.lock:
             resource = combat.player_resource.get(int(actor_id))
-            if resource is None:
+            soul = combat.player_soul_resource.get(int(actor_id))
+            if (has_skill and resource is None) or (has_soul and soul is None):
                 return
-            current, maximum = resource
-            delta = combat.player_status_resource_delta(
-                definitions, maximum_resource=maximum
+            current, maximum = resource if resource is not None else (0.0, 0.0)
+            current_soul, maximum_soul = soul if soul is not None else (0.0, 0.0)
+            delta = (
+                combat.player_status_resource_delta(
+                    definitions, maximum_resource=maximum
+                ) if has_skill else 0.0
             )
-            if abs(delta) <= 1e-6:
+            soul_delta = (
+                combat.player_status_soul_resource_delta(
+                    definitions, maximum_resource=maximum_soul
+                ) if has_soul else 0.0
+            )
+            if abs(delta) <= 1e-6 and abs(soul_delta) <= 1e-6:
                 return
-            current = min(float(maximum), max(0.0, float(current) + delta))
-            resource[0] = current
+            if resource is not None:
+                current = min(float(maximum), max(0.0, float(current) + delta))
+                resource[0] = current
+            overflow = 0.0
+            if soul is not None:
+                current_soul, maximum_soul, overflow = (
+                    combat.apply_player_soul_resource_delta(
+                        int(actor_id), soul_delta
+                    )
+                )
             resource_now = time.perf_counter()
-            combat.last_player_resource_change_at[int(actor_id)] = resource_now
-            combat.last_player_resource_regeneration_at[
-                int(actor_id)
-            ] = resource_now
+            if abs(delta) > 1e-6:
+                combat.last_player_resource_change_at[int(actor_id)] = resource_now
+                combat.last_player_resource_regeneration_at[int(actor_id)] = resource_now
             current_health = combat.player_health.get(
                 int(actor_id), [max(1, int(round(inventory.health_points)))]
             )[0]
@@ -793,14 +1194,21 @@ class PlayerResourceService:
             if s.gameplay_inventory is not inventory:
                 return
             inventory.secondary_resource = float(current)
+            inventory.tertiary_resource = float(current_soul)
         s.send_reliable_ordered(
             encode_actor_stats_update_batch(
-                ActorStatsUpdate(current_health, current),
+                ActorStatsUpdate(current_health, current, current_soul),
                 actor_id=LOCAL_PLAYER_ACTOR_ID,
             ),
             track=True,
             label="player-status-resource",
         )
+        if overflow > 1e-6:
+            CharacterService._apply_soul_affinity_overflow(
+                s, combat, stacks=int(round(overflow)),
+                server_tick=int(s.gameplay_chase_server_tick),
+                label="necro-status-soul-affinity",
+            )
 
     @staticmethod
     def _apply_base_resource_regeneration(
@@ -822,15 +1230,20 @@ class PlayerResourceService:
             #   je prends des degats".
             combat = target_session.gameplay_combat_state
             live = None
+            live_soul = None
             if combat is not None:
                 with combat.lock:
                     live = combat.player_health.get(actor_id)
                     live = None if live is None else int(live[0])
+                    soul = combat.player_soul_resource.get(int(actor_id))
+                    live_soul = None if soul is None else float(soul[0])
             with target_session.flow_lock:
                 inventory = target_session.gameplay_inventory
                 if inventory is None:
                     continue
                 inventory.secondary_resource = current_resource
+                if live_soul is not None:
+                    inventory.tertiary_resource = live_soul
                 if live is not None:
                     inventory.health_points = float(live)
                 # A resource tick must not republish the pre-Kill inventory
@@ -839,9 +1252,12 @@ class PlayerResourceService:
                     0 if target_session.gameplay_death_pending
                     else max(0, int(round(inventory.health_points)))
                 )
+                current_soul = float(inventory.tertiary_resource)
             target_session.send_reliable_ordered(
                 encode_actor_stats_update_batch(
-                    ActorStatsUpdate(current_health, current_resource),
+                    ActorStatsUpdate(
+                        current_health, current_resource, current_soul
+                    ),
                     actor_id=LOCAL_PLAYER_ACTOR_ID,
                 ),
                 track=True,

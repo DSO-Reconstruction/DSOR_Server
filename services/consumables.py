@@ -121,6 +121,7 @@ class ConsumableService:
             current_resource = float(
                 s.gameplay_inventory.secondary_resource
             )
+            current_soul = float(s.gameplay_inventory.tertiary_resource)
             update_tick = max(
                 int(server_tick),
                 int(s.gameplay_last_heal_server_tick) + 1,
@@ -128,7 +129,7 @@ class ConsumableService:
             s.gameplay_last_heal_server_tick = update_tick
         s.send_reliable_ordered(
             encode_actor_stats_update_batch(
-                ActorStatsUpdate(current, current_resource),
+                ActorStatsUpdate(current, current_resource, current_soul),
                 actor_id=LOCAL_PLAYER_ACTOR_ID,
             ),
             track=True,

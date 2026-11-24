@@ -1409,6 +1409,9 @@ class PVPCombatService:
             s.gameplay_presence_callback(
                 s, ("pvp_combat_resolution", resolution)
             )
+        CharacterService._award_necro_soul_energy_from_mark_applications(
+            s, (resolution,),
+        )
         if not target_is_summon:
             dispatch_incoming_hit(target, resolution)
             target_character = getattr(target, "gameplay_character", None)
@@ -1504,6 +1507,15 @@ class PVPCombatService:
                             if match_opponents and target.gameplay_match_callback is not None:
                                 target.gameplay_match_callback(target, ("match_kill", attacker_session))
                             dispatch_talent_event(target, "killplayer", server_tick=int(pending.server_tick))
+                            CharacterService._award_necro_soul_energy_from_enemy_player_death(
+                                target,
+                                CharacterService._pvp_target_world_position(
+                                    attacker_session,
+                                    pending.combat,
+                                    pending.position,
+                                    actor_id=int(pending.source_actor_id),
+                                ),
+                            )
             dispatch_kill_talents(
                 s, (replace(resolution, target_marked=target_marked),),
             )
@@ -1511,6 +1523,10 @@ class PVPCombatService:
                 dispatch_talent_event(
                     s, "killplayer", server_tick=int(pending.server_tick),
                 )
+                if not target_is_summon:
+                    CharacterService._award_necro_soul_energy_from_enemy_player_death(
+                        s, position,
+                    )
         if match_opponents and s.gameplay_match_callback is not None:
             s.gameplay_match_callback(s, ("match_damage", damage))
             if killed:
@@ -1786,6 +1802,10 @@ class PVPCombatService:
                 CharacterService._expire_player_summon(
                     target, target.gameplay_chase_generation, ("pvp-summon-kill", state.target_actor_id),
                     state.target_actor_id,
+                )
+            else:
+                CharacterService._award_necro_soul_energy_from_enemy_player_death(
+                    s, resolution.position,
                 )
             return
         if time.perf_counter() + state.interval <= state.expires_at + 1e-9:

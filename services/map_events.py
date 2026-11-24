@@ -4403,6 +4403,9 @@ class MapEventService:
 
     def _on_monsters_killed(self, s: Session, monsters) -> None:
         monsters = tuple(monsters)
+        CharacterService._award_necro_soul_energy_from_enemy_deaths(
+            s, monsters
+        )
         from dso_server.services.monster_summons import cleanup_monster_summons
         cleanup_monster_summons(self, s, monsters)
         tower_kills(self, s, monsters)

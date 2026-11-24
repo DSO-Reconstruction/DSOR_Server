@@ -48,7 +48,7 @@ function identitySection(p, range, online) {
   const level = range ? `<label>Level<input name="level" type="number" min="${range[0]}" max="${range[1]}" step="1" value="${p.level}"><small>This class can be between level ${range[0]} and ${range[1]}. Experience is set to the start of the new level.</small></label>`
     : `<label>Level<input name="level" type="number" value="${p.level}" disabled><small>This class has no authored levels to choose from.</small></label>`;
   const characterClass = `<label>Class<select name="class_id" ${online ? "disabled" : ""}>${classes.map((name, id) =>
-    `<option value="${id}" ${p.class_id === id ? "selected" : ""} ${id === 4 && p.class_id !== 4 ? "disabled" : ""}>${esc(id === 4 && p.class_id !== 4 ? `${name} (unavailable)` : name)}</option>`).join("")}</select><small>${online ? "Class can only be changed while the character is offline." : p.class_id === 4 ? "Niwalk has no compatible equipment templates in this server build. Select a playable class to restore the character." : "Niwalk is unavailable until compatible equipment templates are added. Other class-specific item variants are converted when an equivalent exists."}</small></label>`;
+    `<option value="${id}" ${p.class_id === id ? "selected" : ""}>${esc(name)}</option>`).join("")}</select><small>${online ? "Class can only be changed while the character is offline." : "Other class-specific item variants are converted when an equivalent exists."}</small></label>`;
   return section("Character identity", `<form id="identity-form" class="form-page">
     <fieldset class="form-section"><legend>Identity</legend><div class="form-grid">
       <label>Name<input name="name" type="text" maxlength="32" value="${esc(p.name)}" autocomplete="off" spellcheck="false" dir="auto"><small>Up to 32 characters, no leading or trailing spaces. No other character may already use it.</small></label>
@@ -75,7 +75,7 @@ function bindIdentity(p, id, range, online) {
       if (gender !== p.gender) changes.gender = gender;
       if (!online) {
         const classId = Number(values.get("class_id"));
-        if (!Number.isInteger(classId) || (classId !== p.class_id && (classId < 0 || classId > 3)))
+        if (!Number.isInteger(classId) || (classId !== p.class_id && (classId < 0 || classId > 4)))
           throw new Error("Choose a playable character class.");
         if (classId !== p.class_id) changes.class_id = classId;
       }

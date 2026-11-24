@@ -60,7 +60,7 @@ def _named_item_set_resources(evaluation) -> frozenset[str]:
 
 
 def owner_minion_auras(path, item_set_entries, runtime, tracked, evaluation):
-    """The owner's item-set Minion auras as ``OwnerMinionAura`` values."""
+    """Resolve item-set and authored Soul Affinity minion auras."""
 
     names = load_status_runtime_catalog(path).effect_names
     named = _named_item_set_resources(evaluation)
@@ -70,6 +70,11 @@ def owner_minion_auras(path, item_set_entries, runtime, tracked, evaluation):
         if instance_id in tracked or resource.casefold() in named:
             candidates.append((entry, expires_at))
     result = []
+    # Each overflow point adds one five-second `necro_soul_affinity` stack.
+    # Its authored StartModifiers creates this Minion aura with the owner's
+    # ActorVariable as $0. Materialize that same value from the server stack
+    # index so every live summon receives the authoritative +1% per stack.
+    affinity_aura = None
     for entry, expires_at in candidates:
         definition = rules.load_minion_aura_by_id(path, int(entry.effect_id))
         if definition is None or definition.targets != "minion":
@@ -79,6 +84,26 @@ def owner_minion_auras(path, item_set_entries, runtime, tracked, evaluation):
         result.append(rules.OwnerMinionAura(
             key=f"{int(entry.instance_id)}:{int(entry.effect_id)}",
             definition=definition,
+            expires_at=None if expires_at is None else float(expires_at),
+        ))
+    for instance_id, (entry, expires_at) in runtime:
+        if names.get(int(entry.effect_id), "").casefold() != "necro_soul_affinity":
+            continue
+        if affinity_aura is None:
+            affinity_aura = rules.load_minion_aura(
+                path, "necro_soul_affinity_aura",
+            )
+        if affinity_aura is None or affinity_aura.targets != "minion":
+            continue
+        stack_count = min(50, max(1, int(entry.stack_index) + 1))
+        damage_bonus = 0.01 * stack_count
+        receivers = tuple(
+            replace(child, values=(damage_bonus, *child.values[1:]))
+            for child in affinity_aura.receivers
+        )
+        result.append(rules.OwnerMinionAura(
+            key=f"soul-affinity:{int(instance_id)}:{int(entry.effect_id)}",
+            definition=replace(affinity_aura, receivers=receivers),
             expires_at=None if expires_at is None else float(expires_at),
         ))
     return tuple(result)
