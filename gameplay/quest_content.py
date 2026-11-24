@@ -77,6 +77,11 @@ _QUEST_DROP_CHANCE_OVERRIDES = MappingProxyType({
     ): 1.0,
 })
 
+# The Crimson Tide 2026 story is present in the shipped quest catalog, but its
+# XML live switch is off. Keep the authored file untouched and expose this
+# quest chain through the runtime catalog so its NPCs can offer and advance it.
+_RUNTIME_ENABLED_QUEST_PREFIXES = ("ce2026-crimsontide-main-",)
+
 
 def explore_trigger_for_task(
     quest: "QuestDefinition", task: "TaskDefinition",
@@ -99,6 +104,13 @@ def _tokens(value: str | None) -> tuple[str, ...]:
 
 def _bool(value: str | None) -> bool:
     return str(value or "").strip().casefold() in ("true", "1", "yes")
+
+
+def _runtime_enabled_live(quest_id: str, authored_value: str | None) -> bool:
+    key = str(quest_id or "").casefold()
+    return _bool(authored_value) or any(
+        key.startswith(prefix) for prefix in _RUNTIME_ENABLED_QUEST_PREFIXES
+    )
 
 
 @dataclass(frozen=True)
@@ -592,7 +604,9 @@ def _parse_quest(element: ET.Element) -> QuestDefinition:
         rewards=rewards,
         bound_to_map=_bool(element.get("boundToMap")),
         accept_inventory_drops=accept_inventory_drops,
-        enabled_live=_bool(element.get("enabledLive", "true")),
+        enabled_live=_runtime_enabled_live(
+            quest_id, element.get("enabledLive", "true"),
+        ),
     )
 
 
