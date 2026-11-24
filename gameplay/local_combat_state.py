@@ -1291,6 +1291,9 @@ class PlayerSummonDefinition:
     # ``ActorFeature:off,Movement``): it never walks, though its template has a
     # RunSpeed. Unlike ``stationary`` it keeps the ordinary summon spawn.
     movement_locked: bool = False
+    # Mobile Soulweaver minions stay with their owner between fights and
+    # prioritize nearby hostiles while they are in the owner's aggro radius.
+    follows_owner: bool = False
     startup_duration_seconds: float = 0.0
     overheat_attack_skill_database_index: int | None = None
     overheat_attack_skill_type: str = ""
@@ -4358,6 +4361,9 @@ class LocalCombatState:
                             or "turret" in monster_template_id.casefold()
                         ),
                         movement_locked=movement_locked,
+                        follows_owner=monster_template_id.casefold().startswith(
+                            "minion_necro_"
+                        ),
                     )
             self._player_summon_definitions[cache_key] = definition
 
@@ -6391,6 +6397,7 @@ class LocalCombatState:
                 if definition != summon.definition:
                     summon = replace(summon, definition=definition)
                     self.player_summons[actor_id] = summon
+            follows = bool(getattr(definition, "follows_owner", False))
             if (
                 definition.stationary
                 or getattr(definition, "movement_locked", False)
@@ -6398,7 +6405,10 @@ class LocalCombatState:
                 or self.player_summon_health.get(actor_id, [0])[0] <= 0
                 or self._monster_actions_disabled(actor_id, now=current_time)
                 or definition.move_speed <= 0.0
-                or definition.attack_skill_database_index is None
+                or (
+                    definition.attack_skill_database_index is None
+                    and not follows
+                )
             ):
                 stop_if_moving(summon)
                 continue
@@ -6406,7 +6416,6 @@ class LocalCombatState:
             is_mind_controlled = bool(controller_info and self._monster_is_mind_controlled(actor_id, now=current_time))
             effective_owner = controller_info[0] if is_mind_controlled else summon.owner_actor_id
             owner = (player_positions or {}).get(effective_owner)
-            follows = bool(getattr(definition, "follows_owner", False))
             target_positions = self.monster_positions
             player_positions = player_positions or {}
             player_targets = tuple(
@@ -6417,7 +6426,11 @@ class LocalCombatState:
                 if target_id in player_positions
                 and (target_id not in self.player_health or self.player_health[target_id][0] > 0)
             )
-            if definition.monster_template_id in PLAYER_HUNTING_MINION_STRIKES:
+            if definition.attack_skill_database_index is None:
+                # Non-attacking follower summons (for example the passive
+                # Death Hound variant) still stay with their owner.
+                candidates = ()
+            elif definition.monster_template_id in PLAYER_HUNTING_MINION_STRIKES:
                 target_positions = player_positions
                 candidates = tuple(
                     (self._distance(summon.position, target_positions[target_id]), target_id)
@@ -6449,7 +6462,13 @@ class LocalCombatState:
                 )
                 candidates = tuple(candidates)
             nearest = min(candidates) if candidates else None
-            geometry = self._load_player_skill_geometry(definition.attack_skill_database_index)
+            geometry = (
+                self._load_player_skill_geometry(
+                    definition.attack_skill_database_index
+                )
+                if definition.attack_skill_database_index is not None
+                else None
+            )
             if nearest is not None and (definition.aggro_range <= 0.0 or nearest[0] <= definition.aggro_range):
                 distance, target_actor_id = nearest
                 target = target_positions.get(target_actor_id)
