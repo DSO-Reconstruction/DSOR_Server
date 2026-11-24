@@ -1658,7 +1658,7 @@ class AdminService:
         })
         return {"ok": True, "newly_unlocked": len(added), "total_unlocked": len(entries)}
 
-    def undo_character_all_stickers(self, cid, actor, reason):
+    def clear_character_stickerbook(self, cid, actor, reason):
         if self.registry.character_owner(cid) is None or self.store.get_profile(cid) is None:
             raise ValueError("owned character not found")
         state = self.store.get(cid)
@@ -1666,96 +1666,17 @@ class AdminService:
             raise ValueError("character must enter the game once before the sticker book can be changed")
         if cid in self.online_characters():
             raise ValueError("character must be offline; sticker changes appear at next login")
-
-        unlock_action = "character.stickerbook.unlock_all"
-        undo_action = "character.stickerbook.undo_unlock_all"
-        with self.repository.lock:
-            rows = self.repository.db.execute(
-                "SELECT id, action, details FROM admin_audit "
-                "WHERE target=? AND action IN (?, ?) ORDER BY id DESC",
-                (str(cid), unlock_action, undo_action),
-            ).fetchall()
-        undo_ids = set()
-        unlocks = []
-        legacy_partial_unlock = False
-        for row in rows:
-            details = json.loads(row["details"])
-            if row["action"] == undo_action:
-                undo_ids.add(int(details.get("undoes_audit_id", 0)))
-                continue
-            resources = details.get("added_resource_ids")
-            if isinstance(resources, list) and resources:
-                unlocks.append((int(row["id"]), tuple(
-                    str(resource_id) for resource_id in resources if resource_id
-                )))
-            else:
-                newly_unlocked = int(details.get("newly_unlocked", 0))
-                total_unlocked = int(details.get("total_unlocked", 0))
-                if newly_unlocked > 0 and newly_unlocked == total_unlocked:
-                    # Older audit records lack the item list. If that action
-                    # started from an empty book, every unchanged base entry
-                    # can still be identified as a bulk-added item.
-                    unlocks.append((int(row["id"]), None))
-                elif newly_unlocked > 0:
-                    legacy_partial_unlock = True
-        previous_unlock = next(
-            (
-                (audit_id, resource_ids)
-                for audit_id, resource_ids in unlocks
-                if audit_id not in undo_ids
-            ),
-            None,
-        )
-        if previous_unlock is None:
-            if legacy_partial_unlock:
-                raise ValueError(
-                    "the previous sticker unlock predates item tracking and "
-                    "cannot be safely undone"
-                )
-            raise ValueError(
-                "no tracked bulk sticker unlock is available to undo"
-            )
-        unlock_audit_id, added_resource_ids = previous_unlock
-        if added_resource_ids is None:
-            added_resource_ids = tuple(
-                entry.resource_id
-                for entry in state.stickerbook_entries
-                if int(entry.field_14) == 2 and int(entry.field_18) == 0
-            )
-        current = {
-            entry.resource_id: entry for entry in state.stickerbook_entries
-        }
-        removable = {
-            resource_id
-            for resource_id in added_resource_ids
-            if resource_id in current
-            and int(current[resource_id].field_14) == 2
-            and int(current[resource_id].field_18) == 0
-        }
-        preserved = {
-            resource_id
-            for resource_id in added_resource_ids
-            if resource_id in current and resource_id not in removable
-        }
-        entries = tuple(
-            entry for entry in state.stickerbook_entries
-            if entry.resource_id not in removable
-        )
-        self.store.put(
-            replace(state, stickerbook_entries=entries), flush=True,
-        )
-        self.repository.audit(actor.username, undo_action, cid, {
-            "undoes_audit_id": unlock_audit_id,
-            "removed_resource_ids": sorted(removable),
-            "preserved_changed_resource_ids": sorted(preserved),
+        removed = len(state.stickerbook_entries)
+        self.store.put(replace(
+            state,
+            stickerbook_entries=(),
+            stickerbook_favorite_slots=(),
+        ), flush=True)
+        self.repository.audit(actor.username, "character.stickerbook.clear_all", cid, {
+            "removed": removed,
             "reason": reason,
         })
-        return {
-            "ok": True,
-            "removed": len(removable),
-            "preserved_changed": len(preserved),
-            "total_unlocked": len(entries),
-        }
+        return {"ok": True, "removed": removed, "total_unlocked": 0}
 
     def complete_character_ammon_parallel_world_quests(self, cid, actor, reason):
         from dso_server.gameplay.map_unlocks import (
@@ -2558,8 +2479,8 @@ class AdminService:
                 return self.complete_character_all_achievements(cid, account, reason)
             if parts[3] == "unlock-all-stickers":
                 return self.unlock_character_all_stickers(cid, account, reason)
-            if parts[3] == "undo-unlock-all-stickers":
-                return self.undo_character_all_stickers(cid, account, reason)
+            if parts[3] == "clear-stickerbook":
+                return self.clear_character_stickerbook(cid, account, reason)
             return self.live.action(cid, parts[3], payload, account.username, reason)
         if path == "/api/bookings":
             cid = payload.get("character_id")

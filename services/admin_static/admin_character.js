@@ -395,12 +395,12 @@ function stickerbookSection(owned) {
   return section("Sticker book", `<form id="unlock-stickers-form" class="form-page">
     <fieldset class="form-section"><legend>Collection</legend>
       <p class="help">Add every sticker-book item: costumes, mounts, pets, emotes, decorations and Shadow Souls. Items the character owns keep their rarity and favorite state; the rest arrive at base rarity. The Collector’s Bag bonuses and all reached item rewards are paid at next login. The character must be offline.</p>
-      <p class="help">Undo removes only entries added by a tracked bulk unlock that remain at base rarity and are not favorited. Pre-existing or changed entries are preserved; rewards already paid are not reversed.</p>
+      <p class="help">Delete removes every saved sticker-book entry and favorite slot. Collector’s Bag rewards already paid and other inventory items are kept. The character must be offline.</p>
       <p class="muted">${owned} sticker-book items in the last save.</p>
     </fieldset>
     <p id="unlock-stickers-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button type="submit">Add all sticker-book items</button>
-      <button id="undo-unlock-stickers" type="button" class="secondary danger">Undo last bulk unlock</button></div></form>`);
+      <button id="clear-stickerbook" type="button" class="secondary danger">Delete all sticker-book items</button></div></form>`);
 }
 
 function bindUnlockStickers(id) {
@@ -423,15 +423,15 @@ function bindUnlockStickers(id) {
       else notice(error.message, true);
     } finally { setBusy(false); }
   });
-  $("#undo-unlock-stickers").addEventListener("click", async () => {
+  $("#clear-stickerbook").addEventListener("click", async () => {
     setBusy(true);
     try {
-      const reason = await confirmAction("Undo the last bulk sticker unlock?",
-        "This removes only sticker-book entries added by the latest tracked bulk unlock that remain at base rarity and are not favorited. Pre-existing or changed entries are kept. Collector’s Bag bonuses and item rewards already paid are not reversed. The character must be offline.",
-        "Undo sticker unlock");
+      const reason = await confirmAction("Delete all sticker-book items?",
+        "This permanently removes every saved sticker-book entry and favorite slot from the character. Collector’s Bag rewards already paid and other inventory items are kept. The character must be offline.",
+        "Delete all items");
       if (reason === null) return;
-      const result = await api(`/api/characters/${id}/undo-unlock-all-stickers`, {reason});
-      notice(`Removed ${result.removed} sticker-book items; kept ${result.preserved_changed} changed items.`);
+      const result = await api(`/api/characters/${id}/clear-stickerbook`, {reason});
+      notice(`Deleted ${result.removed} sticker-book items.`);
       window.dispatchEvent(new Event("reload-page"));
     } catch (error) {
       const target = $("#unlock-stickers-error");
