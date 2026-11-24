@@ -70,6 +70,40 @@ def _keeps_on_death(database_path, resource_id: str) -> bool:
     return bool(row and row[0])
 
 
+@lru_cache(maxsize=512)
+def _triggered_skills(database_path, resource_id: str) -> tuple[tuple[int, float], ...]:
+    """``(skill index, hit range)`` of every ``TriggerSkillDamage`` in an effect.
+
+    ``TriggerSkillDamage:<skill>`` is a status effect's whole order to strike
+    with another (usually hidden) skill, e.g. the warrior Black Knights jewel's
+    ``jewel_dra_warrior_mightybash_trig_effect`` ->
+    ``mightybash_jewel_dra_03_trig`` (120% Physical, HitRange 3.5).
+    """
+
+    path = Path(database_path).resolve()
+    with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as database:
+        row = database.execute(
+            "SELECT COALESCE(StartModifiers, '') FROM _Template_StatusEffect WHERE Id=?",
+            (str(resource_id),),
+        ).fetchone()
+        if not row:
+            return ()
+        result = []
+        for raw in str(row[0]).split(";"):
+            kind, separator, argument = raw.partition(":")
+            if not separator or kind.strip().casefold() != "triggerskilldamage":
+                continue
+            skill_id = argument.split(",", 1)[0].split("#", 1)[0].strip()
+            skill = database.execute(
+                "SELECT rowid - 1, COALESCE(HitRange, 0), COALESCE(AttackRange, 0) "
+                "FROM _Template_Skill WHERE Id=? COLLATE NOCASE",
+                (skill_id,),
+            ).fetchone()
+            if skill is not None:
+                result.append((int(skill[0]), max(float(skill[1]), float(skill[2]))))
+    return tuple(result)
+
+
 @lru_cache(maxsize=4)
 def _kill_heal_programs(database_path: str):
     """Hosted effects whose ``On:Kill`` child restores absolute health.
@@ -1199,6 +1233,114 @@ class CombatResolutionService:
         CharacterService._apply_caster_hosted_hit_effects(s, resolutions)
         CharacterService._apply_receiver_hosted_hit_auras(s, resolutions)
         CharacterService._apply_victim_location_effects(s, resolutions)
+        CharacterService._apply_triggered_skill_damage(s, resolutions)
+
+    @staticmethod
+    def _apply_triggered_skill_damage(s: Session, resolutions) -> None:
+        """Strike with the skill a hit's victim effect names in ``TriggerSkillDamage``.
+
+        The effect (e.g. ``jewel_dra_warrior_mightybash_trig_effect``, which the
+        warrior's second Black Knights jewel turns on for Smash) carries no
+        damage of its own; it orders the caster's hidden skill to strike. The
+        server schedules that skill as its own impacts around the struck
+        monster, like a tripped trap, with the caster's current modifiers and
+        damage. Retail's ``AngleMinHpTarget`` cone is approximated by the
+        skill's hit range around the victim. One strike per cast and skill:
+        a Smash that hits several monsters triggers once, not once per victim.
+        Only the caster's own session schedules it.
+        """
+
+        character = s.gameplay_character
+        combat = s.gameplay_combat_state
+        if character is None or combat is None or STATUS_EFFECTS_DISABLED:
+            return
+        owner_actor_id = int(
+            getattr(s, "gameplay_remote_actor_id", 0)
+            or CharacterService._remote_actor_id(character.character_id)
+        )
+        own_ids = {LOCAL_PLAYER_ACTOR_ID, owner_actor_id}
+        summons = getattr(combat, "player_summons", {})
+        database_path = combat.encounter.static_database_path
+        done = getattr(combat, "triggered_skill_casts", None)
+        if done is None:
+            done = {}
+            combat.triggered_skill_casts = done
+        now = time.perf_counter()
+        strikes = []
+        for resolution in resolutions:
+            source = (
+                resolution.source_actor_id
+                if resolution.source_actor_id is not None
+                else resolution.attacker_actor_id
+            )
+            target = int(resolution.target_actor_id)
+            if (
+                int(source) not in own_ids
+                or int(resolution.attacker_actor_id) in summons
+                or target in own_ids
+                or target not in getattr(combat, "monsters", {})
+                or bool(getattr(resolution, "damage_immune", False))
+            ):
+                continue
+            for definition in resolution.victim_status_effects:
+                if float(definition.chance) <= 0.0:
+                    continue
+                if resolution.killed and not _keeps_on_death(
+                        database_path, definition.resource_id):
+                    continue
+                for skill_index, hit_range in _triggered_skills(
+                        database_path, definition.resource_id):
+                    key = (int(resolution.cast_id), int(skill_index))
+                    if int(resolution.cast_id) and key in done:
+                        continue
+                    done[key] = now
+                    strikes.append((skill_index, hit_range, target, resolution))
+        if len(done) > 4096:
+            for key, stamp in list(done.items()):
+                if now - stamp > 30.0:
+                    del done[key]
+        if not strikes:
+            return
+        from dso_server.services.endless_tower_buffs import tower_damage_range
+        sources = tuple(CharacterService._active_skill_modifier_sources(s))
+        damage_range = tower_damage_range(database_path, s, sources)
+        generation = s.gameplay_chase_generation
+        scheduled = []
+        for skill_index, hit_range, target, resolution in strikes:
+            cast_id = (
+                (int(resolution.cast_id) * 2654435761 + int(skill_index) * 40503)
+                & 0x7FFFFFFF
+            ) or int(skill_index) + 1
+            with combat.lock:
+                centre = tuple(combat.monster_positions.get(target, resolution.position))
+                pending_hits = combat.start_spatial_skill_hits(
+                    skill_index=int(skill_index),
+                    cast_id=cast_id,
+                    server_tick=int(resolution.server_tick),
+                    player_position=combat.encounter.coordinate_frame.world_to_wire(centre),
+                    source_actor_id=owner_actor_id,
+                    now=now,
+                    modifier_effect_ids=sources,
+                    player_damage_range=damage_range,
+                    player_critical_hit_chance=float(resolution.critical_hit_chance),
+                    player_critical_damage_multiplier=float(
+                        resolution.critical_damage_multiplier),
+                    area_radius_override=max(0.1, float(hit_range)),
+                    impact_delay_override=0.0,
+                )
+            scheduled.extend(pending_hits)
+        for pending in scheduled:
+            impact_key = (pending.source_actor_id, pending.cast_id, pending.impact_index)
+            timer = s.gameplay_deadline_timer(
+                max(0.0, pending.due_at - now),
+                CharacterService._resolve_player_projectile,
+                args=(s, generation, pending.cast_id, pending.source_actor_id,
+                      pending.impact_index),
+            )
+            timer.daemon = True
+            with s.flow_lock:
+                s.gameplay_projectile_timers[impact_key] = timer
+            timer.start()
 
     @staticmethod
     def _apply_receiver_hosted_hit_auras(s: Session, resolutions) -> None:
