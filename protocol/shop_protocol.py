@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dso_server.runtime import resident_content
 from dso_server.protocol.command_ids import command_id
+from dso_server.protocol.endgame_stock_switch import endgame_vendor_stock_enabled
 from dataclasses import dataclass, replace
 from pathlib import Path
 import re
@@ -829,7 +830,7 @@ def load_shop_offers(
         # order within a category, and long NPC inventories otherwise bury new
         # items at the very end of the shop list.
         offers = cms_offers + offers
-        if str(shop["Id"]).casefold().startswith("smith_hub"):
+        if endgame_vendor_stock_enabled() and str(shop["Id"]).casefold().startswith("smith_hub"):
             # The local smith is the class-filtered source for the current
             # Mythic equipment, both mythic Dragan set versions, plus unique
             # belts and weapon modifiers. Items are generated at level 145
@@ -929,7 +930,7 @@ def load_shop_offers(
                     )
                 )
                 present_items.add(template_id)
-        if str(shop["Id"]) == "jewelry_hub_all":
+        if endgame_vendor_stock_enabled() and str(shop["Id"]) == "jewelry_hub_all":
             for item in _max_tier_trinket_gems(database, class_name):
                 template_id = str(item["Id"])
                 resource_id = f"jewelry_max_tier_{template_id}"
