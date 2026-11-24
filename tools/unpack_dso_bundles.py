@@ -371,6 +371,7 @@ def _scan_source_files(
     source: Path,
     output: Path,
     runtime_cache: Path | None,
+    progress_callback=None,
 ) -> list[Path]:
     if source.is_file():
         return [source]
@@ -385,14 +386,30 @@ def _scan_source_files(
         if resolved != input_root and resolved.is_relative_to(input_root):
             excluded_roots.append(resolved)
     files = []
+    walked_directories = 0
     for current, directories, names in os.walk(source):
+        walked_directories += 1
         current_path = Path(current)
         directories[:] = [
             name
             for name in directories
             if not any((current_path / name).resolve().is_relative_to(root) for root in excluded_roots)
         ]
-        files.extend(current_path / name for name in names)
+        for name in names:
+            path = current_path / name
+            if (
+                name.lower().endswith(".nbi")
+                or _BUNDLE_INPUT.fullmatch(name)
+                or _CACHE_OBJECT.fullmatch(name)
+                or _CACHE_NZ_OBJECT.fullmatch(name)
+                or _TOC_OBJECT.fullmatch(name)
+                or _TOC_NZ_OBJECT.fullmatch(name)
+            ):
+                files.append(path)
+        if progress_callback is not None and walked_directories % 100 == 0:
+            progress_callback(walked_directories)
+    if progress_callback is not None:
+        progress_callback(walked_directories)
     return sorted(files, key=lambda path: path.relative_to(source).as_posix().casefold())
 
 
@@ -489,6 +506,7 @@ def _load_cache_objects(
     output: Path,
     list_only: bool,
     source_files: list[Path],
+    progress_callback=None,
 ) -> tuple[dict[str, str], dict[str, bytes], dict[str, str], dict[str, Path], int]:
     """Copy cached standalone CDN objects and collect cached TOC metadata."""
     if source.is_file():
@@ -498,7 +516,9 @@ def _load_cache_objects(
     toc_expected: dict[str, str] = {}
     cached_by_digest: dict[str, Path] = {}
     copied = 0
-    for path in source_files:
+    for index, path in enumerate(source_files, 1):
+        if progress_callback is not None and (index % 100 == 0 or index == len(source_files)):
+            progress_callback(index, len(source_files))
         # Bundle containers are inputs, not standalone resources. Copying them
         # into an output directory that is also the input makes later runs
         # rediscover and unpack the same large bundle a second time.
@@ -568,12 +588,16 @@ def _write_cached_runtime_assets(
     cached_by_digest: dict[str, Path],
     toc_raw: dict[str, bytes],
     path_prefixes: list[str] | None = None,
+    progress_callback=None,
 ) -> int:
     """Inflate standalone CDN objects and cached TOCs into the runtime tree."""
     if runtime_cache is None:
         return 0
     written = 0
-    for name, expected_md5 in file_digests.items():
+    total_items = len(file_digests)
+    for index, (name, expected_md5) in enumerate(file_digests.items(), 1):
+        if progress_callback is not None and (index % 100 == 0 or index == total_items):
+            progress_callback(index, total_items)
         if not _matches_prefix(name, path_prefixes):
             continue
         source = cached_by_digest.get(expected_md5.lower())
@@ -910,6 +934,9 @@ def _process_bundle(
     file_digests: dict[str, str],
     runtime_cache: Path | None,
     path_prefixes: list[str] | None,
+    progress_callback=None,
+    progress_offset: int = 0,
+    progress_total: int = 0,
 ) -> tuple[int, int]:
     bundle_path, is_temporary = _seekable_bundle(source)
     try:
@@ -917,10 +944,14 @@ def _process_bundle(
             entries, data_start = _parse_bundle(bundle)
             print(f"{source.name}: {len(entries):,} source files", flush=True)
             total_bytes = 0
+            progress_bytes = 0
             selected_count = 0
             for index, entry in enumerate(entries, 1):
                 name, digest, size, offset = entry
                 if not _matches_prefix(name, path_prefixes):
+                    progress_bytes += size
+                    if progress_callback is not None:
+                        progress_callback(progress_offset + progress_bytes, progress_total)
                     continue
                 selected_count += 1
                 file_digests[name] = digest
@@ -931,6 +962,9 @@ def _process_bundle(
                 else:
                     _write_resource(bundle, data_start, output, entry, runtime_cache)
                 total_bytes += size
+                progress_bytes += size
+                if progress_callback is not None:
+                    progress_callback(progress_offset + progress_bytes, progress_total)
                 if not list_only and (selected_count % 1000 == 0 or index == len(entries)):
                     print(f"  Wrote {selected_count:,} matching .nz files", flush=True)
             return selected_count, total_bytes
@@ -939,23 +973,37 @@ def _process_bundle(
             bundle_path.unlink(missing_ok=True)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None, progress_callback=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="A bundle file or folder to scan recursively")
     parser.add_argument("-o", "--output", type=Path, default=Path("unpacked_nz"), help="Flat output directory (DSO cache layout)")
     parser.add_argument("--runtime-cache", type=Path, help="Also write decoded resources into the game's hierarchical dlcache directory")
     parser.add_argument("--path-prefix", action="append", dest="path_prefixes", help="Only write resources below this bundle path prefix; repeat to include more paths")
     parser.add_argument("--list", action="store_true", help="List resources without writing .nz files")
-    args = parser.parse_args()
+    parser.add_argument("--progress", action="store_true", help="Print machine-readable extraction percentages")
+    args = parser.parse_args(argv)
     try:
         source = args.input.expanduser().resolve()
         output = args.output.expanduser().resolve()
         runtime_cache = args.runtime_cache.expanduser().resolve() if args.runtime_cache else None
-        source_files = _scan_source_files(source, output, runtime_cache)
+        if args.progress and not args.list:
+            print("SCANNING: client files", flush=True)
+        source_files = _scan_source_files(
+            source,
+            output,
+            runtime_cache,
+            progress_callback=(
+                lambda count: print(f"SCANNING: folders {count}", flush=True)
+            ) if args.progress and not args.list else None,
+        )
+        if args.progress and not args.list:
+            print("SCANNING: verifying download index", flush=True)
         bundles = _find_bundles(source, source_files)
         if not bundles:
             raise ValueError("No .nb or recognized DSO bundle cache files were found.")
         nbi_total, nbi_matched, nbi_invalid, nbi_entries = _check_nbi_files(source_files, bundles)
+        if args.progress and not args.list:
+            print("PROGRESS: 3", flush=True)
         if nbi_total:
             print(
                 f"NBI check: {nbi_matched:,}/{nbi_total:,} bundle references matched; "
@@ -964,27 +1012,99 @@ def main() -> int:
             )
         if not args.list:
             output.mkdir(parents=True, exist_ok=True)
+        if args.progress and not args.list:
+            print("SCANNING: cached files", flush=True)
+        cache_progress = [-1]
+
+        def report_cache_progress(done: int, total: int) -> None:
+            if total <= 0:
+                return
+            percent = 3 + done * 7 // total
+            if percent != cache_progress[0]:
+                cache_progress[0] = percent
+                print(f"PROGRESS: {percent}", flush=True)
+
         file_digests, toc_raw, toc_expected, cached_by_digest, cached_objects = _load_cache_objects(
-            source, output, args.list, source_files,
+            source,
+            output,
+            args.list,
+            source_files,
+            progress_callback=(
+                report_cache_progress
+            ) if args.progress and not args.list else None,
         )
+        if args.progress and not args.list:
+            print("PROGRESS: 10", flush=True)
         if cached_objects:
             print(f"Copied {cached_objects:,} standalone cached CDN objects", flush=True)
+        progress_total = 0
+        progress_offsets: list[int] = []
+        if args.progress and not args.list:
+            for bundle_index, bundle in enumerate(bundles, 1):
+                print(f"SCANNING: bundle index {bundle_index}/{len(bundles)}", flush=True)
+                bundle_path, is_temporary = _seekable_bundle(bundle)
+                try:
+                    with bundle_path.open("rb") as bundle_file:
+                        entries, _data_start = _parse_bundle(bundle_file)
+                    progress_offsets.append(progress_total)
+                    progress_total += sum(entry[2] for entry in entries)
+                finally:
+                    if is_temporary:
+                        bundle_path.unlink(missing_ok=True)
+                print(
+                    f"PROGRESS: {10 + bundle_index * 5 // max(1, len(bundles))}",
+                    flush=True,
+                )
+        last_progress = [-1]
+
+        def report_progress(done: int, total: int) -> None:
+            if total <= 0:
+                return
+            percent = min(90, 15 + done * 75 // total)
+            if percent != last_progress[0]:
+                last_progress[0] = percent
+                if progress_callback is not None:
+                    progress_callback(percent)
+                else:
+                    print(f"PROGRESS: {percent}", flush=True)
+
+        if progress_total:
+            report_progress(0, progress_total)
         total_bundles = total_files = total_bytes = 0
-        for bundle in bundles:
+        for bundle_index, bundle in enumerate(bundles):
             files, size = _process_bundle(
-                bundle, output, args.list, file_digests, runtime_cache, args.path_prefixes
+                bundle, output, args.list, file_digests, runtime_cache, args.path_prefixes,
+                report_progress if progress_total else None,
+                progress_offsets[bundle_index] if progress_total else 0,
+                progress_total,
             )
             total_bundles += 1
             total_files += files
             total_bytes += size
         runtime_count = 0
+        if args.progress and not args.list:
+            print("PROGRESS: 90", flush=True)
         if not args.list and runtime_cache is not None:
             runtime_cache.mkdir(parents=True, exist_ok=True)
+            runtime_progress = [-1]
+
+            def report_runtime_progress(done: int, total: int) -> None:
+                if total <= 0:
+                    return
+                percent = 90 + done * 8 // total
+                if percent != runtime_progress[0]:
+                    runtime_progress[0] = percent
+                    print(f"PROGRESS: {percent}", flush=True)
+
             runtime_count = _write_cached_runtime_assets(
                 runtime_cache, file_digests, cached_by_digest, toc_raw,
                 args.path_prefixes,
+                report_runtime_progress if args.progress else None,
             )
         if source.is_dir() and not args.path_prefixes:
+            if args.progress and not args.list:
+                print("SCANNING: rebuilding client index", flush=True)
+                print("PROGRESS: 99", flush=True)
             toc_count, root_digest = _rebuild_root_index(
                 output, file_digests, nbi_entries, toc_raw, cached_by_digest, bundles,
                 args.list, runtime_cache,
@@ -998,6 +1118,10 @@ def main() -> int:
                 args.path_prefixes,
             )
         if not args.list:
+            if progress_total:
+                report_progress(progress_total, progress_total)
+            if args.progress:
+                print("PROGRESS: 100", flush=True)
             print(
                 f"Done: {total_bundles:,} bundles, {total_files:,} source files as .nz, "
                 f"{total_bytes:,} uncompressed bytes; {runtime_count:,} runtime files; "
