@@ -94,13 +94,28 @@ class RuntimeCacheTests(unittest.TestCase):
         self.assertEqual((written, out), (0, {}))
 
 
+def _recording_popen(calls):
+    """Stand-in for subprocess.Popen: records argv, prints nothing, exits 0."""
+
+    class FinishedExtractor:
+        stdout = iter(())
+
+        def wait(self):
+            return 0
+
+    def popen(argv, **_):
+        calls.append(argv)
+        return FinishedExtractor()
+
+    return popen
+
+
 class SetupTests(unittest.TestCase):
     def test_bundles_unpack_beside_the_server_data_not_into_the_client(self):
         calls = []
         with tempfile.TemporaryDirectory() as root:
             client, out = Path(root) / "DSOClient", Path(root) / "server" / "data" / "client_unpacked"
-            with patch.object(setup.subprocess, "run",
-                              side_effect=lambda argv, **_: calls.append(argv) or type("R", (), {"returncode": 0})()):
+            with patch.object(setup.subprocess, "Popen", side_effect=_recording_popen(calls)):
                 self.assertEqual(setup._unpack_client_bundles(client, out), 0)
         argv = calls[0]
         self.assertEqual(argv[argv.index("-o") + 1], str(out))
@@ -111,8 +126,7 @@ class SetupTests(unittest.TestCase):
         calls = []
         with tempfile.TemporaryDirectory() as root:
             client = Path(root) / "DSOClient"
-            with patch.object(setup.subprocess, "run",
-                              side_effect=lambda argv, **_: calls.append(argv) or type("R", (), {"returncode": 0})()):
+            with patch.object(setup.subprocess, "Popen", side_effect=_recording_popen(calls)):
                 self.assertEqual(setup._unpack_client_bundles(client, client), 0)
         argv = calls[0]
         self.assertEqual(argv[argv.index("-o") + 1], str(client))
