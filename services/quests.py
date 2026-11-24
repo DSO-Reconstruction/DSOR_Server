@@ -2535,6 +2535,7 @@ class QuestService:
         )
         with s.flow_lock:
             s.gameplay_quest_tracking = (request.quest_id, int(request.task_index))
+        self._quest_reconcile_explore_trigger_presence(s)
         # A region is a world-state condition, not ownership of the final
         # killing blow. Recover on a tracker refresh if a death came through
         # a path without a player kill callback; never trust a client count.
@@ -2549,28 +2550,66 @@ class QuestService:
         CharacterService._accept_gameplay_state_command(
             s, QUEST_TRIGGER_INDICATION_REQUEST_COMMAND
         )
+        # The client can request guidance after entering an exploration
+        # trigger. Reconcile that already-inside state before returning its
+        # marker so missed entry edges do not strand the active task.
+        self._quest_reconcile_explore_trigger_presence(s)
         quest = self._quest_catalog().quest(request.quest_id)
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         triggers = []
+        task_index = int(request.task_index)
+        resolved_task_index = None
         if quest is not None and runtime is not None:
             task = next(
-                (t for t in quest.tasks if t.index == int(request.task_index)), None
+                (t for t in quest.tasks if t.index == task_index), None
             )
+            progress = _quest_log(s).get(quest.quest_id)
+            if progress is not None and progress.state == QUEST_STATE_ACCEPTED:
+                map_id = str(runtime.map_id or "").casefold()
+                active = next((
+                    candidate for candidate in active_tasks(quest, progress)
+                    if candidate.maps and map_id in candidate.maps
+                    and str(candidate.task_type).casefold() == "exploretask"
+                    and (
+                        any(event.kind == "trigger" for event in candidate.events)
+                        or explore_trigger_for_task(quest, candidate)
+                    )
+                ), None)
+                # Some client builds request a guidance task with a shifted
+                # index. Prefer the active exploration step on this map when
+                # the requested index resolves to a different task. Keep the
+                # requested index in the response so it matches the pending
+                # client request.
+                if active is not None and (
+                    task is None or task.index != active.index
+                ):
+                    task = active
+            resolved_task_index = task.index if task is not None else None
             wanted = {
                 event.value.casefold() for event in (task.events if task else ())
                 if event.kind == "trigger"
             }
+            fallback_trigger = (
+                explore_trigger_for_task(quest, task) if task is not None else ""
+            )
+            if fallback_trigger:
+                wanted.add(fallback_trigger.casefold())
             for volume in runtime.content.trigger_volumes:
                 if volume.triggered_event_id.casefold() in wanted:
                     m = volume.matrix
                     triggers.append(QuestTriggerIndication(
                         volume.triggered_event_id, (m[12], m[13], m[14]),
                     ))
+        _log(
+            f"trigger guidance request {request.quest_id!r} "
+            f"task={request.task_index} resolved_task="
+            f"{resolved_task_index} markers="
+            f"{tuple((value.trigger_id, value.position) for value in triggers)!r} map="
+            f"{getattr(runtime, 'map_id', '')!r}"
+        )
         self._send_quest_commands(s, (ServerCommand(
             QUEST_TRIGGER_INDICATION_INFO_COMMAND,
-            QuestTriggerIndicationInfo(
-                request.quest_id, int(request.task_index), tuple(triggers),
-            ),
+            QuestTriggerIndicationInfo(request.quest_id, task_index, tuple(triggers)),
             LOCAL_PLAYER_ACTOR_ID,
         ),), label="quest-trigger-indication")
 

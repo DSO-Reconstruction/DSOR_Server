@@ -12,6 +12,12 @@ from pathlib import Path
 import sqlite3
 
 
+_CRIMSON_TIDE_LEVEL_SCALED_MAPS = frozenset({
+    "ce2026_crimsontide_coast",
+    "ce2026_crimsontide_boss_room",
+})
+
+
 @dataclass(frozen=True)
 class MapAccessSelection:
     request_map_id: str
@@ -217,7 +223,7 @@ def resolve_map_access(
         template = database.execute(
             """
             SELECT MonsterScaleLevel, IgnoreDifficultySelection,
-                   COALESCE(MapType, '')
+                   COALESCE(MapType, ''), COALESCE(MapLevel, 1)
             FROM _Template_MapTemplate
             WHERE AccessGroup=? OR MapTemplate=?
             ORDER BY CASE WHEN AccessGroup=? THEN 0 ELSE 1 END, rowid
@@ -247,18 +253,29 @@ def resolve_map_access(
                 database, access_group_id
             )
 
+        level_difficulty = map_difficulty
+        is_crimson_tide_map = (
+            physical_map_id.casefold() in _CRIMSON_TIDE_LEVEL_SCALED_MAPS
+        )
+        if is_crimson_tide_map:
+            # The coast only has a Normal access row, while its scene and boss
+            # routes support difficulty tiers. Use the selected scaling tier
+            # for the authored monster-level offset on these level-one
+            # templates as well as the usual MapAccess difficulty.
+            level_difficulty = max(map_difficulty, scaling_difficulty)
+
         difficulty = database.execute(
             """
             SELECT MonsterLevelPlus
             FROM _Template_MapDifficulty
             WHERE CAST(Id AS INTEGER)=? LIMIT 1
             """,
-            (map_difficulty,),
+            (level_difficulty,),
         ).fetchone()
         if difficulty is None:
             raise ValueError(
                 f"map access {request_map_id!r} uses unknown difficulty "
-                f"{map_difficulty}"
+                f"{level_difficulty}"
             )
         level_plus = int(difficulty[0] or 0)
 
@@ -269,6 +286,7 @@ def resolve_map_access(
         # 15 = monster level 115).
         scaled = bool(
             map_difficulty
+            or is_crimson_tide_map
             or (
                 template is not None
                 and (
@@ -277,9 +295,13 @@ def resolve_map_access(
                 )
             )
         )
-        monster_level = (
-            max(1, int(player_level) + level_plus) if scaled else None
-        )
+        base_level = max(1, int(player_level))
+        if is_crimson_tide_map and template is not None:
+            # These CE2026 monster definitions are authored at CharLevel 1;
+            # treat MapLevel as the floor, then apply player and difficulty
+            # scaling so Normal does not leave every mob at level one.
+            base_level = max(base_level, int(template[3] or 1))
+        monster_level = max(1, base_level + level_plus) if scaled else None
 
         factor = database.execute(
             """

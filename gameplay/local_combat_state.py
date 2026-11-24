@@ -342,6 +342,12 @@ PLAYER_SUMMON_OWNER_RANGE = max(
         )
     ),
 )
+PLAYER_SUMMON_FOLLOWER_TELEPORT_RANGE = min(
+    max(1.0, PLAYER_SUMMON_OWNER_RANGE - 1.0),
+    max(1.0, float(os.getenv("DSO_PLAYER_SUMMON_TELEPORT_RANGE", "30"))),
+)
+PLAYER_MERCENARY_FOLLOW_DISTANCE = 4.0
+PLAYER_MERCENARY_COMBAT_SPACING = 2.2
 PLAYER_PROJECTILE_COLLISION_RADIUS = max(
     0.1, float(os.getenv("DSO_PLAYER_PROJECTILE_RADIUS", "0.6"))
 )
@@ -1291,6 +1297,9 @@ class PlayerSummonDefinition:
     # ``ActorFeature:off,Movement``): it never walks, though its template has a
     # RunSpeed. Unlike ``stationary`` it keeps the ordinary summon spawn.
     movement_locked: bool = False
+    # Mobile Soulweaver minions stay with their owner between fights and
+    # prioritize nearby hostiles while they are in the owner's aggro radius.
+    follows_owner: bool = False
     startup_duration_seconds: float = 0.0
     overheat_attack_skill_database_index: int | None = None
     overheat_attack_skill_type: str = ""
@@ -4358,6 +4367,9 @@ class LocalCombatState:
                             or "turret" in monster_template_id.casefold()
                         ),
                         movement_locked=movement_locked,
+                        follows_owner=monster_template_id.casefold().startswith(
+                            "minion_necro_"
+                        ),
                     )
             self._player_summon_definitions[cache_key] = definition
 
@@ -5985,6 +5997,153 @@ class LocalCombatState:
             self._next_player_summon_aura_instance_id = 0x00030000
         return instance_id
 
+    def _live_player_summon_followers(
+        self, owner_actor_id: int,
+    ) -> tuple[PlayerSummonActor, ...]:
+        return tuple(
+            sorted(
+                (
+                    summon
+                    for summon in self.player_summons.values()
+                    if summon.owner_actor_id == int(owner_actor_id)
+                    and getattr(summon.definition, "follows_owner", False)
+                    and self.player_summon_health.get(
+                        summon.actor_id, [0]
+                    )[0] > 0
+                ),
+                key=lambda summon: summon.actor_id,
+            )
+        )
+
+    def _player_summon_formation_position(
+        self,
+        center: tuple[float, float, float],
+        *,
+        owner_actor_id: int,
+        slot_index: int | None = None,
+        slot_count: int | None = None,
+        actor_id: int | None = None,
+        yaw: float = 0.0,
+        combat_spacing: bool = False,
+        mercenary: bool = False,
+        require_reachable: bool = True,
+    ) -> tuple[float, float, float]:
+        """Pick a distinct, reachable point in a summon formation."""
+
+        followers = self._live_player_summon_followers(owner_actor_id)
+        if slot_index is None:
+            slot_index = next(
+                (
+                    index
+                    for index, summon in enumerate(followers)
+                    if summon.actor_id == actor_id
+                ),
+                len(followers),
+            )
+        count = max(len(followers), int(slot_count or 0), 1)
+        slot_index = int(slot_index) % count
+        if combat_spacing:
+            radius = max(
+                PLAYER_MERCENARY_COMBAT_SPACING if mercenary else 1.25,
+                min(4.5, count * 0.30),
+            )
+            min_spacing = 2.0 if mercenary else 1.45
+        else:
+            radius = max(
+                PLAYER_MERCENARY_FOLLOW_DISTANCE if mercenary else 2.6,
+                min(7.0, count * 0.55),
+            )
+            min_spacing = 2.2 if mercenary else 1.65
+
+        other_positions = tuple(
+            summon.position
+            for summon in followers
+            if summon.actor_id != actor_id
+        )
+        base_angle = (
+            math.pi / 2.0 - float(yaw) if mercenary else float(yaw)
+        ) + 2.0 * math.pi * slot_index / count
+        current_position = next((
+            summon.position for summon in followers
+            if summon.actor_id == actor_id
+        ), None)
+        is_reachable = getattr(self.encounter.navigation, "is_reachable", None)
+        reachability_start = current_position or tuple(
+            float(value) for value in center
+        )
+        best_position = None
+        best_spacing = -1.0
+        continuity_position = None
+        continuity_distance = float("inf")
+        # If authored slots collapse against a wall or another summon, rotate
+        # around the center until a usable point is found.
+        for attempt in range(12):
+            angle = base_angle + attempt * (math.pi / 6.0)
+            candidate = (
+                float(center[0]) + math.cos(angle) * radius,
+                float(center[1]),
+                float(center[2]) + math.sin(angle) * radius,
+            )
+            try:
+                candidate = self.encounter.navigation.project_position(
+                    candidate,
+                    max_horizontal_distance=max(2.0, radius),
+                )
+            except (NavigationError, CollisionTerrainError, ValueError):
+                if require_reachable:
+                    continue
+            if (
+                require_reachable
+                and callable(is_reachable)
+                and not is_reachable(reachability_start, candidate)
+            ):
+                continue
+            spacing = min(
+                (
+                    math.hypot(
+                        candidate[0] - other[0],
+                        candidate[2] - other[2],
+                    )
+                    for other in other_positions
+                ),
+                default=float("inf"),
+            )
+            if spacing > best_spacing:
+                best_position = candidate
+                best_spacing = spacing
+            if (
+                mercenary
+                and current_position is not None
+                and spacing >= min_spacing
+                and (
+                    not combat_spacing
+                    or math.cos(angle - base_angle) >= -1e-6
+                )
+            ):
+                travel_distance = math.hypot(
+                    candidate[0] - current_position[0],
+                    candidate[2] - current_position[2],
+                )
+                if travel_distance < continuity_distance:
+                    continuity_position = candidate
+                    continuity_distance = travel_distance
+                continue
+            if spacing >= min_spacing:
+                return candidate
+        if continuity_position is not None:
+            # Keep the Soul near its current side when possible. Re-selecting
+            # a position solely from changing player/target angles can make it
+            # orbit or cut through the player while following.
+            return continuity_position
+        if best_position is not None:
+            return best_position
+        if current_position is not None and require_reachable:
+            # Stay put when every candidate lies across an impassable edge.
+            # Repeatedly chasing a projected but unreachable point makes a
+            # follower jitter against walls and map seams.
+            return tuple(float(value) for value in current_position)
+        return tuple(float(value) for value in center)
+
     def spawn_player_summon(
         self,
         definition: PlayerSummonDefinition,
@@ -6047,6 +6206,14 @@ class LocalCombatState:
             grounded[1] + offset[1],
             grounded[2] + offset[2],
         )
+        existing_followers = len(
+            self._live_player_summon_followers(owner_actor_id)
+        )
+        follower_slot_count = (
+            existing_followers + definition.amount
+            if getattr(definition, "follows_owner", False)
+            else 0
+        )
         created = []
         for ordinal in range(definition.amount):
             actor_id = self._allocate_player_summon_actor_id()
@@ -6058,7 +6225,21 @@ class LocalCombatState:
             # Multi-summon skills (notably Wild Pack) must materialize
             # distinct actors. The old 0.15-unit offset overlapped all three
             # models/capsules and made three actors look like one wolf.
-            if definition.amount > 1:
+            is_mercenary = str(definition.category).casefold() == "mercenary"
+            if (
+                getattr(definition, "follows_owner", False)
+                and (follower_slot_count > 1 or is_mercenary)
+            ):
+                summon_position = self._player_summon_formation_position(
+                    grounded,
+                    owner_actor_id=owner_actor_id,
+                    slot_index=existing_followers + ordinal,
+                    slot_count=max(1, follower_slot_count),
+                    yaw=float(yaw),
+                    mercenary=is_mercenary,
+                    require_reachable=is_mercenary,
+                )
+            elif definition.amount > 1:
                 angle = (
                     float(yaw)
                     + 2.0 * math.pi * ordinal / definition.amount
@@ -6336,6 +6517,10 @@ class LocalCombatState:
         for summon in self.player_summons.values():
             if self._monster_is_mind_controlled(summon.actor_id, now=current_time):
                 continue
+            if getattr(summon.definition, "follows_owner", False):
+                # Followers recover through the owner teleport leash in
+                # advance_player_summons instead of being unregistered.
+                continue
             owner_position = player_positions.get(summon.owner_actor_id)
             if owner_position is None:
                 continue
@@ -6356,6 +6541,7 @@ class LocalCombatState:
         server_tick: int,
         now: float | None = None,
         player_positions: dict[int, tuple[float, float, float]] | None = None,
+        player_yaws: dict[int, float] | None = None,
         hostile_player_actor_ids_by_owner=None,
     ) -> tuple[MonsterMovement, ...]:
         '''Move mobile player minions toward nearby hostile actors.'''
@@ -6363,6 +6549,8 @@ class LocalCombatState:
         current_time = time.perf_counter() if now is None else float(now)
         elapsed = max(0.0, min(0.5, float(elapsed_seconds)))
         movements = []
+        player_positions = player_positions or {}
+        player_yaws = player_yaws or {}
         for actor_id, summon in tuple(self.player_summons.items()):
             def stop_if_moving(value):
                 if not value.moving:
@@ -6391,6 +6579,50 @@ class LocalCombatState:
                 if definition != summon.definition:
                     summon = replace(summon, definition=definition)
                     self.player_summons[actor_id] = summon
+            follows = bool(getattr(definition, "follows_owner", False))
+            is_mercenary = str(definition.category).casefold() == "mercenary"
+            controller_info = getattr(self, "monster_mind_control_sources", {}).get(int(actor_id))
+            is_mind_controlled = bool(controller_info and self._monster_is_mind_controlled(actor_id, now=current_time))
+            effective_owner = controller_info[0] if is_mind_controlled else summon.owner_actor_id
+            owner = player_positions.get(effective_owner)
+            owner_yaw = float(player_yaws.get(effective_owner, summon.yaw))
+            if (
+                follows
+                and owner is not None
+                and self._distance(summon.position, owner)
+                > PLAYER_SUMMON_FOLLOWER_TELEPORT_RANGE
+            ):
+                destination = self._player_summon_formation_position(
+                    owner,
+                    owner_actor_id=summon.owner_actor_id,
+                    actor_id=actor_id,
+                    yaw=owner_yaw,
+                    mercenary=is_mercenary,
+                    require_reachable=False,
+                )
+                runtime_group = summon.spawn_group.runtime_subset(
+                    {actor_id}, positions={actor_id: destination}
+                )
+                recovered = replace(
+                    summon,
+                    position=destination,
+                    spawn_group=runtime_group or summon.spawn_group,
+                    moving=False,
+                )
+                self.player_summons[actor_id] = recovered
+                movements.append(
+                    MonsterMovement(
+                        actor_id,
+                        destination,
+                        self.encounter.coordinate_frame.world_to_wire(
+                            destination
+                        ),
+                        recovered.yaw,
+                        False,
+                        int(server_tick) & 0xFFFFFFFF,
+                    )
+                )
+                continue
             if (
                 definition.stationary
                 or getattr(definition, "movement_locked", False)
@@ -6398,17 +6630,14 @@ class LocalCombatState:
                 or self.player_summon_health.get(actor_id, [0])[0] <= 0
                 or self._monster_actions_disabled(actor_id, now=current_time)
                 or definition.move_speed <= 0.0
-                or definition.attack_skill_database_index is None
+                or (
+                    definition.attack_skill_database_index is None
+                    and not follows
+                )
             ):
                 stop_if_moving(summon)
                 continue
-            controller_info = getattr(self, "monster_mind_control_sources", {}).get(int(actor_id))
-            is_mind_controlled = bool(controller_info and self._monster_is_mind_controlled(actor_id, now=current_time))
-            effective_owner = controller_info[0] if is_mind_controlled else summon.owner_actor_id
-            owner = (player_positions or {}).get(effective_owner)
-            follows = bool(getattr(definition, "follows_owner", False))
             target_positions = self.monster_positions
-            player_positions = player_positions or {}
             player_targets = tuple(
                 target_id
                 for target_id in (hostile_player_actor_ids_by_owner or {}).get(
@@ -6417,7 +6646,11 @@ class LocalCombatState:
                 if target_id in player_positions
                 and (target_id not in self.player_health or self.player_health[target_id][0] > 0)
             )
-            if definition.monster_template_id in PLAYER_HUNTING_MINION_STRIKES:
+            if definition.attack_skill_database_index is None:
+                # Non-attacking follower summons (for example the passive
+                # Death Hound variant) still stay with their owner.
+                candidates = ()
+            elif definition.monster_template_id in PLAYER_HUNTING_MINION_STRIKES:
                 target_positions = player_positions
                 candidates = tuple(
                     (self._distance(summon.position, target_positions[target_id]), target_id)
@@ -6449,7 +6682,13 @@ class LocalCombatState:
                 )
                 candidates = tuple(candidates)
             nearest = min(candidates) if candidates else None
-            geometry = self._load_player_skill_geometry(definition.attack_skill_database_index)
+            geometry = (
+                self._load_player_skill_geometry(
+                    definition.attack_skill_database_index
+                )
+                if definition.attack_skill_database_index is not None
+                else None
+            )
             if nearest is not None and (definition.aggro_range <= 0.0 or nearest[0] <= definition.aggro_range):
                 distance, target_actor_id = nearest
                 target = target_positions.get(target_actor_id)
@@ -6458,21 +6697,47 @@ class LocalCombatState:
                 if target is None:
                     stop_if_moving(summon)
                     continue
+                if follows:
+                    combat_yaw = owner_yaw
+                    if is_mercenary and owner is not None:
+                        away_x = float(target[0]) - float(owner[0])
+                        away_z = float(target[2]) - float(owner[2])
+                        if math.hypot(away_x, away_z) > 1e-6:
+                            combat_yaw = (
+                                math.pi / 2.0
+                                - math.atan2(away_z, away_x)
+                            )
+                    target = self._player_summon_formation_position(
+                        target,
+                        owner_actor_id=summon.owner_actor_id,
+                        actor_id=actor_id,
+                        yaw=combat_yaw,
+                        combat_spacing=True,
+                        mercenary=is_mercenary,
+                        require_reachable=is_mercenary,
+                    )
+                    distance = self._distance(summon.position, target)
                 # Within its attack's reach it stops, follower or not: a
                 # ranged summon shoots from where it stands instead of
                 # walking up to 2 m of its target.
-                stop_distance = max(0.75, min(
-                    geometry.attack_range * 0.8 if geometry is not None else 2.0,
-                    geometry.attack_range if geometry is not None else 1.5))
-            elif follows and owner is not None:
-                target = owner
-                distance = self._distance(summon.position, target)
                 stop_distance = (
-                    4.0
-                    if str(getattr(definition, "category", "")).casefold()
-                    == "mercenary"
-                    else 2.5
+                    0.55
+                    if follows
+                    else max(0.75, min(
+                        geometry.attack_range * 0.8 if geometry is not None else 2.0,
+                        geometry.attack_range if geometry is not None else 1.5))
                 )
+            elif follows and owner is not None:
+                target = self._player_summon_formation_position(
+                    owner,
+                    owner_actor_id=summon.owner_actor_id,
+                    actor_id=actor_id,
+                    yaw=owner_yaw,
+                    mercenary=is_mercenary,
+                    require_reachable=is_mercenary,
+                )
+                distance = self._distance(summon.position, target)
+                stop_distance = 0.55
             else:
                 stop_if_moving(summon)
                 continue
