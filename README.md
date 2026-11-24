@@ -40,15 +40,55 @@ The server provides the account registration/login API over HTTP on port `8080`.
 
 ## Join the game with Launcher GUI
 
-The Windows launcher provides account registration, sign-in, and game startup:
+The Windows launcher provides account registration, sign-in, game startup, a
+20-language interface with one saved language selection for both the launcher
+and game client, and a responsive layout. Its activity feed shows the latest
+commit and its full message from `DSOR_Server`'s `main` branch. Double-click
+the message to open the commit on GitHub.
+
+The **Settings** tab saves the server folder, server address, and selected game
+client folder, and tests the account API connection. Choose the folder
+containing `app.py`, `setup_client_assets.py`, and `data/` as the server folder.
+**Unpack Client** first
+checks the cache's NBI bundle references. After a second confirmation, it runs
+`setup_client_assets.py --client-cache` to unpack into
+the selected client folder and refresh server assets under `data/`. Existing
+matching assets are replaced, obsolete map, navigation, and language files are
+removed, and `data/quests.xml` is replaced from the client quest pack. The
+operation can use about 7 GB of extra client-folder space. Keep the server
+stopped while the asset files are being replaced. The launcher shows a
+percentage progress bar during bundle extraction and server-data refresh.
+
+When the local server is behind the GitHub `DSOR_Server` `main` branch, the
+launcher offers an update after you confirm. A clean Git checkout uses a
+fast-forward update. Git is not required for archive installations, and a Git
+checkout with local changes also updates from the GitHub source archive. Any
+existing files that differ from the downloaded version are backed up under
+`%LOCALAPPDATA%\DSORLauncher\update-backups` before they are replaced. Local
+files outside the GitHub archive, such as `.env` and client data, remain in
+place. Restart the server after updating. The launcher must be in the server
+folder to apply an update.
+
+To open the launcher:
 
 1. Start the server with `start.bat` and keep its window open.
 2. Open another terminal in the repository folder and run `py -3 launcher_gui.py`.
-3. In **Server IP Address**, enter `127.0.0.1` when playing on the same computer as the server. For a remote server, enter its reachable IP address. The launcher uses API port `8080` by default; include a custom port as `IP:PORT` if the server uses another API port.
+3. Open **Settings**. Enter `127.0.0.1` as the server IP when playing on the same computer as the server, or the reachable IP for a remote server. The account API uses port `8080` by default; include a custom port as `IP:PORT` if needed. The default client folder is `%TEMP%\DSOClient\dlcache`; use **Browse** to change it, then save. **Test Connection** checks the account API.
 4. To create an account, choose **No account yet? Create one**, enter a username and password twice, then click **Create Account**. The launcher signs in and starts the game after registration succeeds. For an existing account, enter the username and password and click **Sign In**. Check **Remember account** to save the account for later launches on this Windows user account.
-5. The launcher looks for `dro_client64.exe` in the repository's `DSOClient/dlcache` or `Client/dlcache` folders and the official client's `%LOCALAPPDATA%\Temp\DSOClient\dlcache` folder. If it cannot find the executable, select the client folder when prompted. The setup script does not copy the game executable.
+5. The launcher looks for `dro_client64.exe` directly in the selected folder. For unpacking, selecting the `dlcache` folder uses its parent `DSOClient` cache as the source. It also checks the repository's `DSOClient/dlcache` or `Client/dlcache` folders. The setup script does not copy the game executable.
 
 Keep the server running while playing. If sign-in cannot connect, check that the server is running and that the launcher has the correct server IP and API port.
+
+### Build a standalone Windows launcher
+
+Install Python 3.12 or newer with Tcl/Tk support on the build computer, then run
+`build_launcher.bat`. It installs the PyInstaller build dependency and creates
+`DSORLauncher.exe` in the repository's top-level folder as a one-file,
+windowed executable. Players do not need Python or the launcher's `.py` modules
+installed. For server updates and
+**Unpack Client**, place the executable in the server folder containing
+`app.py` and `data/`; extracted game assets are written to that server's
+`data/` folder.
 
 `data/events.json` starts with an empty event schedule. Events can be configured through the server's admin panel.
 

@@ -161,13 +161,19 @@ def _minimum_asset_status(
     return static_db in destinations, map_databases, navigation_meshes, navshapes in destinations
 
 
-def _client_bundles_present(source: Path) -> bool:
+def _client_bundles_present(source: Path, progress_callback=None) -> bool:
     if not source.is_dir():
         return False
+    walked_directories = 0
     for current, directories, names in os.walk(source):
+        walked_directories += 1
         directories[:] = [name for name in directories if name.lower() != "dlcache"]
         if any(name.startswith("bundles_") and "_bundle" in name and ".nb" in name for name in names):
             return True
+        if progress_callback is not None and walked_directories % 100 == 0:
+            progress_callback(walked_directories)
+    if progress_callback is not None:
+        progress_callback(walked_directories)
     return False
 
 
@@ -181,29 +187,86 @@ def _unpack_client_bundles(source: Path, output: Path) -> int:
     official client to read the files locally without a CDN.
     """
     unpacker = Path(__file__).resolve().parent / "tools" / "unpack_dso_bundles.py"
-    if not unpacker.is_file():
+    frozen = getattr(sys, "frozen", False)
+    if not frozen and not unpacker.is_file():
         say(f"ERROR: Bundle extractor not found: {unpacker}")
         return 2
     say("Required local assets are missing; unpacking the downloaded client bundles first...")
     say(f"Bundle source (read only): {source}")
     say(f"Unpacked cache: {output}")
+    arguments = [
+        str(source), "-o", str(output), "--runtime-cache", str(output / "dlcache"),
+    ]
+    if frozen:
+        say("PROGRESS: 8")
+        from contextlib import redirect_stdout
+        from tools.unpack_dso_bundles import main as unpack_bundles
+
+        class BundleProgressOutput:
+            def __init__(self):
+                self.pending = ""
+                self.output = sys.stdout
+
+            def write(self, chunk):
+                self.pending += chunk
+                lines = self.pending.split("\n")
+                self.pending = lines.pop()
+                for output_line in lines:
+                    self._write_line(output_line)
+                return len(chunk)
+
+            def flush(self):
+                if self.pending:
+                    self._write_line(self.pending)
+                    self.pending = ""
+
+            def _write_line(self, output_line):
+                if output_line.startswith("PROGRESS:"):
+                    try:
+                        percent = int(output_line.partition(":")[2].strip())
+                    except ValueError:
+                        return
+                    print(f"PROGRESS: {5 + percent * 75 // 100}", file=self.output, flush=True)
+                else:
+                    print(output_line, file=self.output, flush=True)
+
+        original_argv = sys.argv
+        try:
+            sys.argv = [str(unpacker), *arguments, "--progress"]
+            with redirect_stdout(BundleProgressOutput()):
+                return unpack_bundles()
+        finally:
+            sys.argv = original_argv
     try:
-        result = subprocess.run(
+        say("PROGRESS: 8")
+        process = subprocess.Popen(
             [
                 sys.executable,
                 str(unpacker),
-                str(source),
-                "-o",
-                str(output),
-                "--runtime-cache",
-                str(output / "dlcache"),
+                *arguments,
+                "--progress",
             ],
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
         )
+        assert process.stdout is not None
+        for line in process.stdout:
+            if line.startswith("PROGRESS:"):
+                try:
+                    bundle_percent = int(line.partition(":")[2].strip())
+                except ValueError:
+                    continue
+                print(f"PROGRESS: {5 + bundle_percent * 75 // 100}", flush=True)
+            else:
+                print(line, end="", flush=True)
+        return process.wait()
     except OSError as exc:
         say(f"ERROR: Could not start the bundle extractor: {exc}")
         return 2
-    return result.returncode
 
 
 def _write_asset(destination: Path, data: bytes) -> None:
@@ -348,7 +411,67 @@ def convert_quests_pbxml(source: Path, destination: Path) -> int:
     return quest_count
 
 
-def main() -> int:
+def verify_complete_client_download(source: Path) -> dict[str, int]:
+    """Check NBI completeness before setup; bundle parsing happens during unpack."""
+    from tools.unpack_dso_bundles import (
+        _check_nbi_files,
+        _find_bundles,
+        _scan_source_files,
+    )
+
+    source = source.expanduser().resolve()
+    if not source.is_dir():
+        raise ValueError(f"Client folder does not exist: {source}")
+
+    source_files = _scan_source_files(source, source, source / "dlcache")
+    bundles = _find_bundles(source, source_files)
+    if not bundles:
+        raise ValueError("No complete client bundle files were found.")
+
+    nbi_total, nbi_matched, nbi_invalid, _entries = _check_nbi_files(
+        source_files, bundles,
+    )
+    if not nbi_total:
+        raise ValueError(
+            "The client cache has no NBI download metadata, so download completeness cannot be confirmed."
+        )
+    if nbi_invalid:
+        raise ValueError(f"The client cache contains {nbi_invalid} invalid NBI metadata files.")
+    if nbi_matched != nbi_total:
+        raise ValueError(
+            f"Client download is incomplete: {nbi_matched}/{nbi_total} bundle references are present."
+        )
+
+    return {"bundles": len(bundles), "nbi_total": nbi_total}
+
+
+def _remove_stale_client_assets(
+    data_root: Path, selected_destinations: set[Path],
+) -> int:
+    """Remove obsolete extracted assets only from client-owned data folders."""
+    managed_roots = (
+        data_root / "maps",
+        data_root / "navigation",
+        data_root / "language",
+    )
+    keep = {path.resolve() for path in selected_destinations}
+    removed = 0
+    for root in managed_roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*"), reverse=True):
+            if path.is_file() and path.name.lower() != "readme.txt" and path.resolve() not in keep:
+                path.unlink()
+                removed += 1
+            elif path.is_dir():
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+    return removed
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Extract DSO server assets from the official client cache."
     )
@@ -394,7 +517,13 @@ def main() -> int:
         action="store_true",
         help="Replace an existing data/quests.xml with the decoded client quest pack.",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--replace-assets",
+        action="store_true",
+        help=("Remove obsolete maps, navigation, and language assets that are not "
+              "present in the selected client cache after successful extraction."),
+    )
+    args = parser.parse_args(argv)
 
     if args.unpack_client:
         args.client_cache = True
@@ -419,12 +548,20 @@ def main() -> int:
         say("Install or download the official client files into the folder above, then run setup again.")
         return 2
 
+    say("PROGRESS: 1")
+    say("Scanning local client assets...")
     assets = collect_assets(source, data_root)
+    say("PROGRESS: 2")
     # Bundles unpack beside the server's data (git-ignored), so the official
     # client's folder is only ever read -- unless --client-cache asks for the
     # client's own local cache (the official client then needs no CDN).
     unpacked_cache = source if args.client_cache else data_root / "client_unpacked"
-    bundle_input_exists = _client_bundles_present(source)
+    say("SCANNING: bundle cache")
+    bundle_input_exists = _client_bundles_present(
+        source,
+        progress_callback=lambda count: say(f"SCANNING: bundle folders {count}"),
+    )
+    say("PROGRESS: 4")
     static_db = data_root / "db" / "static.db4"
     navshapes = data_root / "navigation" / "navshapes.bin"
     static_present, map_databases, navigation_meshes, navshapes_present = _minimum_asset_status(assets, data_root)
@@ -470,15 +607,19 @@ def main() -> int:
     if unpack_bundles:
         say()
         say("Unpacking downloaded client bundles...")
+        say("PROGRESS: 5")
         if args.client_cache:
+            say("PROGRESS: 6")
             for root_file in (source / "__root.txt", source / "dlcache" / "__root.txt"):
                 backup = root_file.with_name("__root.txt.before-unpack")
                 if root_file.is_file() and not backup.exists():
                     backup.write_bytes(root_file.read_bytes())
+            say("PROGRESS: 7")
         unpack_result = _unpack_client_bundles(source, unpacked_cache)
         if unpack_result != 0:
             say(f"Bundle extraction failed; {unpacked_cache} may be incomplete. Server asset extraction was not started.")
             return unpack_result
+        say("PROGRESS: 80")
         assets = collect_assets(unpacked_cache, data_root)
 
     selected_destinations = set(assets)
@@ -516,6 +657,8 @@ def main() -> int:
             return 2
         if index == len(assets) or index % 250 == 0:
             say(f"  Data files: {index:,}/{len(assets):,}")
+        progress = 80 + index * 19 // max(1, len(assets))
+        say(f"PROGRESS: {progress}")
 
     decoded_quest_count: int | None = None
     if quests_pbxml.is_file():
@@ -530,8 +673,13 @@ def main() -> int:
                 return 2
             say(f"  Quest XML: {decoded_quest_count:,} quests written to {quests_xml}")
 
+    if args.replace_assets:
+        removed = _remove_stale_client_assets(data_root, selected_destinations)
+        say(f"Removed {removed:,} obsolete client asset files.")
+
     say()
     say("Setup finished.")
+    say("PROGRESS: 100")
     say(f"  Static database: {static_db}")
     say(f"  Map databases:  {len(map_databases):,}")
     say(f"  Navigation:     {len(navigation_meshes):,} .tok files and navshapes.bin")
