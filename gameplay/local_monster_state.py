@@ -544,11 +544,32 @@ _CHRISTMAS_CHALLENGE_WAY_BACK_MONSTERS = (
     "e_chr_2015_normal_guardian_death",
 )
 
+_CRIMSON_TIDE_COAST_ORDINARY_MONSTERS = (
+    "ce2026_crimsontide_monster_marrowder",
+    "ce2026_crimsontide_monster_marrowder_logkeeper",
+    "ce2026_crimsontide_monster_wayfinder",
+    "ce2026_crimsontide_monster_claw_hammer",
+    "ce2026_crimsontide_monster_jellyfish",
+)
+_CRIMSON_TIDE_COAST_RARE_MONSTERS = (
+    *_CRIMSON_TIDE_COAST_ORDINARY_MONSTERS,
+    "ce2026_crimsontide_monster_marrowder_elite",
+)
+
 # Spawn-list membership is server-owned and is not shipped in static.db4.
 # These names are descriptive enough to recover the exact b1201 membership;
 # other maps use their map-scoped normal monster templates as a deterministic
 # fallback.
 _SPAWN_LIST_TEMPLATE_OVERRIDES = {
+    # The CE2026 coast exports only the generic Ordinary/Rare list labels;
+    # the server-side list registry is not part of the client database. Keep
+    # its map-wide Rare area varied instead of filling it with one fallback
+    # template, while keeping bosses and story champions on their authored
+    # quest/event spawns.
+    "ce2026_crimsontide_coast": {
+        "Ordinary": _CRIMSON_TIDE_COAST_ORDINARY_MONSTERS,
+        "Rare": _CRIMSON_TIDE_COAST_RARE_MONSTERS,
+    },
     **{
         challenge_map: {
             "normal_spawn": _CHRISTMAS_CHALLENGE_NORMAL_MONSTERS,

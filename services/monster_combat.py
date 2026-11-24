@@ -1067,6 +1067,14 @@ class MonsterCombatService(
                         actor_id: combat.encounter.coordinate_frame.wire_to_world(position)
                         for actor_id, position, _viewer in combat_targets
                     },
+                    player_yaws={
+                        actor_id: float(getattr(
+                            getattr(viewer, "gameplay_last_move", None),
+                            "yaw",
+                            0.0,
+                        ))
+                        for actor_id, _position, viewer in combat_targets
+                    },
                     hostile_player_actor_ids_by_owner=summon_context[0],
                 ))
                 movements = tuple(movements)
