@@ -12,7 +12,8 @@ import time
 
 from dso_server.runtime import resident_content
 from dso_server.gameplay.mortis_arena import (
-    MAP_ID, DRAGON, ADD_DRAGON, MOUNTED, UNBOUND, freeze_effect_ids,
+    MAP_ID, DRAGON, ADD_DRAGON, MOUNTED, UNBOUND,
+    PHASE_TWO_EVENT_SET, freeze_effect_ids,
 )
 from dso_server.gameplay.map_event_state import GatedSpawnRow
 from dso_server.gameplay.local_monster_state import load_monster_permanent_status_effects
@@ -314,7 +315,9 @@ class MortisArena:
         if combat is None or not sessions:
             return
         with self.runtime.lock:
-            actors = tuple(self.runtime.event_set_actor_ids.get(4216, ()))
+            actors = tuple(
+                self.runtime.event_set_actor_ids.get(PHASE_TWO_EVENT_SET, ())
+            )
         with combat.lock:
             cleared = bool(actors) and all(combat.monster_health.get(a, 0) <= 0 for a in actors)
         if cleared:

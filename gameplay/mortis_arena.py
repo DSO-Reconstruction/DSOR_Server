@@ -16,6 +16,10 @@ DRAGON = "boss_mortis_bone_dragon"
 ADD_DRAGON = "boss_mortis_add_bone_dragon"
 MOUNTED = "boss_mortis_mounted"
 UNBOUND = "boss_mortis_unbound"
+# These IDs come from pw214_mortis_boss.db4's _Instance_SpawnPoint rows.
+GATE_PACK_EVENT_SET = 4225
+MOUNTED_EVENT_SET = 4226
+PHASE_TWO_EVENT_SET = 4227
 FINAL_GEM_REWARDS = tuple(
     f"gem_{family}_i" for family in (
         "ruby", "onyx", "amethyst", "cyanit", "diamond",
@@ -59,11 +63,13 @@ def select_spawn_rows(static_path, runtime, rows):
         return tuple(rows)
     tier = min(9, max(0, int(runtime.scaling_difficulty)))
     allowed = {}
-    for event_set in {row.event_set_row for row in rows} & {4214, 4215, 4216}:
+    for event_set in {row.event_set_row for row in rows} & {
+        GATE_PACK_EVENT_SET, MOUNTED_EVENT_SET, PHASE_TWO_EVENT_SET,
+    }:
         groups = _parent_groups(str(resident_content.resolved(static_path)), event_set)
-        if event_set == 4216:
+        if event_set == PHASE_TWO_EVENT_SET:
             choices = groups[tier * 8:(tier + 1) * 8]
-        elif event_set == 4214:
+        elif event_set == GATE_PACK_EVENT_SET:
             start = min(tier, 6) * 6 + max(0, tier - 6) * 7
             choices = groups[start:start + (6 if tier < 6 else 7)]
         else:
@@ -72,8 +78,8 @@ def select_spawn_rows(static_path, runtime, rows):
             raise ValueError(f"Mortis tier {tier} has no pack for set {event_set}")
         rng = random.Random(f"{runtime.instance_key!r}:{event_set}")
         weights = (
-            (20, 20, 20, 15, 15, 10) if event_set == 4214 and tier < 6
-            else (15, 15, 15, 15, 5, 15, 15) if event_set == 4214 and tier < 8
+            (20, 20, 20, 15, 15, 10) if event_set == GATE_PACK_EVENT_SET and tier < 6
+            else (15, 15, 15, 15, 5, 15, 15) if event_set == GATE_PACK_EVENT_SET and tier < 8
             else (1,) * len(choices)
         )
         allowed[event_set] = frozenset(rng.choices(choices, weights=weights, k=1)[0])
@@ -88,7 +94,7 @@ def select_spawn_rows(static_path, runtime, rows):
             if mounted_seen:
                 continue
             mounted_seen = True
-        if row.event_set_row == 4214:
+        if row.event_set_row == GATE_PACK_EVENT_SET:
             # Gate packs are authored in the off-arena staging pen (z=-8).
             # Their client script walks them through the gate at z=4. Spawn
             # there directly; the generic AI cannot traverse that staging pen.

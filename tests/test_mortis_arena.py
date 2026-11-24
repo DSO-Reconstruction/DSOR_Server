@@ -11,6 +11,7 @@ from dso_server.gameplay.local_map_state import load_map_coordinate_frame
 from dso_server.gameplay.local_monster_state import load_local_monster_encounter, _load_runtime_definition
 from dso_server.gameplay.mortis_arena import (
     MAP_ID, DRAGON, ADD_DRAGON, MOUNTED, UNBOUND, freeze_effect_ids,
+    GATE_PACK_EVENT_SET, PHASE_TWO_EVENT_SET,
     released_spawn_batch, select_spawn_rows,
 )
 from dso_server.gameplay.map_event_state import load_map_event_content
@@ -66,7 +67,7 @@ class MortisArenaTests(unittest.TestCase):
     def _reach_unbound(self):
         self._start()
         self._kill(self._alive(DRAGON))
-        actors = self.runtime.event_set_actor_ids[4216]
+        actors = self.runtime.event_set_actor_ids[PHASE_TWO_EVENT_SET]
         self._kill(tuple(self.combat.monsters[a] for a in actors))
         self._kill(self._alive(MOUNTED))
         return self._alive(UNBOUND)[0]
@@ -105,7 +106,7 @@ class MortisArenaTests(unittest.TestCase):
     def test_wave_requires_every_real_actor_and_spawns_only_one_mounted_boss(self):
         self._start()
         self._kill(self._alive(DRAGON))
-        actors = self.runtime.event_set_actor_ids[4216]
+        actors = self.runtime.event_set_actor_ids[PHASE_TWO_EVENT_SET]
         self.assertGreaterEqual(len(actors), 17)
         self.assertLessEqual(len(actors), 21)
         wave = tuple(self.combat.monsters[a] for a in actors)
@@ -144,18 +145,18 @@ class MortisArenaTests(unittest.TestCase):
         rows = load_map_event_content(STATIC, MAP_ID).spawn_rows
         for tier in range(10):
             self.runtime.scaling_difficulty = tier
-            wave = tuple(r for r in rows if r.event_set_row == 4216)
+            wave = tuple(r for r in rows if r.event_set_row == PHASE_TWO_EVENT_SET)
             chosen = select_spawn_rows(STATIC, self.runtime, wave)
             self.assertTrue(17 <= len(chosen) <= 21)
             self.assertEqual(chosen, select_spawn_rows(STATIC, self.runtime, wave))
-            gate = select_spawn_rows(STATIC, self.runtime, tuple(r for r in rows if r.event_set_row == 4214))
+            gate = select_spawn_rows(STATIC, self.runtime, tuple(r for r in rows if r.event_set_row == GATE_PACK_EVENT_SET))
             self.assertTrue(1 <= len(gate) <= 6)
             self.assertTrue(all(r.position[2] > 0 for r in gate))
 
     def test_unbound_waits_for_mounted_death_animation(self):
         self._start()
         self._kill(self._alive(DRAGON))
-        self._kill(tuple(self.combat.monsters[a] for a in self.runtime.event_set_actor_ids[4216]))
+        self._kill(tuple(self.combat.monsters[a] for a in self.runtime.event_set_actor_ids[PHASE_TWO_EVENT_SET]))
         self.runtime.scheduler = SimpleNamespace(timer=lambda *a, **k: SimpleNamespace(start=lambda: None, cancel=lambda: None))
         self._kill(self._alive(MOUNTED))
         controller = arena(self.server, self.runtime)

@@ -13862,7 +13862,7 @@ class MapEventService:
                 )
         # Collapse stacked variation rows only after the Mortis pack and boss
         # difficulty selections: those pick specific rows out of the stacks
-        # (Mortis phase 2 keeps 1530 rows in EventSet 4216), so collapsing
+        # (Mortis phase 2 keeps 1530 rows in EventSet 4227), so collapsing
         # them at load time left the selections nothing to spawn.
         rows = deduplicate_parallel_world_gatekeeper_rows(runtime.map_id, rows)
         combat = self._map_event_combat_state(sessions)
