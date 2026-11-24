@@ -234,7 +234,7 @@ function mainQuestSection() {
   return section("Main quests", `<form id="main-quests-form" class="form-page">
     <fieldset class="form-section"><legend>Quest progress</legend>
       <p class="help">The full option completes every World type quest and the Parallel Worlds introduction prerequisite, including seasonal/event World quests such as CE 2026. No quest rewards are granted.</p>
-      <p class="help">The Act-only option completes campaign quests assigned to Acts 0–8. Event chapters such as CE 2026 and quests without an Act chapter are excluded.</p>
+      <p class="help">The Act-only option completes campaign quests assigned to Acts 0–8 plus the Land of Immortals storyline. Event chapters such as CE 2026 and other quests without an Act chapter are excluded.</p>
       <p class="help">Undo removes completed main quest records so they can be replayed. It does not roll back rewards, levels, or map unlocks earned separately.</p>
     </fieldset>
     <p id="main-quests-error" class="error-text" role="alert"></p>
@@ -252,7 +252,7 @@ function bindMainQuests(id) {
       const reason = await confirmAction(
         actOnly ? "Complete Act main quests?" : "Complete all World quests?",
         actOnly
-          ? "This marks campaign quests from Acts 0–8 as completed. Seasonal/event chapters such as CE 2026 and quests without an Act chapter are excluded. Quest rewards will not be granted."
+          ? "This marks campaign quests from Acts 0–8 and the Land of Immortals storyline as completed. Seasonal/event chapters such as CE 2026 and other quests without an Act chapter are excluded. Quest rewards will not be granted."
           : "This marks every World type quest and the Parallel Worlds introduction prerequisite as completed, including seasonal/event World quests such as CE 2026. Quest rewards will not be granted.",
         actOnly ? "Complete Act quests" : "Complete all World quests");
       if (reason === null) return;

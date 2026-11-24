@@ -98,6 +98,14 @@ def _is_campaign_act_id(value) -> bool:
     )
 
 
+def _is_land_of_immortals_quest(quest) -> bool:
+    """Land of Immortals story quests live on the k0005 map series."""
+    return any(
+        str(map_id).casefold().startswith("k0005_")
+        for map_id in quest.maps
+    )
+
+
 def character_name(value):
     if not isinstance(value, str) or not value or value != value.strip():
         raise ValueError("character name must not be empty or padded")
@@ -1301,8 +1309,10 @@ class AdminService:
                 }
             quests = [
                 quest for quest in world_quests
-                if _is_campaign_act_id(
-                    chapter_acts.get(quest.chapter_id.casefold())
+                if (
+                    _is_campaign_act_id(
+                        chapter_acts.get(quest.chapter_id.casefold())
+                    ) or _is_land_of_immortals_quest(quest)
                 ) and not quest.event_id.strip()
             ]
         else:
