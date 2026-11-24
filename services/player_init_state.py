@@ -44,6 +44,7 @@ from dso_server.protocol.inventory_codec import (
 from dso_server.gameplay.map_unlocks import (
     restored_map_unlocks, saved_quest_map_unlocks, unlocked_travel_map_ids,
 )
+from dso_server.gameplay.boss_encounter_policy import load_map_encounter_policy
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.status_runtime_catalog import (
     load_status_runtime_catalog,
@@ -1578,11 +1579,15 @@ class PlayerInitializationStateService:
             0.0, float(stats.maximum_soul_resource)
         )
         if int(character.class_id) == 4:
-            # Soul Energy is map-session state for the Soulweaver. Every new
-            # map initialization starts the pool at one, then sphere pickups
-            # build it for the remainder of that map.
-            state.inventory.tertiary_resource = min(
-                1.0, state.maximum_soul_resource
+            # Soul Energy is map-session state for the Soulweaver. Start with
+            # one point on ordinary maps; boss rooms begin with a full pool.
+            is_boss_room = load_map_encounter_policy(
+                self.static_database_path, state.gameplay_map
+            ).is_boss_room
+            state.inventory.tertiary_resource = (
+                state.maximum_soul_resource
+                if is_boss_room
+                else min(1.0, state.maximum_soul_resource)
             )
         state.health_regeneration_fraction = max(
             0.0, float(stats.health_regeneration_fraction)
