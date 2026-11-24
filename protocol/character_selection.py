@@ -63,7 +63,9 @@ CLASS_IDS = {
     "mage": 1,
     "ranger": 2,
     "dwarf": 3,
-    "niwalk": 4,
+    # The latest client presents the legacy fifth-class slot as the
+    # Spellweaver-unlocked Soulweaver. Its content database key is ``necro``.
+    "necro": 4,
 }
 CLASS_NAMES = {value: key for key, value in CLASS_IDS.items()}
 
@@ -118,7 +120,7 @@ NEW_CHARACTER_QUICKBAR_SKILL_SLOTS = {
         "SimpleShot", "Flamethrower", "SteamConductor", "HeavyShot",
         "HoverJump", "Grenade", "TurretCombat", "PositionBombShot",
     ),
-    CLASS_IDS["niwalk"]: (),
+    CLASS_IDS["necro"]: ("BoneSpikes",),
 }
 
 

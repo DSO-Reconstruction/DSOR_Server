@@ -1,14 +1,14 @@
 """Resolve network command ids against whichever client build is being served.
 
 Command IDs can change between client builds. The server defaults to the
-R261_221 table. The R261_220, R261_219, R261_1024, R261_203 and R261_192
+R261_222 table. The R261_221, R261_220, R261_219, R261_1024, R261_203 and R261_192
 tables remain available for older clients through ``DSO_COMMAND_IDS``.
 Protocol modules declare IDs by class name rather than by number::
 
     SWITCH_MAP_COMMAND = command_id("Commands::SwitchMapCommand", 0x70)
 
 The literal stays as the dro_client64-patch5 value and as the fallback.
-By default the server resolves against ``docs/command_ids_rel261_221.json``.
+By default the server resolves against ``docs/command_ids_rel261_222.json``.
 ``DSO_COMMAND_IDS`` selects a table dumped from another client -- see
 ``tools/dump_command_ids.py`` for x64 -- and ``DSO_COMMAND_IDS=builtin`` keeps the
 patch5 literals.
@@ -32,7 +32,7 @@ __all__ = [
 
 ENVIRONMENT_VARIABLE = "DSO_COMMAND_IDS"
 DEFAULT_TABLE = (
-    Path(__file__).resolve().parents[1] / "docs" / "command_ids_rel261_221.json"
+    Path(__file__).resolve().parents[1] / "docs" / "command_ids_rel261_222.json"
 )
 BUILTIN_VALUES = frozenset({"builtin", "patch5", "none"})
 

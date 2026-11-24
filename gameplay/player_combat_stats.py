@@ -98,6 +98,7 @@ class PlayerCombatStats:
     critical_damage_multiplier: float = 2.0
     maximum_health: int = 1
     maximum_resource: int = 100
+    maximum_soul_resource: float = 0.0
     health_regeneration_fraction: float = 0.0
     health_regeneration_absolute: float = 0.0
     health_regeneration_interval: float = 1.0
@@ -161,6 +162,7 @@ class StaticPlayerCombatDatabase:
     base_damage_by_class_level: dict[tuple[str, int], float]
     base_health_by_class_level: dict[tuple[str, int], float]
     base_resource_by_class_level: dict[tuple[str, int], float]
+    maximum_soul_resource: float
     player_template_damage: dict[str, tuple[float, float]]
     player_template_recovery: dict[
         str, tuple[float, float, float]
@@ -637,6 +639,10 @@ def _load_static_database(
             "SELECT LowerLimit, UpperLimit FROM _Template_ActorAttributes "
             "WHERE Id='MovementSpeed'"
         ).fetchone()
+        soul_resource_limit = database.execute(
+            "SELECT UpperLimit FROM _Template_ActorAttributes "
+            "WHERE Id='MaxSoulResource' LIMIT 1"
+        ).fetchone()
         global_values = database.execute(
             "SELECT MaxCriticalChance, MaxCriticalDamage, "
             "CriticalDamageBonus, MaxBlockChance, "
@@ -648,6 +654,11 @@ def _load_static_database(
         base_damage_by_class_level=base_damage,
         base_health_by_class_level=base_health,
         base_resource_by_class_level=base_resource,
+        maximum_soul_resource=max(
+            0.0,
+            float(soul_resource_limit[0] or 0.0)
+            if soul_resource_limit is not None else 0.0,
+        ),
         player_template_damage=player_templates,
         player_template_movement={
             str(row["CharClass"]).casefold(): float(row["RunSpeed"])
@@ -2495,6 +2506,10 @@ def _calculate_player_combat_stats(
             critical_damage_multiplier=database.base_critical_damage,
             maximum_health=base_health,
             maximum_resource=base_resource,
+            maximum_soul_resource=(
+                database.maximum_soul_resource
+                if class_name.casefold() == "necro" else 0.0
+            ),
             health_regeneration_fraction=0.0,
             health_regeneration_absolute=0.0,
             health_regeneration_interval=regeneration_interval,
@@ -3039,6 +3054,10 @@ def _calculate_player_combat_stats(
         critical_damage_multiplier=critical_damage_multiplier,
         maximum_health=maximum_health,
         maximum_resource=maximum_resource,
+        maximum_soul_resource=(
+            database.maximum_soul_resource
+            if class_name.casefold() == "necro" else 0.0
+        ),
         health_regeneration_fraction=health_regeneration_fraction,
         health_regeneration_absolute=health_regeneration_absolute,
         health_regeneration_interval=health_regeneration_interval,

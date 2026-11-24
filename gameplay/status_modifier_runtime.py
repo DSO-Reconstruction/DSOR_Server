@@ -355,14 +355,16 @@ def snapshot_player_modifier_sources(session) -> tuple[object, ...]:
     Item-set tiers contribute their compiled modifiers (``QuestDropFactor``,
     ``HealthGlobeBonus``, Black Essence skill-cost rules) next to the status
     entries; socket rules arrive through their status entries.  Inside a PvP
-    arena the item-set and rune/jewel programs and the Ancient Wisdom/Group
-    talent trees are inert, so only the remaining statuses are returned.
+    arena the item-set and rune/jewel programs, the Ancient Wisdom/Group
+    talent trees, and individual talent effects marked ``DisabledMatchPvP``
+    are inert, so only the remaining statuses are returned.
     """
 
     if pvp_arena_rules.arena_active(session):
-        # Arena rules: the Ancient Wisdom/Group talent trees and the Shadow
-        # Soul's gear do not contribute; item sets keep working (the client
-        # computes them itself), while rune/jewel sockets stay inert.
+        # Arena rules: the Ancient Wisdom/Group talent trees, individual
+        # ``DisabledMatchPvP`` talent effects, and the Shadow Soul's gear do
+        # not contribute; item sets keep working (the client computes them
+        # itself), while rune/jewel sockets stay inert.
         disabled_effects = pvp_arena_rules.arena_disabled_effect_ids(
             pvp_arena_rules.session_database_path(session)
         )

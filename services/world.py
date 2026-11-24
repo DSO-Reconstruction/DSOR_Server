@@ -45,6 +45,10 @@ AUTO_PICKUP_INGREDIENT_RADIUS = 3.5
 PET_AUTO_PICKUP_RADIUS = 4.5
 PET_AUTO_PICKUP_INGREDIENT_RADIUS = 5.5
 AUTO_PICKUP_RANGE_BONUS = 2.0
+# Soul Spheres keep AutoPickUp=All, but their approach pickup is intentionally
+# much closer than ordinary instant-consumable loot.
+NECRO_SOUL_GLOBE_ITEM_ID = 'necro_soul_globe_02'
+NECRO_SOUL_GLOBE_AUTO_PICKUP_RADIUS = 1.5
 # Premium and Deluxe share this server-side radius extension. Validate the
 # saved tier and expiry instead of trusting a client-side membership badge.
 MEMBERSHIP_AUTO_PICKUP_RANGE_BONUS = 5.0
@@ -154,8 +158,11 @@ def _pet_auto_pickup_categories(resource_id: str) -> frozenset[str]:
 
 def _auto_pickup_radius(
         category: str, pet_categories: frozenset[str], *,
-        membership_active: bool = False) -> float:
+        membership_active: bool = False,
+        item_template_id: str = "") -> float:
     """Reach of one automatic pickup, including the global range increase."""
+    if str(item_template_id).casefold() == NECRO_SOUL_GLOBE_ITEM_ID:
+        return NECRO_SOUL_GLOBE_AUTO_PICKUP_RADIUS
     if category in pet_categories:
         base_radius = (PET_AUTO_PICKUP_INGREDIENT_RADIUS
                        if category == 'IngredientItem'
@@ -2231,9 +2238,16 @@ class WorldService:
         if restored_resource is not None and healed is not None:
             # The Hit above carries health only; publish the committed
             # HealthGlobeBonus resource like other CurrSkillResource gains.
+            with s.flow_lock:
+                current_soul = float(
+                    s.gameplay_inventory.tertiary_resource
+                    if s.gameplay_inventory is not None else 0.0
+                )
             s.send_reliable_ordered(
                 encode_actor_stats_update_batch(
-                    ActorStatsUpdate(int(healed[1]), float(restored_resource[1])),
+                    ActorStatsUpdate(
+                        int(healed[1]), float(restored_resource[1]), current_soul
+                    ),
                     actor_id=LOCAL_PLAYER_ACTOR_ID,
                 ),
                 track=True,
@@ -2367,6 +2381,7 @@ class WorldService:
                     ) <= _auto_pickup_radius(
                         drop.item_category, pet_categories,
                         membership_active=membership_active,
+                        item_template_id=str(drop.item.template_id),
                     )
                 )
             )

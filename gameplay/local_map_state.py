@@ -58,13 +58,13 @@ def npc_actor_id_for_row(row_id: int) -> int:
     return actor_id
 
 
-# The wire profession code is the index of this list.  Client release261
-# keeps the names as one contiguous .rdata pool at 0x140ebe4cf..0x140ebe640,
-# and UI::NpcWidget switches on the index (`cmp r15d, 0x11` -> "openBank" at
-# 0x1404ad9ec).  A profession that is not listed here is announced as 0xFF,
-# which builds no widget button at all, so the vendor looks inert.  Note that
-# the compare chain at 0x14017eb50 numbers these same names differently;
-# those values are internal and never go on the wire.
+# The wire profession code is the index of this list.  In release261_222 the
+# client’s contiguous profession string pool includes ``necro_skilltrainer``
+# between ``niwalk_skilltrainer`` and ``arena_merchant``; omitting it shifts
+# every later code, making the tailor (18) receive the bank widget (18).
+# A profession that is not listed here is announced as 0xFF, which builds no
+# widget button at all, so the vendor looks inert.  The client’s internal
+# profession compare chain uses separate values that never go on the wire.
 NPC_PROFESSIONS = (
     "alchemist",
     "jewelry",
@@ -80,6 +80,7 @@ NPC_PROFESSIONS = (
     "ranger_skilltrainer",
     "dwarf_skilltrainer",
     "niwalk_skilltrainer",
+    "necro_skilltrainer",
     "arena_merchant",
     "equip",
     "crafting",

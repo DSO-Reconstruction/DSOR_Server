@@ -3,6 +3,7 @@ import { $, esc, human, rarities, api, table, confirmAction, notice, formError, 
 const CLASS_KEYS = [
   { key: "warrior", label: "Dragonknight" },
   { key: "mage", label: "Spellweaver" },
+  { key: "necro", label: "Soulweaver" },
   { key: "ranger", label: "Ranger" },
   { key: "dwarf", label: "Steam Mechanicus" },
 ];

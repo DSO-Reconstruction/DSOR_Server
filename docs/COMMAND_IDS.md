@@ -1,9 +1,10 @@
 # Recovering the client's command id table
 
-## Server default: `release261_221`
+## Server default: `release261_222`
 
-The server uses [`command_ids_rel261_221.json`](command_ids_rel261_221.json)
-by default, matching the R261_221 client. Set `DSO_COMMAND_IDS` to
+The server uses [`command_ids_rel261_222.json`](command_ids_rel261_222.json)
+by default, matching the R261_222 client. Set `DSO_COMMAND_IDS` to
+[`command_ids_rel261_221.json`](command_ids_rel261_221.json),
 `docs/command_ids_rel261_220.json`, `docs/command_ids_rel261_219.json`,
 `docs/command_ids_rel261_1024.json`, `docs/command_ids_rel261_203.json`, or
 `docs/command_ids_rel261_192.json` to select an older client table.
@@ -13,6 +14,28 @@ This analysis recovers registered command names, IDs, and actor scoping flags.
 The existing `DSO_SKILL_HIT_MARKER_BITS=3` setting is retained as verified from
 the HitCommand decoder. For `dro_client64-patch5` or the DSOR client, set
 `DSO_COMMAND_IDS=builtin` and `DSO_SKILL_HIT_MARKER_BITS=0`.
+
+## R261_222 update analysis
+
+The analyzed executable was
+`%LOCALAPPDATA%\Temp\DSOClient\dlcache\dro_client64.exe` (the supplied
+release261_222 client), SHA-256:
+`4fd1e40582c85b4635e121b0d29c3f648a91b1c25a9a72f6c036a031e7348a2b`.
+REA/Ghidra 12.2 located `DrasaClientHandler::DecodeCommand` at
+`0x140ab7e90`; it rejects IDs greater than `0x17d` (381), for a factory
+capacity of 382. The command factory registration scan recovered 371 classes.
+
+Compared with the checked-in R261_221 table, all 371 class names and command
+IDs are identical, with no additions, removals, ID changes, or duplicate IDs.
+The recovered IDs span 1–381. The current executable has 299 actor-scoped and
+72 unscoped classes. Its default actor stubs are at `0x140a8b3fc` and
+`0x140a8b438`; these moved from the earlier build addresses, so the dumper now
+selects the correct stub pair for R261_222.
+
+The packaged `static.db4` is byte-identical to the server copy. This analysis
+establishes command-table compatibility with R261_221. It did not compare all
+serialized command field layouts against a prior R261_221 executable, so the
+R261_221 codec findings below remain the available wire-layout reference.
 
 ## R261_221 update analysis
 

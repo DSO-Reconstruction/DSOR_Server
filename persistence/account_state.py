@@ -389,6 +389,7 @@ def _inventory_to_document(
         "extra_storage_size": inventory.extra_storage_size,
         "health_points": inventory.health_points,
         "secondary_resource": inventory.secondary_resource,
+        "tertiary_resource": inventory.tertiary_resource,
         "field_1e0": False,
         "actor_id": inventory.actor_id,
     }
@@ -440,6 +441,7 @@ def _inventory_from_document(document: dict) -> InventoryInfo:
         extra_storage_size=int(document.get("extra_storage_size", 0)),
         health_points=float(document.get("health_points", 1.0)),
         secondary_resource=float(document.get("secondary_resource", 0.0)),
+        tertiary_resource=float(document.get("tertiary_resource", 0.0)),
         field_1e0=False,
         actor_id=int(document.get("actor_id", 1)),
     )

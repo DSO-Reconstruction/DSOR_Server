@@ -341,13 +341,17 @@ class PlayerRespawnService:
         )
 
     @staticmethod
-    def _send_player_revive_to(s: Session, *, actor_id, position, heading, health, resource):
+    def _send_player_revive_to(
+            s: Session, *, actor_id, position, heading, health, resource,
+            soul=0.0):
         s.send_reliable_ordered(
             encode_force_transform_batch(ForceTransform(position, heading), actor_id=actor_id),
             track=True, label="player-respawn-transform",
         )
         s.send_reliable_ordered(
-            encode_actor_stats_update_batch(ActorStatsUpdate(health, resource), actor_id=actor_id),
+            encode_actor_stats_update_batch(
+                ActorStatsUpdate(health, resource, soul), actor_id=actor_id
+            ),
             track=True, label="player-respawn-vitals",
         )
         s.send_reliable_ordered(
@@ -468,6 +472,7 @@ class PlayerRespawnService:
                 revived_pool = health
                 health[0] = current_health = max(1, int(health[1]))
                 resource = float(combat.player_resource.get(actor_id, [0.0])[0])
+                soul = float(combat.player_soul_resource.get(actor_id, [0.0])[0])
                 if actor_id == combat.player_actor_id:
                     combat.player_current_health = current_health
             with s.flow_lock:
@@ -495,6 +500,7 @@ class PlayerRespawnService:
                 s.gameplay_currency_state = currency
                 inventory.health_points = float(current_health)
                 inventory.secondary_resource = resource
+                inventory.tertiary_resource = soul
                 s.gameplay_revive_movement_until = time.perf_counter() + revival_seconds
                 s.gameplay_revive_movement_correction_until = 0.0
                 s.gameplay_spawn_position = tuple(position)
@@ -511,6 +517,7 @@ class PlayerRespawnService:
             CharacterService._send_player_revive_to(
                 s, actor_id=LOCAL_PLAYER_ACTOR_ID, position=position,
                 heading=heading, health=current_health, resource=resource,
+                soul=soul,
             )
             if s.gameplay_presence_callback is not None:
                 s.gameplay_presence_callback(s, (

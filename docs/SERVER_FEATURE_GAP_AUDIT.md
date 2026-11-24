@@ -739,8 +739,10 @@ helpers; their partial-send recovery is not covered by the NPC/exit retry fix.
 - **Other retained commands:** currency conversion, glyph removal,
   payment/promotional calendars, and spectator commands need a current UI or
   capture-backed use case. A registered class alone is insufficient evidence.
-- **`niwalk` skill rows:** 26 rows exist in current data, but that does not
-  establish a currently supported fifth playable class.
+- **Legacy `niwalk` skill rows:** 26 rows remain in the content database but
+  are not used for playable class id 4. That slot now resolves to the
+  Spellweaver-unlocked Soulweaver (`necro` content); its class-specific skill
+  behavior still needs an in-game audit.
 - **Retail economy parity:** exact random loot probabilities and some event,
   commerce, and reward policies may be server-only data. Explicitly distinguish
   chosen local rules from recovered retail behavior.

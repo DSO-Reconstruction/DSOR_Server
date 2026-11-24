@@ -1225,7 +1225,7 @@ class GuildMember:
     # The class byte precedes the level; the rank byte follows the three
     # flags.  The generated decoder stores them at +0x48 and +0x54, and
     # ``SocialWidget::CreateGuildListElement()`` switches +0x48 over the five
-    # class icons (warrior/wizard/ranger/dwarf/niwalk) while rendering +0x54
+    # class icons (warrior/wizard/ranger/dwarf/Soulweaver) while rendering +0x54
     # through the three-value rank enum.  Only the rank slot is validated: a
     # value outside -1..2 aborts ``GuildStatusCommand::Decode``.
     class_id: int

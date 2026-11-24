@@ -40,6 +40,7 @@ _BOSS_INGREDIENT_REGION_CACHE: dict[
 ] = {}
 _BOSS_INGREDIENT_REGION_CACHE_LOCK = Lock()
 _DRAGAN_FIRST_CLEAR_CLAIM_KEY = "dragan_great_hall_first_boss_reward"
+_NECRO_SOUL_GLOBE_TEMPLATE_ID = "necro_soul_globe_02"
 _DRAGAN_CLASS_SET_ITEMS = {
     # The template format below already inserts ``2h_`` before this suffix.
     # Store only the weapon name here so we resolve the real static item IDs.
@@ -1038,6 +1039,19 @@ class LootPresenceService:
             event_drops = ()
             event_loot = ()
 
+        # Soulweaver's native one-point resource pickup is a physical Soul
+        # Sphere. Its static template supplies the pickup effect and drop
+        # visual; the normal world-loot allocator assigns IDs and publishes it.
+        soul_globe_count = CharacterService._necro_soul_energy_globe_count(
+            session, (position,),
+        ) if str(class_name).casefold() == "necro" else 0
+        if soul_globe_count:
+            event_loot = (
+                *event_loot,
+                *((_NECRO_SOUL_GLOBE_TEMPLATE_ID, 1)
+                  for _ in range(soul_globe_count)),
+            )
+
         # Database/cache work is pure and can take milliseconds. Generate with
         # provisional IDs, then reserve one exact map-global range in a tiny
         # world-lock transaction.
@@ -1116,7 +1130,12 @@ class LootPresenceService:
                 # them here prevents a progress buff being applied twice while
                 # generic money/item bonuses still affect the rest of the kill.
                 excluded_template_ids=(
-                    template_id for template_id, _amount in event_drops
+                    *(
+                        template_id
+                        for template_id, _amount in event_drops
+                    ),
+                    *((_NECRO_SOUL_GLOBE_TEMPLATE_ID,)
+                      if soul_globe_count else ()),
                 ),
             )
             generation = _apply_dark_dwarf_boss_drop_bonus(

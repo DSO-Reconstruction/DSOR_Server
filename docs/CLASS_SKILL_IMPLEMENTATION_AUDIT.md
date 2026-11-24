@@ -203,6 +203,14 @@ every skill and talent combination.
 | `IronDwarfPrimarySkill` | Transformed primary projectile/damage and effects verified. |
 | `IronDwarfMovementSkill` | Transformed movement/impact and effects verified. |
 
+## Soulweaver / Necro (class id 4)
+
+The per-skill, talent-node, passive, mastery, PvE/PvP and Soul Energy review is
+in [SOULWEAVER_IMPLEMENTATION_AUDIT.md](SOULWEAVER_IMPLEMENTATION_AUDIT.md).
+The Necro start-equipment bootstrap crash and Soul Energy server state have
+also been wired. The static content and server paths are audited; full visual
+and balance confirmation still requires an in-game run with a Necro character.
+
 ## Regression coverage
 
 The focused combat suite covers life leech, reflection, armor/elemental mitigation, healing spheres, base regeneration, waypoint exclusion, return-home grace, stationary turrets, summon support, spell geometry, status effects, projectile timing, and safe-login relocation. The database-wide skill test additionally fails if any live class skill loses geometry or any declared summon loses its runtime definition.

@@ -473,6 +473,9 @@ class PlayerCombatService(PlayerCastTimingService):
             CharacterService._consume_active_essence(
                 s, combat, skill_index=skill.skill_index
             )
+            CharacterService._sacrifice_necro_summons_for_army(
+                s, skill_index=skill.skill_index,
+            )
 
         phase.mark("timing and essence")
         # Never wait for the shared map-combat lock while owning the session
@@ -1442,6 +1445,37 @@ class PlayerCombatService(PlayerCastTimingService):
             and summon_definition is None
             and trap_definition is None
         ):
+            if (
+                isinstance(client_skill, SkillCast)
+                and geometry is not None
+                and geometry.resource_id.casefold() == "shadowofmortis"
+                and position is not None
+                and encounter is not None
+            ):
+                # Shadow of Mortis is a self-targeted, zero-range skill. Its
+                # client cast has no hit packet to reconcile playback. Send it
+                # through the same serializer used for visible player casts so
+                # the client receives the original skill level/cast identity
+                # and the standard execution context. This is presentation
+                # only; resource charging and the Soulweaver aura ran above.
+                playback_event = (
+                    "player_skill",
+                    client_skill,
+                    None,
+                    position,
+                    LOCAL_PLAYER_ACTOR_ID,
+                    tuple(modifier_effect_ids),
+                    float(skill_speed_multiplier),
+                )
+                CharacterService._send_remote_player_skill(
+                    s, playback_event, (s,), last_move,
+                )
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] sent Shadow of Mortis "
+                    f"playback cast={client_skill.cast_id}, "
+                    f"actor={LOCAL_PLAYER_ACTOR_ID} through the standard "
+                    "player-skill serializer"
+                )
             print(
                 f"[{GAMEPLAY_SERVICE_NAME}] accepted "
                 f"{type(client_skill).__name__} index="

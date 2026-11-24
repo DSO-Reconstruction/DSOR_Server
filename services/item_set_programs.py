@@ -403,9 +403,11 @@ def _apply_terminal_health(s, instructions, *, server_tick, publication, expecte
         if s.gameplay_inventory is not None:
             s.gameplay_inventory.health_points = current
             resource = s.gameplay_inventory.secondary_resource
+            soul = s.gameplay_inventory.tertiary_resource
         else:
             resource = 0
-    publication.append(("health", ActorStatsUpdate(current, resource)))
+            soul = 0
+    publication.append(("health", ActorStatsUpdate(current, resource, soul)))
     if death_saved:
         dispatch_talent_event(s, "nohealth", server_tick=int(server_tick))
     if current == 0:

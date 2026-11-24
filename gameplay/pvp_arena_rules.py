@@ -9,8 +9,9 @@ the game is balanced around go further than the authored columns:
 * only the item's own base values, enchantments and the gems socketed into it
   keep working — rune trinkets, jewel trinkets, Dragon Crests (ancient
   trinkets), rift-force emblems, item-set bonuses and mercenary gear do not;
-* the Ancient Wisdom (``Knowledge``) and ``Group`` talent trees are inert
-  while the class (``Skill``) and Honor (``Fame``) trees stay active;
+* the Ancient Wisdom (``Knowledge``) and ``Group`` talent trees are inert;
+  individual class/skill talent effects marked ``DisabledMatchPvP`` are also
+  inert even though their tree remains selectable;
 * pets and mercenaries cannot be out at all, and mounts may only be ridden on
   the five-versus-five arenas.
 
@@ -71,10 +72,9 @@ DISABLED_MODIFIER_KINDS = frozenset({
     "itemriftforce", "riftechochance", "riftecho",
 })
 
-# Talent trees that do not act in an arena.  ``Knowledge`` is Ancient Wisdom,
-# ``Group`` the group-aura tree; ``Skill`` and ``Fame`` (Honor) stay active.
-# The numbers are ``TALENT_CATEGORY_NAMES`` indexes: (Skill, Knowledge, Group,
-# Fame).
+# Talent trees that do not act in an arena. ``Knowledge`` is Ancient Wisdom,
+# and ``Group`` is the group-aura tree. Individual class/skill talent effects
+# can also opt out with the static ``DisabledMatchPvP`` group.
 DISABLED_TALENT_CATEGORIES = ("Knowledge", "Group")
 DISABLED_TALENT_CATEGORY_IDS = frozenset({1, 2})
 
@@ -150,7 +150,7 @@ def session_database_path(session) -> str:
 
 
 def disabled_talent_effect_ids(database_path) -> frozenset[int]:
-    """Wire ids of the Ancient Wisdom and Group talent effects."""
+    """Wire ids of arena-disabled talent effects and talent-tree ranks."""
 
     path = Path(str(database_path))
     try:
@@ -172,7 +172,12 @@ def _disabled_talent_effect_ids(
             "SELECT BaseStatusEffectId FROM _Template_Talents "
             "WHERE TalentCategory IN (?, ?) "
             "UNION SELECT StackStatusEffectId FROM _Template_Talents "
-            "WHERE TalentCategory IN (?, ?))",
+            "WHERE TalentCategory IN (?, ?)) "
+            "UNION SELECT rowid FROM _Template_StatusEffect "
+            "WHERE (';' || lower(COALESCE(Groups, '')) || ';') "
+            "LIKE '%;talent;%' "
+            "AND (';' || lower(COALESCE(Groups, '')) || ';') "
+            "LIKE '%;disabledmatchpvp;%'",
             (*DISABLED_TALENT_CATEGORIES, *DISABLED_TALENT_CATEGORIES),
         ).fetchall()
     return frozenset(int(row[0]) - 1 for row in rows if row[0] is not None)

@@ -943,10 +943,9 @@ class AdminService:
             if type(target_class_id) is not int:
                 raise ValueError("class must be a playable character class")
             class_change = target_class_id != profile.class_id
-            if class_change and target_class_id not in (0, 1, 2, 3):
+            if class_change and target_class_id not in (0, 1, 2, 3, 4):
                 raise ValueError(
-                    "Niwalk cannot be selected because this server has no compatible equipment templates; "
-                    "choose Dragonknight, Spellweaver, Ranger, or Steam Mechanicus"
+                    "choose Dragonknight, Spellweaver, Ranger, Steam Mechanicus, or Soulweaver"
                 )
             if class_change:
                 if cid in self.online_characters():

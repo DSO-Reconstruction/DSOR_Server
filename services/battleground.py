@@ -542,9 +542,9 @@ class BattlegroundService(BattlegroundObjectiveService):
 
         The client applies the status effects it receives, so ignoring them in
         the server's own maths is not enough: set occurrences, Shadow Soul
-        gear and the Ancient Wisdom/Group talent ranks all have to leave the
-        client as well.  The saved selections are untouched, and every later
-        map load rebuilds them from the player's own state.
+        gear, Ancient Wisdom/Group talent ranks, and individual talents marked
+        DisabledMatchPvP all have to leave the client as well. The saved
+        selections are untouched, and every later map load rebuilds them.
         """
 
         disabled = pvp_arena_rules.arena_disabled_effect_ids(
@@ -976,15 +976,19 @@ class BattlegroundService(BattlegroundObjectiveService):
             health[0] = int(health[1])
             current_health = int(health[0])
             resource = combat.player_resource.get(actor_id, [0.0])[0]
+            current_soul = combat.player_soul_resource.get(
+                actor_id, [0.0]
+            )[0]
         with s.flow_lock:
             s.gameplay_death_pending = False
             inventory = s.gameplay_inventory
             if inventory is not None:
                 inventory.health_points = float(current_health)
+                inventory.tertiary_resource = float(current_soul)
         server._send_pvp(
             s,
             encode_actor_stats_update_batch(
-                ActorStatsUpdate(current_health, resource),
+                ActorStatsUpdate(current_health, resource, current_soul),
                 actor_id=LOCAL_PLAYER_ACTOR_ID,
             ),
             label="pvp-round-restore",

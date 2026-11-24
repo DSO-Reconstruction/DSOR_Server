@@ -19,6 +19,63 @@ class PlayerSummonService:
     }
 
     @staticmethod
+    def _sacrifice_necro_summons_for_army(
+            s: Session, *, skill_index: int) -> int:
+        """Retire the owned skeletons consumed by Army of the Dead."""
+
+        with s.flow_lock:
+            combat = s.gameplay_combat_state
+            character = s.gameplay_character
+            if (
+                combat is None or character is None
+                or int(character.class_id) != 4
+            ):
+                return 0
+            owner_actor_id = int(
+                s.gameplay_remote_actor_id
+                or CharacterService._remote_actor_id(character.character_id)
+            )
+            generation = int(s.gameplay_chase_generation)
+            database_path = str(combat.encounter.static_database_path)
+        geometry = combat._load_player_skill_geometry(int(skill_index))
+        if (
+            geometry is None
+            or str(geometry.resource_id).casefold() != "armyofthedead"
+        ):
+            return 0
+        # Talent 06_03 replaces the skill's sacrifice dispatch with the
+        # fixed-damage, no-sacrifice variant. Its own DisabledMatchPvP tag
+        # means the default sacrifice path remains active in arena matches.
+        if s.gameplay_match is None:
+            from dso_server.services.player_resources import (
+                PlayerResourceService,
+            )
+            if PlayerResourceService._active_necro_talent_stack(
+                s, database_path, "necro_talent_skill_cat_06_03"
+            ):
+                return 0
+        with combat.lock:
+            actor_ids = tuple(
+                int(summon.actor_id)
+                for summon in combat.player_summons.values()
+                if int(summon.owner_actor_id) == owner_actor_id
+                and str(
+                    summon.definition.monster_template_id
+                ).casefold().startswith("minion_necro_skeleton_")
+                and combat.player_summon_health.get(
+                    int(summon.actor_id), [0]
+                )[0] > 0
+            )
+        for actor_id in actor_ids:
+            CharacterService._expire_player_summon(
+                s,
+                generation,
+                ("necro-army-sacrifice", actor_id),
+                actor_id,
+            )
+        return len(actor_ids)
+
+    @staticmethod
     def _activate_player_user_effect_children(
             s: Session, applied, *, server_tick: int, effect_position=None) -> None:
         """Materialize immediate AE/LE children after the user effect is accepted."""
@@ -662,7 +719,20 @@ class PlayerSummonService:
                 actor_id, land_fired_bullets=timer_key == lifetime_key,
             ):
                 return
-        if timer_key[0] == "pvp-summon-kill":
+        if timer_key[0] in {
+            "pve-summon-kill", "pvp-summon-kill",
+            "necro-army-sacrifice",
+        }:
+            template_id = str(
+                summon.definition.monster_template_id
+            ).casefold()
+            if (
+                template_id.startswith("minion_necro_skeleton_")
+                or template_id == "minion_ce2026_wraith"
+            ):
+                CharacterService._apply_player_soul_energy_gain(
+                    s, 10.0, label="necro-wraith-summon-death-soul",
+                )
             from dso_server.services.talent_events import dispatch_minion_destroyed
             dispatch_minion_destroyed(s, summon)
 

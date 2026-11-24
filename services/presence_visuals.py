@@ -769,7 +769,12 @@ class PresenceVisualService:
                 return f"dwarf{gender_part}_1h_weapon_shield"
             return f"dwarf{gender_part}_1h_weapon"
         if class_id == 4:
-            return "niwalk_female_1h" if female else "niwalk_1h"
+            gender_part = "_female" if female else ""
+            if has_two_hand:
+                return f"necro{gender_part}_2h_weapon"
+            if has_left_hand:
+                return f"mage{gender_part}_1h_weapon_shield"
+            return f"mage{gender_part}_1h_weapon"
         return fallback
 
     def _remote_equipment_visuals(
