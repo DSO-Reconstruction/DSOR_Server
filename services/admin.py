@@ -106,6 +106,11 @@ def _is_land_of_immortals_quest(quest) -> bool:
     )
 
 
+def _is_ce_2026_quest(quest) -> bool:
+    """Keep the Crimson Tide / CE 2026 story out of bulk main completion."""
+    return str(quest.quest_id or "").casefold().startswith("ce2026-")
+
+
 def character_name(value):
     if not isinstance(value, str) or not value or value != value.strip():
         raise ValueError("character name must not be empty or padded")
@@ -1297,6 +1302,9 @@ class AdminService:
             if quest.quest_type.casefold() == "world"
             and quest.accepts_class(class_name)
         ]
+        ce2026_quests = tuple(
+            quest for quest in world_quests if _is_ce_2026_quest(quest)
+        )
         if act_only:
             with closing(sqlite3.connect(
                 f"file:{self.static_database_path.as_posix()}?mode=ro", uri=True,
@@ -1316,7 +1324,10 @@ class AdminService:
                 ) and not quest.event_id.strip()
             ]
         else:
-            quests = world_quests
+            quests = [
+                quest for quest in world_quests
+                if not _is_ce_2026_quest(quest)
+            ]
             # Ammon's first Parallel Worlds access quest is a chapter prerequisite
             # authored as Heroic, so it is not part of the World quest type above.
             parallel_world_intro = catalog.quest("pw000-introduction-01-n")
@@ -1402,11 +1413,13 @@ class AdminService:
         )
         self.repository.audit(actor.username, action, cid, {
             "quest_count": len(quests), "newly_completed": completed,
+            "ce2026_left_open": len(ce2026_quests),
             "online": target is not None, "reason": reason,
-            "scope": "act_main" if act_only else "all_main",
+            "scope": "act_main" if act_only else "all_main_except_ce2026",
         })
         return {"ok": True, "quest_count": len(quests),
-                "newly_completed": completed, "online": target is not None}
+                "newly_completed": completed, "online": target is not None,
+                "ce2026_left_open": len(ce2026_quests)}
 
     def undo_character_main_quests(self, cid, actor, reason):
         """Remove completed main-story quest records so they can be replayed."""
