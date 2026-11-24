@@ -21,22 +21,24 @@ working tree. That log does not contain a Necro cast or a Soul Energy event.
 
 | Rule | Server behavior |
 |---|---|
-| Pool | Soulweaver only; maximum `50`, read from `MaxSoulResource`; starts at the saved value, clamped to the maximum. No passive regeneration is authored. |
-| Nearby enemy death | `+1` for each enemy that dies within 15 world units. PvE deaths are handled from the map kill event. A nearby opposing player killed in an arena also grants the base `+1`. |
+| Pool | Soulweaver only; maximum `50`, read from `MaxSoulResource`; starts at `1` on every map initialization. No passive regeneration is authored. |
+| Nearby monster death | `+3` Soul Energy per eligible monster death within 15 world units, delivered as three physical one-energy Soul Spheres. PvE deaths are handled from the map kill event. |
+| Nearby player death | A nearby opposing player killed in an arena grants the base `+1`; PvE talent bonus drops do not apply. |
 | Proximity radius | 15 units is an implementation estimate based on the Skeleton Archer's authored attack range; the localized text only says “nearby”. Confirm this range in game. |
 | Wraith/skeleton death | `+10` when an owned `minion_necro_skeleton_*` actually dies to a hostile hit or is sacrificed by Army of the Dead. Lifetime expiry and owner-range cleanup do not count as deaths. |
-| Soul Globe chance | Wraith Master rank adds the authored extra chance on nearby PvE enemy deaths. Because the server has no ground Soul Globe actor/pickup path, a successful one-energy globe is automatically credited to the pool. |
+| Soul Globe chance | Wraith Master rank adds the authored extra chance on nearby PvE enemy deaths. Each successful bonus point creates another physical one-energy Soul Sphere. |
+| Pickup | Soul Spheres use the normal world-loot path and `AutoPickUp=All`; their server-side auto-pickup radius is limited to `1.5` world units. |
 | Direct mark proc | Wraith Master has a 15% chance on the authored Mortis mark application to grant `+5`. |
 | Soul Call node 05_01 | The skill adds `+10` immediately when that talent effect is active. |
 | Army node 06_02 | Its eight-second summon-cooldown effect ticks `+1` Soul Energy per second and halves Archer/Warrior/Mage summon cooldowns. The 06_01 variant extends the Army aura and doubles its tick cadence. |
 | Spending | `_Template_Skill.SoulCost` is normalized against a 100-point cost scale: Skeleton Warrior costs `10`; Skeleton Mage costs `20`. Payment is atomic with the skill-resource debit, so a failed cast spends neither pool. |
 | Overflow | Energy above 50 becomes one `necro_soul_affinity` stack per excess point, capped at 50 stacks. Each stack gives the authored `+1%` summon damage for five seconds. |
-| Replication/save | Soul Energy is sent in the third `ActorStatsUpdate`/`InventoryInfo` resource field, mirrored in inventory state, saved with the account, and preserved over map transitions and respawns. |
+| Replication/save | Soul Energy is sent in the third `ActorStatsUpdate`/`InventoryInfo` resource field and mirrored in inventory state. It is saved during a map session, preserved on respawn, and reset to `1` when a new map is initialized. |
 
-The client text describes Soul Globe pickup and nearby death rewards. The
-server currently auto-credits a successful one-energy globe rather than
-spawning a visible ground item. This keeps the authoritative resource working
-but is a presentation difference.
+The shipped client text still describes nearby enemy deaths as `+1` and
+describes Soul Globe pickup. The server now produces three one-energy spheres
+per eligible nearby monster death. The client tooltip text has not been edited
+because client data/DB4 files are outside this server-only change.
 
 ## Active skills
 
@@ -100,9 +102,10 @@ node status effects are marked `DisabledMatchPvP` in the shipped data.
 
 ## PvE / PvP boundary
 
-* PvE enemy deaths award nearby Soul Energy. In PvP, an opposing player kill
-  awards only the base nearby `+1`; the Archer and Wraith Master extra-drop
-  chances are suppressed because their nodes/mastery are disabled in matches.
+* PvE monster deaths within the nearby radius produce three one-energy Soul
+  Spheres. In PvP, an opposing player kill awards only the base `+1`; the
+  Archer and Wraith Master extra-drop chances are suppressed because their
+  nodes/mastery are disabled in matches.
 * The 18 skill nodes and Bone/Mortis/Wraith masteries have the static
   `DisabledMatchPvP` tag. PvP runtime filtering now excludes these effects
   from server modifier calculations and removes already-active copies on
@@ -111,17 +114,19 @@ node status effects are marked `DisabledMatchPvP` in the shipped data.
   Arena-wide rules also disable Knowledge and Group passive trees, including
   Soul Distillation/Siphon/Surge and the three group auras.
 * Soul costs remain on Skeleton Warrior and Skeleton Mage skill rows. Soul
-  persists through map transitions and respawn; there is no arena-only refund
-  or free-cast override in the inspected data. PvP resource pacing therefore
-  depends on saved Soul and nearby player deaths.
+  is preserved on respawn but resets to `1` on map initialization; there is no
+  arena-only refund or free-cast override in the inspected data. PvP resource
+  pacing therefore depends on the current map's pool and nearby player deaths.
 
 ## Server coverage and open verification
 
 The current implementation now has an authoritative third resource pool,
-Soul costs, immediate and timed Soul modifiers, cap/overflow handling, PvE
-nearby-kill gains, PvP player-kill gains, PvE/PvP skeleton-death gains, Army
-sacrifice, and the class equipment bootstrap mapping. PvP modifier filtering
-follows the static `DisabledMatchPvP` talent metadata.
+Soul costs, immediate and timed Soul modifiers, cap/overflow handling, a
+one-point start on map initialization, physical Soul Sphere drops and bounded
+auto-pickup, PvE monster-death gains, PvP player-kill gains, PvE/PvP
+skeleton-death gains, Army sacrifice, and the class equipment bootstrap
+mapping. PvP modifier filtering follows the static `DisabledMatchPvP` talent
+metadata.
 
 Two data/engine limits remain visible in this review:
 
@@ -141,3 +146,8 @@ REA's static database inspection and shipped localization rather than claiming
 binary-level confirmation. A Necro login, casts, Army sacrifices, Soul spend,
 over-cap stacks, and arena round should be exercised in game before calling
 every behavior fully verified.
+
+The Soul Affinity buff icon displays its stack count, but its descriptive
+tooltip text is still absent in the supplied screenshot. The English
+localization entry exists in the extracted client data; the exact client-side
+display cause remains unresolved. No client language or DB4 files were changed.
