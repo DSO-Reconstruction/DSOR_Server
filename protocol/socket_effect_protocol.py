@@ -75,6 +75,8 @@ SUPPORTED_STATUS_RUNTIME_KINDS = frozenset({
     "speed",
     "statuseffectimmunitygroup",
     "stopstatuseffect",
+    # services/combat_resolution.py::_apply_triggered_skill_damage
+    "triggerskilldamage",
 })
 SUPPORTED_EFFECT_OPERATIONS = frozenset({
     "addae", "addle", "addue", "addve",
