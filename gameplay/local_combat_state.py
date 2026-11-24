@@ -76,6 +76,9 @@ from dso_server.gameplay.player_summon_lifecycle import (
     player_summon_aura_refresh_command,
     summon_startup_seconds,
 )
+from dso_server.protocol.socket_minion_protocol import (
+    load_socket_minion_definition,
+)
 from dso_server.gameplay.map_collision_terrain import CollisionTerrainError
 from dso_server.gameplay.map_static_collision import (
     StaticLineOfSight,
@@ -506,7 +509,7 @@ _GEOMETRY_MODIFIER_KINDS = frozenset((
     "skilldamage", "skilldamagetype", "skillhitdamage", "skillhitrange",
     "skillpunchthrough", "skillrange", "skillsequence", "skillstatuseffect",
     "skillstatuseffectcleanse", "skilltiming", "talentlevelbonus",
-    "targetadddamage", "traponhit",
+    "targetadddamage", "targetreduceresistance", "traponhit",
 ))
 
 
@@ -857,7 +860,9 @@ class MonsterBeamAura:
 
 # ``Messaging::Hit::SetDamageTypes`` consumes this enum in the exact order
 # recovered from the client: Physical, Fire, Ice, Lightning, DarkMagic,
-# Poison.  The client selects elemental combat text (including
+# Poison. NetherMagic and Andermagic share the client's DarkMagic tag while
+# retaining their separate resistance scopes in the authored damage type.
+# The client selects elemental combat text (including
 # DamageDonePoison) from this array.
 DAMAGE_TYPE_IDS = {
     "physical": 0,
@@ -865,6 +870,7 @@ DAMAGE_TYPE_IDS = {
     "ice": 2,
     "lightning": 3,
     "darkmagic": 4,
+    "nethermagic": 4,
     "andermagic": 4,
     "poison": 5,
 }
@@ -2346,6 +2352,7 @@ class LocalCombatState:
         self._victim_location_children_cache = {}
         self._location_aura_child_ids_cache = {}
         self._summon_aura_strike_cache = {}
+        self._summon_owner_damage_multiplier_cache: dict[tuple, tuple] = {}
         runtime_catalog = load_status_runtime_catalog(
             encounter.static_database_path
         )
@@ -4405,6 +4412,9 @@ class LocalCombatState:
         geometry = self._modified_player_skill_geometry(
             geometry, modifier_sources
         )
+        nested_minions = self._skill_status_minion_summons(
+            skill_index, geometry
+        )
         visual_lifetime = max(
             (
                 effect.duration_ticks / SERVER_TICKS_PER_SECOND
@@ -4465,6 +4475,10 @@ class LocalCombatState:
                 visual_lifetime,
             ),
             location_visual_effects=location_visual_effects,
+            additional_summons=(
+                *definition.additional_summons,
+                *nested_minions,
+            ),
             heal_fraction=heal_fraction,
             heal_radius=heal_radius,
             heal_interval_seconds=heal_interval_seconds,
@@ -4493,6 +4507,53 @@ class LocalCombatState:
                 )
             ),
         )
+
+    def _skill_status_minion_summons(
+        self,
+        skill_index: int,
+        geometry: PlayerSkillGeometry,
+    ) -> tuple:
+        """Materialize Minion instructions nested under a skill's status effects.
+
+        Soulweaver's Bone Crypt node adds the Death Hound pair through
+        ``SkillStatusEffect:modUE`` -> ``ActorStatusEffect:addAE`` ->
+        ``Minion:``. Those child programs are not part of ``SummonMonsterId``
+        or ``SummonAnotherMonsterId``, so the normal summon-shape parser
+        cannot see them. The modified geometry is skill-scoped; following its
+        immediate child statuses keeps unrelated talent effects out.
+        """
+
+        pending = list(geometry.user_status_effects)
+        seen = set()
+        summons = []
+        database_path = self.encounter.static_database_path
+        while pending:
+            effect = pending.pop()
+            effect_id = int(effect.effect_id)
+            if effect_id in seen or effect.chance <= 0.0:
+                continue
+            seen.add(effect_id)
+            for child in self.player_status_start_effects(effect_id):
+                for template, amount, offset in self.player_status_minion_specs(
+                    child
+                ):
+                    definition = load_socket_minion_definition(
+                        database_path, template, amount, offset,
+                    )
+                    if definition is None:
+                        continue
+                    summons.append(replace(
+                        definition,
+                        category=(
+                            f"skill:{int(skill_index)}:"
+                            f"{definition.category}:{child.resource_id}"
+                        ),
+                        location_visual_effects=(),
+                    ))
+                pending.extend(self.player_status_start_effects(
+                    child.effect_id
+                ))
+        return tuple(summons)
 
     def _player_summon_shape(
         self,
@@ -6105,17 +6166,25 @@ class LocalCombatState:
             created.append(summon)
         for extra in getattr(definition, "additional_summons", ()):
             # The skill authors SummonAvoidsOverlapping; the exact retail
-            # placement is not recoverable. LOCAL CHOICE: the extra monster
-            # stands 1 m behind the cast point (the primary's ring radius).
+            # placement is not recoverable for generic extra companions.
+            # Generated Minion instructions carry an authored offset, which
+            # takes precedence over that fallback.
             behind = float(yaw) + math.pi
-            extra_spawn = self.spawn_player_summon(
-                extra,
-                owner_actor_id=owner_actor_id,
-                position=(
+            has_authored_offset = str(
+                getattr(extra, "category", "")
+            ).startswith("skill:")
+            extra_position = (
+                tuple(float(value) for value in position)
+                if has_authored_offset else (
                     float(position[0]) + math.cos(behind),
                     float(position[1]),
                     float(position[2]) + math.sin(behind),
-                ),
+                )
+            )
+            extra_spawn = self.spawn_player_summon(
+                extra,
+                owner_actor_id=owner_actor_id,
+                position=extra_position,
                 yaw=yaw,
                 level=level,
                 server_tick=server_tick,
@@ -7736,6 +7805,8 @@ class LocalCombatState:
         database: sqlite3.Connection | None,
         value: str,
         details: tuple[float, ...],
+        *,
+        actor_variables=None,
     ) -> float | None:
         """Resolve a literal, ``$N`` detail, or ActorVariable constant."""
 
@@ -7752,6 +7823,8 @@ class LocalCombatState:
             index = int(reference)
             return float(details[index]) if index < len(details) else 0.0
         key = reference.casefold()
+        if actor_variables is not None and key in actor_variables:
+            return float(actor_variables[key])
         if key not in self._actor_variable_values and database is not None:
             row = database.execute(
                 "SELECT InitialValue FROM _Template_ActorVariables "
@@ -8393,6 +8466,30 @@ class LocalCombatState:
                     if not target_elements.intersection(skill_elements):
                         continue
                     amount = self._modifier_amount(database, arguments[0], details)
+                    if amount is None:
+                        continue
+                    damage_modifier = self._apply_numeric_modifier(
+                        damage_modifier, amount, arguments[1], stack_count
+                    )
+                    continue
+                if normalized_kind == "targetreduceresistance":
+                    if len(arguments) < 3 or damage_modifier <= 0.0:
+                        continue
+                    target_elements = {
+                        self._clean_modifier_token(value).casefold()
+                        for value in arguments[2:]
+                        if self._clean_modifier_token(value)
+                    }
+                    skill_elements = {
+                        key for key, weight in damage_weights.items()
+                        if weight > 0.0
+                    }
+                    if not target_elements.intersection(skill_elements):
+                        continue
+                    amount = self._modifier_amount(
+                        database, arguments[0], details,
+                        actor_variables=cooldown_variables,
+                    )
                     if amount is None:
                         continue
                     damage_modifier = self._apply_numeric_modifier(
@@ -10164,6 +10261,132 @@ class LocalCombatState:
                         0.05, 1.0 - float(amount) / 100.0
                     )
         return max(0.05, min(10.0, multiplier))
+
+    def summon_owner_damage_multiplier(
+        self,
+        modifier_sources: tuple[object, ...],
+        damage_type: str,
+    ) -> float:
+        """Apply the owner's type-scoped damage and resistance penetration.
+
+        Summon attacks already use the owner's min/max damage and critical
+        stats. These target-scoped programs cannot be folded into that stat
+        range: Soulweaver masteries author ``TargetReduceResistance`` through
+        ranked ActorVariables, and Bone Master can add Physical damage while
+        a Death Hound is active.
+        """
+
+        if not modifier_sources:
+            return 1.0
+        cache_key = (
+            tuple(map(id, modifier_sources)),
+            str(damage_type or "Physical").casefold(),
+        )
+        cached = self._summon_owner_damage_multiplier_cache.get(cache_key)
+        if cached is not None and len(cached[0]) == len(modifier_sources) and all(
+            previous is current
+            for previous, current in zip(cached[0], modifier_sources)
+        ):
+            return cached[1]
+        instructions = []
+        sources = self._talent_ranked_sources(tuple(modifier_sources))
+        explicit_effect_ids = frozenset(
+            int(source.effect_id)
+            for source in sources if hasattr(source, "effect_id")
+        )
+        seen_legacy_ids = set()
+        with _static_read_connection(
+            self.encounter.static_database_path
+        ) as database:
+            for source in sources:
+                if hasattr(source, "kind") and hasattr(source, "arguments"):
+                    instructions.append((
+                        str(source.kind),
+                        tuple(str(value) for value in source.arguments),
+                        1,
+                        (),
+                    ))
+                elif hasattr(source, "effect_id"):
+                    effect_id = int(source.effect_id)
+                    stack_count = max(
+                        1, int(getattr(source, "stack_index", 0)) + 1,
+                    )
+                    details = tuple(
+                        float(value)
+                        for value in getattr(source, "values", ())
+                    )
+                    instructions.extend(
+                        (kind, arguments, stack_count, details)
+                        for kind, arguments
+                        in self._status_modifier_program(effect_id)
+                    )
+                elif isinstance(source, int) and source not in seen_legacy_ids:
+                    seen_legacy_ids.add(source)
+                    instructions.extend(
+                        (kind, arguments, 1, ())
+                        for kind, arguments
+                        in self._status_modifier_program(source)
+                    )
+            self._expand_status_modifier_instructions(
+                instructions, explicit_effect_ids,
+            )
+            variables = dict(self._actor_variable_values)
+            for kind, arguments, stack_count, details in instructions:
+                if kind.casefold() != "actorvariable" or len(arguments) < 3:
+                    continue
+                amount = self._modifier_amount(
+                    database, arguments[0], details,
+                    actor_variables=variables,
+                )
+                if amount is None or not math.isfinite(amount):
+                    continue
+                variable = self._clean_modifier_token(arguments[2]).casefold()
+                if arguments[1].casefold() == "relative":
+                    variables[variable] = variables.get(variable, 0.0) * (
+                        1.0 + amount * stack_count
+                    )
+                else:
+                    variables[variable] = variables.get(variable, 0.0) + (
+                        amount * stack_count
+                    )
+
+            wanted = {
+                self._clean_modifier_token(value.partition(":")[0]).casefold()
+                for value in str(damage_type or "Physical").split(";")
+                if self._clean_modifier_token(value.partition(":")[0])
+            }
+            if "andermagic" in wanted:
+                wanted.add("darkmagic")
+            if "darkmagic" in wanted:
+                wanted.add("andermagic")
+            multiplier = 1.0
+            for kind, arguments, stack_count, details in instructions:
+                if kind.casefold() not in {
+                    "targetadddamage", "targetreduceresistance",
+                } or len(arguments) < 3:
+                    continue
+                scopes = {
+                    self._clean_modifier_token(value).casefold()
+                    for value in arguments[2:]
+                }
+                if wanted.isdisjoint(scopes) and "all" not in scopes:
+                    continue
+                amount = self._modifier_amount(
+                    database, arguments[0], details,
+                    actor_variables=variables,
+                )
+                if amount is None or not math.isfinite(amount):
+                    continue
+                multiplier = self._apply_numeric_modifier(
+                    multiplier, amount, arguments[1], stack_count,
+                )
+        result = max(0.0, min(10.0, multiplier))
+        if len(self._summon_owner_damage_multiplier_cache) >= 256:
+            self._summon_owner_damage_multiplier_cache.clear()
+        self._summon_owner_damage_multiplier_cache[cache_key] = (
+            tuple(modifier_sources), result,
+        )
+        return result
 
     @staticmethod
     def _point_segment_distance_2d(
@@ -14499,6 +14722,10 @@ class LocalCombatState:
                     pending.geometry.damage_type,
                     now=current_time,
                 )
+                owner_damage_multiplier = self.summon_owner_damage_multiplier(
+                    summon.modifier_sources,
+                    pending.geometry.damage_type,
+                )
                 damage = max(
                     0,
                     int(
@@ -14509,6 +14736,7 @@ class LocalCombatState:
                                 pending.geometry.damage_modifier,
                             )
                             * defensive_multiplier
+                            * owner_damage_multiplier
                             * (pending.critical_damage_multiplier if critical_hit else 1.0)
                         )
                     ),
