@@ -234,6 +234,7 @@ def load_socket_minion_definition(
         stationary=fixed_direction,
         move_speed=(0.0 if monster_template_id.startswith("minion_holysoul_") else max(0.0, float(row[3] or 0.0))),
         aggro_range=max(0.0, float(row[4] or 0.0)),
+        follows_owner=monster_template_id.casefold().startswith("minion_necro_"),
         overheat_attack_skill_database_index=(
             int(overheat_attack_row[0])
             if overheat_attack_row is not None and overheat_effect_row is not None
