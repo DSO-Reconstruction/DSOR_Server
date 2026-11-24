@@ -395,17 +395,20 @@ function stickerbookSection(owned) {
   return section("Sticker book", `<form id="unlock-stickers-form" class="form-page">
     <fieldset class="form-section"><legend>Collection</legend>
       <p class="help">Add every sticker-book item: costumes, mounts, pets, emotes, decorations and Shadow Souls. Items the character owns keep their rarity and favorite state; the rest arrive at base rarity. The Collector’s Bag bonuses and all reached item rewards are paid at next login. The character must be offline.</p>
+      <p class="help">Undo removes only entries added by a tracked bulk unlock that remain at base rarity and are not favorited. Pre-existing or changed entries are preserved; rewards already paid are not reversed.</p>
       <p class="muted">${owned} sticker-book items in the last save.</p>
     </fieldset>
     <p id="unlock-stickers-error" class="error-text" role="alert"></p>
-    <div class="form-actions"><button type="submit">Add all sticker-book items</button></div></form>`);
+    <div class="form-actions"><button type="submit">Add all sticker-book items</button>
+      <button id="undo-unlock-stickers" type="button" class="secondary danger">Undo last bulk unlock</button></div></form>`);
 }
 
 function bindUnlockStickers(id) {
+  const buttons = [...$("#unlock-stickers-form").querySelectorAll("button")];
+  const setBusy = busy => buttons.forEach(button => { button.disabled = busy; });
   $("#unlock-stickers-form").addEventListener("submit", async event => {
     event.preventDefault();
-    const button = event.target.querySelector("button[type=submit]");
-    button.disabled = true;
+    setBusy(true);
     try {
       const reason = await confirmAction("Add all sticker-book items?",
         "This adds every item to the character’s sticker book. At next login the character also receives every Collector’s Bag bonus and item reward the collection has reached; rewards cannot be taken back from here. The character must be offline.",
@@ -418,7 +421,23 @@ function bindUnlockStickers(id) {
       const target = $("#unlock-stickers-error");
       if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
       else notice(error.message, true);
-    } finally { button.disabled = false; }
+    } finally { setBusy(false); }
+  });
+  $("#undo-unlock-stickers").addEventListener("click", async () => {
+    setBusy(true);
+    try {
+      const reason = await confirmAction("Undo the last bulk sticker unlock?",
+        "This removes only sticker-book entries added by the latest tracked bulk unlock that remain at base rarity and are not favorited. Pre-existing or changed entries are kept. Collector’s Bag bonuses and item rewards already paid are not reversed. The character must be offline.",
+        "Undo sticker unlock");
+      if (reason === null) return;
+      const result = await api(`/api/characters/${id}/undo-unlock-all-stickers`, {reason});
+      notice(`Removed ${result.removed} sticker-book items; kept ${result.preserved_changed} changed items.`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) {
+      const target = $("#unlock-stickers-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { setBusy(false); }
   });
 }
 
