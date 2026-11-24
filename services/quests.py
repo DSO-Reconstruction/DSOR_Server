@@ -437,6 +437,20 @@ class QuestService:
 
         normalized_map = map_key(map_id)
 
+        # The Mortis entrance in the Hall of Death is authored in the
+        # "phase 07" event set. Its entry signal requires pw212-mortis-02-n
+        # to be accepted, but a CMS-completed (closed) quest no longer satisfies
+        # that PlayerEnteredMap signal. Treat the closed quest as durable
+        # proof for this one boss entrance so CMS completion and later map
+        # re-entry preserve the route.
+        mortis_gate = "pw213_nerina_sacrifice_phase_07"
+        if (
+            normalized_map == "pw213_hall_of_death_dun"
+            and "pw212-mortis-02-n" in solved
+            and mortis_gate in exit_destinations
+        ):
+            restored.add(mortis_gate)
+
         # Grimmagstone's Alliance Fortress portal is a run gate, not a
         # durable quest/discovery unlock. The authored exit event also has a
         # PlayerEnteredMap fallback for characters whose kill task was

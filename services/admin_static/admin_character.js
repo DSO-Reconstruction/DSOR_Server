@@ -233,30 +233,61 @@ function bindInventoryCopy(id) {
 function mainQuestSection() {
   return section("Main quests", `<form id="main-quests-form" class="form-page">
     <fieldset class="form-section"><legend>Quest progress</legend>
-      <p class="help">Marks every World type main story quest and the Parallel Worlds introduction prerequisite as completed. No quest rewards are granted.</p>
+      <p class="help">The all-main option completes every World type quest and the Parallel Worlds introduction, including Land of Immortals, Divine Exploration in Ashraya, and Ancient Legends in Kingshill. It also completes linked one-time Local, Heroic and Event branch quests. CE 2026 story quests are left open. No quest rewards are granted. Map unlocks are saved and quest-gated doors are refreshed.</p>
+      <p class="help">The Act-only option completes campaign quests assigned to Acts 0–8 plus the Land of Immortals storyline and their linked one-time branches. CE 2026 and unrelated chapterless quests are excluded. Map unlocks are saved and quest-gated doors are refreshed.</p>
+      <p class="help">Undo removes completed main and linked branch quest records so they can be replayed. It does not roll back rewards, levels, or map unlocks earned separately.</p>
     </fieldset>
     <p id="main-quests-error" class="error-text" role="alert"></p>
-    <div class="form-actions"><button type="submit">Complete all main quests</button></div></form>`);
+    <div class="form-actions"><button type="submit">Complete all main quests except CE 2026</button>
+      <button id="complete-act-main-quests" type="button" class="secondary">Complete Act main quests only</button>
+      <button id="undo-main-quests" type="button" class="secondary danger">Undo completed main quests</button></div></form>`);
 }
 
 function bindMainQuests(id) {
-  $("#main-quests-form").addEventListener("submit", async event => {
-    event.preventDefault();
-    const form = event.target, button = form.querySelector("button[type=submit]"), values = new FormData(form);
-    button.disabled = true;
+  const buttons = [...$("#main-quests-form").querySelectorAll("button")];
+  const setBusy = busy => buttons.forEach(button => { button.disabled = busy; });
+  const completeQuests = async actOnly => {
+    setBusy(true);
     try {
-      const reason = await confirmAction("Complete all main quests?",
-        "This will mark all main story quests and the Parallel Worlds introduction prerequisite as completed. Quest rewards will not be granted.",
-        "Complete quests");
+      const reason = await confirmAction(
+        actOnly ? "Complete Act main quests?" : "Complete all main quests except CE 2026?",
+        actOnly
+          ? "This marks campaign quests from Acts 0–8 and the Land of Immortals storyline, plus their linked one-time branches, as completed. CE 2026 and unrelated chapterless quests are excluded. Quest rewards will not be granted. Map unlocks are saved and quest-gated doors are refreshed."
+          : "This marks every World type quest except CE 2026, plus the Parallel Worlds introduction and all linked one-time Local, Heroic and Event branches, as completed. It includes Land of Immortals, Divine Exploration in Ashraya, and Ancient Legends in Kingshill. CE 2026 quests stay open; quest rewards will not be granted. Map unlocks are saved and quest-gated doors are refreshed.",
+        actOnly ? "Complete Act quests" : "Complete main quests");
       if (reason === null) return;
-      const result = await api(`/api/characters/${id}/complete-main-quests`, {reason});
-      notice(`Marked ${result.newly_completed} main quests as completed.`);
+      const endpoint = actOnly ? "complete-act-main-quests" : "complete-main-quests";
+      const result = await api(`/api/characters/${id}/${endpoint}`, {reason});
+      notice(`Marked ${result.newly_completed} ${actOnly ? "Act main" : "main"} quests as completed; included ${result.branch_count} linked branches. CE 2026 quests left open: ${result.ce2026_left_open}.`);
       window.dispatchEvent(new Event("reload-page"));
     } catch (error) {
       const target = $("#main-quests-error");
       if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
       else notice(error.message, true);
-    } finally { button.disabled = false; }
+    } finally { setBusy(false); }
+  };
+  $("#main-quests-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    await completeQuests(false);
+  });
+  $("#complete-act-main-quests").addEventListener("click", async () => {
+    await completeQuests(true);
+  });
+  $("#undo-main-quests").addEventListener("click", async () => {
+    setBusy(true);
+    try {
+      const reason = await confirmAction("Undo completed main quests?",
+        "This removes completed World quest records and the Parallel Worlds introduction prerequisite so they can be offered again. It does not roll back rewards, levels, or map unlocks earned separately.",
+        "Undo quests");
+      if (reason === null) return;
+      const result = await api(`/api/characters/${id}/undo-main-quests`, {reason});
+      notice(`Removed ${result.undone} completed main quests from the quest log.`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) {
+      const target = $("#main-quests-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { setBusy(false); }
   });
 }
 
@@ -364,17 +395,20 @@ function stickerbookSection(owned) {
   return section("Sticker book", `<form id="unlock-stickers-form" class="form-page">
     <fieldset class="form-section"><legend>Collection</legend>
       <p class="help">Add every sticker-book item: costumes, mounts, pets, emotes, decorations and Shadow Souls. Items the character owns keep their rarity and favorite state; the rest arrive at base rarity. The Collector’s Bag bonuses and all reached item rewards are paid at next login. The character must be offline.</p>
+      <p class="help">Delete removes every saved sticker-book entry and favorite slot. Collector’s Bag rewards already paid and other inventory items are kept. The character must be offline.</p>
       <p class="muted">${owned} sticker-book items in the last save.</p>
     </fieldset>
     <p id="unlock-stickers-error" class="error-text" role="alert"></p>
-    <div class="form-actions"><button type="submit">Add all sticker-book items</button></div></form>`);
+    <div class="form-actions"><button type="submit">Add all sticker-book items</button>
+      <button id="clear-stickerbook" type="button" class="secondary danger">Delete all sticker-book items</button></div></form>`);
 }
 
 function bindUnlockStickers(id) {
+  const buttons = [...$("#unlock-stickers-form").querySelectorAll("button")];
+  const setBusy = busy => buttons.forEach(button => { button.disabled = busy; });
   $("#unlock-stickers-form").addEventListener("submit", async event => {
     event.preventDefault();
-    const button = event.target.querySelector("button[type=submit]");
-    button.disabled = true;
+    setBusy(true);
     try {
       const reason = await confirmAction("Add all sticker-book items?",
         "This adds every item to the character’s sticker book. At next login the character also receives every Collector’s Bag bonus and item reward the collection has reached; rewards cannot be taken back from here. The character must be offline.",
@@ -387,7 +421,23 @@ function bindUnlockStickers(id) {
       const target = $("#unlock-stickers-error");
       if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
       else notice(error.message, true);
-    } finally { button.disabled = false; }
+    } finally { setBusy(false); }
+  });
+  $("#clear-stickerbook").addEventListener("click", async () => {
+    setBusy(true);
+    try {
+      const reason = await confirmAction("Delete all sticker-book items?",
+        "This permanently removes every saved sticker-book entry and favorite slot from the character. Collector’s Bag rewards already paid and other inventory items are kept. The character must be offline.",
+        "Delete all items");
+      if (reason === null) return;
+      const result = await api(`/api/characters/${id}/clear-stickerbook`, {reason});
+      notice(`Deleted ${result.removed} sticker-book items.`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) {
+      const target = $("#unlock-stickers-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { setBusy(false); }
   });
 }
 
