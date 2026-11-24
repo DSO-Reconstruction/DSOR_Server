@@ -233,30 +233,61 @@ function bindInventoryCopy(id) {
 function mainQuestSection() {
   return section("Main quests", `<form id="main-quests-form" class="form-page">
     <fieldset class="form-section"><legend>Quest progress</legend>
-      <p class="help">Marks every World type main story quest and the Parallel Worlds introduction prerequisite as completed. No quest rewards are granted.</p>
+      <p class="help">The full option completes every World type quest and the Parallel Worlds introduction prerequisite, including seasonal/event World quests such as CE 2026. No quest rewards are granted.</p>
+      <p class="help">The Act-only option completes campaign quests assigned to Acts 0–8. Event chapters such as CE 2026 and quests without an Act chapter are excluded.</p>
+      <p class="help">Undo removes completed main quest records so they can be replayed. It does not roll back rewards, levels, or map unlocks earned separately.</p>
     </fieldset>
     <p id="main-quests-error" class="error-text" role="alert"></p>
-    <div class="form-actions"><button type="submit">Complete all main quests</button></div></form>`);
+    <div class="form-actions"><button type="submit">Complete all World quests</button>
+      <button id="complete-act-main-quests" type="button" class="secondary">Complete Act main quests only</button>
+      <button id="undo-main-quests" type="button" class="secondary danger">Undo completed main quests</button></div></form>`);
 }
 
 function bindMainQuests(id) {
-  $("#main-quests-form").addEventListener("submit", async event => {
-    event.preventDefault();
-    const form = event.target, button = form.querySelector("button[type=submit]"), values = new FormData(form);
-    button.disabled = true;
+  const buttons = [...$("#main-quests-form").querySelectorAll("button")];
+  const setBusy = busy => buttons.forEach(button => { button.disabled = busy; });
+  const completeQuests = async actOnly => {
+    setBusy(true);
     try {
-      const reason = await confirmAction("Complete all main quests?",
-        "This will mark all main story quests and the Parallel Worlds introduction prerequisite as completed. Quest rewards will not be granted.",
-        "Complete quests");
+      const reason = await confirmAction(
+        actOnly ? "Complete Act main quests?" : "Complete all World quests?",
+        actOnly
+          ? "This marks campaign quests from Acts 0–8 as completed. Seasonal/event chapters such as CE 2026 and quests without an Act chapter are excluded. Quest rewards will not be granted."
+          : "This marks every World type quest and the Parallel Worlds introduction prerequisite as completed, including seasonal/event World quests such as CE 2026. Quest rewards will not be granted.",
+        actOnly ? "Complete Act quests" : "Complete all World quests");
       if (reason === null) return;
-      const result = await api(`/api/characters/${id}/complete-main-quests`, {reason});
-      notice(`Marked ${result.newly_completed} main quests as completed.`);
+      const endpoint = actOnly ? "complete-act-main-quests" : "complete-main-quests";
+      const result = await api(`/api/characters/${id}/${endpoint}`, {reason});
+      notice(`Marked ${result.newly_completed} ${actOnly ? "Act main" : "World"} quests as completed.`);
       window.dispatchEvent(new Event("reload-page"));
     } catch (error) {
       const target = $("#main-quests-error");
       if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
       else notice(error.message, true);
-    } finally { button.disabled = false; }
+    } finally { setBusy(false); }
+  };
+  $("#main-quests-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    await completeQuests(false);
+  });
+  $("#complete-act-main-quests").addEventListener("click", async () => {
+    await completeQuests(true);
+  });
+  $("#undo-main-quests").addEventListener("click", async () => {
+    setBusy(true);
+    try {
+      const reason = await confirmAction("Undo completed main quests?",
+        "This removes completed World quest records and the Parallel Worlds introduction prerequisite so they can be offered again. It does not roll back rewards, levels, or map unlocks earned separately.",
+        "Undo quests");
+      if (reason === null) return;
+      const result = await api(`/api/characters/${id}/undo-main-quests`, {reason});
+      notice(`Removed ${result.undone} completed main quests from the quest log.`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) {
+      const target = $("#main-quests-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { setBusy(false); }
   });
 }
 

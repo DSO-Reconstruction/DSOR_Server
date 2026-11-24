@@ -20,8 +20,9 @@ from dso_server.paths import DEFAULT_ACCOUNT_DATABASE_PATH, DEFAULT_QUESTS_PATH
 from dso_server.persistence.account_registry import AccountRegistry, AccountRegistryError
 from dso_server.persistence.account_state import _state_to_document
 from dso_server.gameplay.quest_content import (
-    QUEST_STATE_ACCEPTED, QUEST_STATE_CLOSED, QUEST_STATE_FINISHED,
-    QuestProgress, load_quest_catalog,
+    NO_TIMESTAMP, QUEST_STATE_ACCEPTED, QUEST_STATE_CANCELLED,
+    QUEST_STATE_CLOSED, QUEST_STATE_FINISHED, QuestProgress,
+    load_quest_catalog,
 )
 from dso_server.gameplay.achievement_content import (
     AchievementProgress, complete_achievement, load_achievement_catalog,
@@ -86,6 +87,15 @@ IDENTITY_FIELDS = frozenset({"name", "level", "gender", "class_id"})
 # CharacterGeneration rejects exactly these names, so a CMS rename must not
 # produce one the client would refuse the next time the character is created.
 CHARACTER_NAME_MAX_BYTES = 32
+
+
+def _is_campaign_act_id(value) -> bool:
+    """Keep bulk Act completion scoped to numbered story Acts, not event Acts."""
+    prefix, separator, number = str(value or "").casefold().partition("_")
+    return (
+        prefix == "act" and bool(separator) and number.isdecimal()
+        and int(number) < 90
+    )
 
 
 def character_name(value):
@@ -1265,22 +1275,43 @@ class AdminService:
                 "source_name": source_profile.name,
                 "target_name": target_profile.name}
 
-    def complete_character_main_quests(self, cid, actor, reason):
+    def complete_character_main_quests(
+            self, cid, actor, reason, *, act_only=False):
+        """Complete the World quest scope, optionally limited to story Acts."""
         profile = self.store.get_profile(cid)
         owner = self.registry.character_owner(cid)
         if profile is None or owner is None:
             raise ValueError("character must exist and belong to an account")
         catalog = load_quest_catalog(DEFAULT_QUESTS_PATH)
         class_name = CLASS_NAMES.get(int(profile.class_id), "")
-        quests = list(
+        world_quests = [
             quest for quest in catalog.quests.values()
-            if quest.quest_type.casefold() == "world" and quest.accepts_class(class_name)
-        )
-        # Ammon's first Parallel Worlds access quest is a chapter prerequisite
-        # authored as Heroic, so it is not part of the World quest type above.
-        parallel_world_intro = catalog.quest("pw000-introduction-01-n")
-        if parallel_world_intro is not None and parallel_world_intro not in quests:
-            quests.append(parallel_world_intro)
+            if quest.quest_type.casefold() == "world"
+            and quest.accepts_class(class_name)
+        ]
+        if act_only:
+            with closing(sqlite3.connect(
+                f"file:{self.static_database_path.as_posix()}?mode=ro", uri=True,
+            )) as database:
+                chapter_acts = {
+                    str(chapter_id).casefold(): str(act_id or "").casefold()
+                    for chapter_id, act_id in database.execute(
+                        "SELECT Id, ActId FROM _Template_Chapter"
+                    )
+                }
+            quests = [
+                quest for quest in world_quests
+                if _is_campaign_act_id(
+                    chapter_acts.get(quest.chapter_id.casefold())
+                ) and not quest.event_id.strip()
+            ]
+        else:
+            quests = world_quests
+            # Ammon's first Parallel Worlds access quest is a chapter prerequisite
+            # authored as Heroic, so it is not part of the World quest type above.
+            parallel_world_intro = catalog.quest("pw000-introduction-01-n")
+            if parallel_world_intro is not None and parallel_world_intro not in quests:
+                quests.append(parallel_world_intro)
         quests = tuple(quests)
         if not quests:
             raise ValueError("no main story quests are available for this character")
@@ -1341,21 +1372,134 @@ class AdminService:
                         CHAPTER_PROGRESS_COMMAND,
                         server._quest_chapter_progress(session), 1,
                     ))
+                scope = "Act main quests" if act_only else "main quests"
                 PlayerPersistenceService._persist_gameplay_session(
-                    server, session, reason="CMS main quests completed", flush=True
+                    server, session, reason=f"CMS {scope} completed", flush=True
                 )
                 server._send_quest_commands(
-                    session, commands, label="admin-main-quests-completed"
+                    session, commands,
+                    label=(
+                        "admin-act-main-quests-completed" if act_only
+                        else "admin-main-quests-completed"
+                    ),
                 )
                 return True
             if not call_admin_command(server.admin_commands, commit, session=session):
                 raise ValueError("character session changed; refresh and retry")
-        self.repository.audit(actor.username, "character.quests.complete_main", cid, {
+        action = (
+            "character.quests.complete_act_main" if act_only
+            else "character.quests.complete_main"
+        )
+        self.repository.audit(actor.username, action, cid, {
             "quest_count": len(quests), "newly_completed": completed,
             "online": target is not None, "reason": reason,
+            "scope": "act_main" if act_only else "all_main",
         })
         return {"ok": True, "quest_count": len(quests),
                 "newly_completed": completed, "online": target is not None}
+
+    def undo_character_main_quests(self, cid, actor, reason):
+        """Remove completed main-story quest records so they can be replayed."""
+        profile = self.store.get_profile(cid)
+        owner = self.registry.character_owner(cid)
+        if profile is None or owner is None:
+            raise ValueError("character must exist and belong to an account")
+        catalog = load_quest_catalog(DEFAULT_QUESTS_PATH)
+        class_name = CLASS_NAMES.get(int(profile.class_id), "")
+        quests = {
+            quest.key: quest
+            for quest in catalog.quests.values()
+            if quest.quest_type.casefold() == "world"
+            and quest.accepts_class(class_name)
+        }
+        # Match the exact scope of the bulk-completion action above.
+        parallel_world_intro = catalog.quest("pw000-introduction-01-n")
+        if parallel_world_intro is not None:
+            quests.setdefault(parallel_world_intro.key, parallel_world_intro)
+        if not quests:
+            raise ValueError("no main story quests are available for this character")
+
+        online = cid in self.online_characters()
+        target = self.live.find(cid) if online else None
+        if online and target is None:
+            raise ValueError("character is changing maps or initializing; try again shortly")
+
+        undone = []
+        if target is None:
+            state = self.store.get(cid)
+            if state is None:
+                raise ValueError("character must enter the game once before quests can be changed")
+            quest_log = dict(state.quest_log or {})
+            for quest_id, progress in tuple(quest_log.items()):
+                quest_key = str(quest_id).casefold()
+                if quest_key not in quests or not isinstance(progress, dict):
+                    continue
+                if int(progress.get("state", -1)) != QUEST_STATE_CLOSED:
+                    continue
+                del quest_log[quest_id]
+                undone.append(quests[quest_key].quest_id)
+            if not undone:
+                raise ValueError("character has no completed main quests to undo")
+            from dataclasses import replace as replace_state
+            self.store.put(replace_state(state, quest_log=quest_log), flush=True)
+        else:
+            server, session = target
+            from dso_server.services.quests import _quest_log
+
+            def commit():
+                if not server.is_session_current(session):
+                    raise ValueError("character session changed; refresh and retry")
+                with session.flow_lock:
+                    if not ready(session, cid):
+                        raise ValueError("character must remain fully loaded in a map")
+                    log = _quest_log(session)
+                    for quest_id, progress in tuple(log.items()):
+                        quest_key = str(quest_id).casefold()
+                        if (
+                            quest_key not in quests
+                            or progress.state != QUEST_STATE_CLOSED
+                        ):
+                            continue
+                        del log[quest_id]
+                        undone.append(quests[quest_key].quest_id)
+                    if not undone:
+                        raise ValueError("character has no completed main quests to undo")
+                    reset_keys = {quest_id.casefold() for quest_id in undone}
+                    tracking = getattr(session, "gameplay_quest_tracking", None)
+                    if tracking and str(tracking[0]).casefold() in reset_keys:
+                        session.gameplay_quest_tracking = None
+                    commands = [
+                        ServerCommand(
+                            QUEST_UPDATE_COMMAND,
+                            QuestUpdate.quest_state(
+                                quest_id, QUEST_STATE_CANCELLED, NO_TIMESTAMP,
+                            ),
+                            1,
+                        )
+                        for quest_id in undone
+                    ]
+                    commands.extend(server._quest_npc_info_commands(session))
+                    commands.append(ServerCommand(
+                        CHAPTER_PROGRESS_COMMAND,
+                        server._quest_chapter_progress(session), 1,
+                    ))
+                PlayerPersistenceService._persist_gameplay_session(
+                    server, session, reason="CMS main quests undone", flush=True
+                )
+                server._send_quest_commands(
+                    session, commands, label="admin-main-quests-undone"
+                )
+                server._quest_spawn_revealed_npcs(session)
+                server._quest_sync_props(session)
+                return True
+
+            if not call_admin_command(server.admin_commands, commit, session=session):
+                raise ValueError("character session changed; refresh and retry")
+
+        self.repository.audit(actor.username, "character.quests.undo_main", cid, {
+            "undone": undone, "online": target is not None, "reason": reason,
+        })
+        return {"ok": True, "undone": len(undone), "online": target is not None}
 
     def unlock_character_all_recipes(self, cid, actor, reason):
         if self.registry.character_owner(cid) is None or self.store.get_profile(cid) is None:
@@ -2286,6 +2430,12 @@ class AdminService:
                 )
             if parts[3] == "complete-main-quests":
                 return self.complete_character_main_quests(cid, account, reason)
+            if parts[3] == "complete-act-main-quests":
+                return self.complete_character_main_quests(
+                    cid, account, reason, act_only=True,
+                )
+            if parts[3] == "undo-main-quests":
+                return self.undo_character_main_quests(cid, account, reason)
             if parts[3] == "complete-ammon-pw-quests":
                 return self.complete_character_ammon_parallel_world_quests(cid, account, reason)
             if parts[3] == "complete-active-quests":
